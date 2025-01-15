@@ -1,0 +1,5 @@
+build:
+  languages:
+    - rust
+run:
+  web: ./target/release/init

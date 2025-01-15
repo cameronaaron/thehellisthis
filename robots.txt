@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /
+Disallow: /ws/
+Disallow: /_*
+Crawl-delay: 5
+
+# Prevent access to WebSocket endpoints
+Disallow: /ws/*
