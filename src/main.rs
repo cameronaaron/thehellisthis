@@ -1282,17 +1282,22 @@ async fn handle_websocket(
                     last_sanitized_message: None,
                 },
             );
-            let _ = room_state.sender.send(OutgoingEvent::System {
-                event: SystemEvent::UserJoined {
-                    user_id: user_id.clone(),
-                    animal_name: animal_name.clone(),
-                },
-            });
+            // NOTE: UserJoined broadcast is sent AFTER subscribe to ensure user receives it
         }
+        
+        let receiver = room_state.sender.subscribe();
         room_state.broadcast_user_count();
+        
+        // NOW broadcast this user's join event (after they're subscribed)
+        let _ = room_state.sender.send(OutgoingEvent::System {
+            event: SystemEvent::UserJoined {
+                user_id: user_id.clone(),
+                animal_name: animal_name.clone(),
+            },
+        });
 
         (
-            room_state.sender.subscribe(),
+            receiver,
             room_state.chat_history.clone(),
         )
     };
