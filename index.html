@@ -626,6 +626,9 @@ class ChatApp {
         this.roomName = this.extractRoomName();
         this.shouldAutoScroll = true;
         this.lastScrollTop = 0;
+        this.cleanupIntervalId = null;
+        this.scrollTimeoutId = null;
+        this.autoScrollTimeoutId = null;
         
         // DOM elements
         this.chat = document.getElementById('chat');
@@ -648,13 +651,17 @@ class ChatApp {
         this.updateRoomName();
         this.connect();
         
-        // Periodic cleanup of stale typing indicators
-        setInterval(() => this.cleanupTypingIndicators(), 1000);
+        // Periodic cleanup of stale typing indicators (store ID for cleanup)
+        this.cleanupIntervalId = setInterval(() => this.cleanupTypingIndicators(), 1000);
         
         // Monitor scroll position to control auto-scroll
         this.chat.addEventListener('scroll', (e) => {
             this.handleChatScroll();
         });
+        
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => this.cleanup());
+        window.addEventListener('pagehide', () => this.cleanup());
     }
     
     setupEventListeners() {
@@ -727,6 +734,7 @@ class ChatApp {
         console.log('WebSocket disconnected');
         this.connected = false;
         this.updateConnectionStatus('disconnected');
+        this.cleanup();
         this.tryReconnect();
     }
     
@@ -756,7 +764,8 @@ class ChatApp {
         this.statusText.textContent = `Reconnecting in ${Math.ceil(delay / 1000)}s...`;
         
         setTimeout(() => {
-            if (!this.connected) {
+            // Check if we're still disconnected AND not already reconnecting
+            if (!this.connected && (!this.ws || this.ws.readyState !== WebSocket.CONNECTING)) {
                 this.reconnectAttempts++;
                 this.connect();
             }
@@ -800,8 +809,13 @@ class ChatApp {
         
         // Auto-scroll if user is at bottom
         if (this.shouldAutoScroll) {
-            setTimeout(() => {
+            // Cancel any pending auto-scroll and schedule a new one
+            if (this.autoScrollTimeoutId) {
+                clearTimeout(this.autoScrollTimeoutId);
+            }
+            this.autoScrollTimeoutId = setTimeout(() => {
                 this.chat.scrollTop = this.chat.scrollHeight;
+                this.autoScrollTimeoutId = null;
             }, 0);
         }
         
@@ -905,8 +919,12 @@ class ChatApp {
         }
         
         if (this.shouldAutoScroll) {
-            setTimeout(() => {
+            if (this.autoScrollTimeoutId) {
+                clearTimeout(this.autoScrollTimeoutId);
+            }
+            this.autoScrollTimeoutId = setTimeout(() => {
                 this.chat.scrollTop = this.chat.scrollHeight;
+                this.autoScrollTimeoutId = null;
             }, 0);
         }
     }
@@ -1165,6 +1183,31 @@ class ChatApp {
             minute: '2-digit',
             hour12: true 
         });
+    }
+    
+    cleanup() {
+        // Clear all timers and intervals
+        if (this.cleanupIntervalId) {
+            clearInterval(this.cleanupIntervalId);
+            this.cleanupIntervalId = null;
+        }
+        if (this.typingTimeout) {
+            clearTimeout(this.typingTimeout);
+            this.typingTimeout = null;
+        }
+        if (this.scrollTimeoutId) {
+            clearTimeout(this.scrollTimeoutId);
+            this.scrollTimeoutId = null;
+        }
+        // Clear pending auto-scroll timeout
+        if (this.autoScrollTimeoutId) {
+            clearTimeout(this.autoScrollTimeoutId);
+            this.autoScrollTimeoutId = null;
+        }
+        // Close WebSocket if open
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.close();
+        }
     }
 }
 

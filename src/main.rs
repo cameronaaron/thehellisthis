@@ -769,9 +769,15 @@ impl RoomState {
         }
     }
 
-    fn preserve_messages(&mut self) {
+    fn preserve_messages(&mut self, memory_tracker: &MemoryTracker) {
         if self.chat_history.len() > MAX_MESSAGES_PER_ROOM + 100 {
             let start_idx = self.chat_history.len() - MAX_MESSAGES_PER_ROOM;
+            // Compute bytes we are about to drop so the global tracker stays accurate
+            let removed_bytes = self.chat_history[..start_idx]
+                .iter()
+                .map(|msg| msg.estimate_size())
+                .sum::<usize>();
+
             self.chat_history = self.chat_history[start_idx..].to_vec();
 
             let new_total = self
@@ -780,6 +786,10 @@ impl RoomState {
                 .map(|msg| msg.estimate_size())
                 .sum::<usize>();
             self.total_memory_bytes.store(new_total, Ordering::SeqCst);
+
+            if removed_bytes > 0 {
+                memory_tracker.remove_bytes(removed_bytes);
+            }
         }
     }
 
@@ -1047,19 +1057,10 @@ async fn ws_handler_inner(
         .total_connections
         .fetch_add(1, Ordering::SeqCst);
 
-    {
-        let mut rooms = state.rooms.write().await;
-        if let Some(room_state) = rooms.get_mut(&room) {
-            if !room_state.is_user_allowed("") {
-                error!("Room {} connection limit reached", room);
-                return Err(ChatError::RoomFull);
-            }
-        }
-    }
-
     let connection_id = Uuid::new_v4().to_string();
     info!("New WebSocket connection ID: {}", connection_id);
 
+    // Check room capacity
     {
         let rooms = state.rooms.read().await;
         if let Some(room_state) = rooms.get(&room) {
@@ -1086,7 +1087,7 @@ async fn ws_handler_inner(
         if room_state.chat_history.is_empty()
             || room_state.chat_history.len() > MAX_MESSAGES_PER_ROOM * 2
         {
-            room_state.preserve_messages();
+            room_state.preserve_messages(&state.memory_tracker);
         }
 
         let now = Instant::now();
@@ -1172,13 +1173,7 @@ async fn ws_handler_inner(
                 (user_id, name)
             };
 
-        // Send user joined event
-        let _ = room_state.sender.send(OutgoingEvent::System {
-            event: SystemEvent::UserJoined {
-                user_id: actual_user_id.clone(),
-                animal_name: actual_animal_name.clone(),
-            },
-        });
+        // Note: UserJoined will be sent in handle_websocket after subscription
         room_state.broadcast_user_count();
 
         // Create cookies
@@ -1403,7 +1398,17 @@ async fn handle_websocket(
                                         ..
                                     } = user.connection_state
                                     {
-                                        *last_heartbeat = Instant::now();
+                                        // Check if heartbeat has timed out - if so, don't process messages
+                                        let now = Instant::now();
+                                        if now.duration_since(*last_heartbeat) > HEARTBEAT_TIMEOUT {
+                                            warn!(
+                                                "Heartbeat timeout for user_id {} - ignoring message",
+                                                user_id
+                                            );
+                                            drop(rooms); // Release lock before continuing
+                                            continue;
+                                        }
+                                        *last_heartbeat = now;
                                     }
 
                                     if !user.rate_limiter.can_send_message() {
@@ -1649,10 +1654,18 @@ async fn handle_websocket(
     };
 
     tokio::select! {
-        _ = forward_task => (),
-        _ = receive_task => (),
-        _ = ping_task => (),
-        _ = heartbeat_task => (),
+        _ = forward_task => {
+            info!("forward_task exited, ending session for user_id {}", user_id);
+        }
+        _ = receive_task => {
+            info!("receive_task exited, ending session for user_id {}", user_id);
+        }
+        _ = ping_task => {
+            info!("ping_task exited, ending session for user_id {}", user_id);
+        }
+        _ = heartbeat_task => {
+            info!("heartbeat_task exited, ending session for user_id {}", user_id);
+        }
     }
 
     info!(
@@ -1722,67 +1735,90 @@ async fn cleanup_user(
 }
 
 async fn cleanup_rooms(state: &Arc<AppState>) {
-    let mut rooms = state.rooms.write().await;
     let now = Instant::now();
     let mut rooms_to_remove = Vec::new();
 
-    for (room_name, room) in rooms.iter_mut() {
-        // Clean up stale disconnected users from all rooms
-        let stale_users: Vec<String> = room
-            .users
-            .iter()
-            .filter_map(|(uid, user)| {
-                if let ConnectionState::Disconnected { since } = &user.connection_state {
-                    if now.duration_since(*since) > Duration::from_secs(3600) {
-                        return Some(uid.clone());
+    // Phase 1: Identify stale disconnected users and rooms to remove (minimal lock time)
+    {
+        let mut rooms = state.rooms.write().await;
+        
+        for (room_name, room) in rooms.iter_mut() {
+            // Clean up stale disconnected users from all rooms
+            let stale_users: Vec<String> = room
+                .users
+                .iter()
+                .filter_map(|(uid, user)| {
+                    if let ConnectionState::Disconnected { since } = &user.connection_state {
+                        if now.duration_since(*since) > Duration::from_secs(3600) {
+                            return Some(uid.clone());
+                        }
+                    }
+                    None
+                })
+                .collect();
+            
+            for uid in stale_users {
+                if let Some(user) = room.users.remove(&uid) {
+                    // Return animal name to pool
+                    room.available_animals.push_back(user.animal_name);
+                    info!("Removed stale disconnected user {} from room {}", uid, room_name);
+                }
+            }
+
+            if room_name == "main" {
+                // Just trim the main room
+                if room.chat_history.len() > MAX_MESSAGES_PER_ROOM + 1 {
+                    info!(
+                        "Trimming main room messages from {} to {}",
+                        room.chat_history.len(),
+                        MAX_MESSAGES_PER_ROOM
+                    );
+                    let start_idx = room.chat_history.len() - MAX_MESSAGES_PER_ROOM;
+                    let removed_bytes = room.chat_history[..start_idx]
+                        .iter()
+                        .map(|msg| msg.estimate_size())
+                        .sum::<usize>();
+
+                    room.chat_history = room.chat_history[start_idx..].to_vec();
+
+                    let new_total = room
+                        .chat_history
+                        .iter()
+                        .map(|msg| msg.estimate_size())
+                        .sum::<usize>();
+                    room.total_memory_bytes.store(new_total, Ordering::SeqCst);
+
+                    if removed_bytes > 0 {
+                        state.memory_tracker.remove_bytes(removed_bytes);
                     }
                 }
-                None
-            })
-            .collect();
-        
-        for uid in stale_users {
-            if let Some(user) = room.users.remove(&uid) {
-                // Return animal name to pool
-                room.available_animals.push_back(user.animal_name);
-                info!("Removed stale disconnected user {} from room {}", uid, room_name);
+                continue;
+            }
+
+            let inactive_duration = now.duration_since(room.last_activity);
+            let active_users = room.users.values().any(|u| {
+                matches!(u.connection_state, ConnectionState::Connected { .. })
+            });
+            if inactive_duration >= Duration::from_secs(7200) && !active_users {
+                rooms_to_remove.push(room_name.clone());
             }
         }
 
-        if room_name == "main" {
-            // Just trim the main room
-            if room.chat_history.len() > MAX_MESSAGES_PER_ROOM + 1 {
-                info!(
-                    "Trimming main room messages from {} to {}",
-                    room.chat_history.len(),
-                    MAX_MESSAGES_PER_ROOM
-                );
-                let start_idx = room.chat_history.len() - MAX_MESSAGES_PER_ROOM;
-                room.chat_history = room.chat_history[start_idx..].to_vec();
-
-                let new_total = room
+        // Phase 2: Remove identified rooms (still holding lock)
+        for rm_name in &rooms_to_remove {
+            info!("Removing inactive room: {}", rm_name);
+            if let Some(room) = rooms.remove(rm_name) {
+                let removed_bytes = room
                     .chat_history
                     .iter()
                     .map(|msg| msg.estimate_size())
                     .sum::<usize>();
-                room.total_memory_bytes.store(new_total, Ordering::SeqCst);
+                if removed_bytes > 0 {
+                    state.memory_tracker.remove_bytes(removed_bytes);
+                }
             }
-            continue;
         }
-
-        let inactive_duration = now.duration_since(room.last_activity);
-        let active_users = room.users.values().any(|u| {
-            matches!(u.connection_state, ConnectionState::Connected { .. })
-        });
-        if inactive_duration >= Duration::from_secs(7200) && !active_users {
-            rooms_to_remove.push(room_name.clone());
-        }
-    }
-
-    for rm_name in rooms_to_remove {
-        info!("Removing inactive room: {}", rm_name);
-        rooms.remove(&rm_name);
-    }
+    } // Lock released here
 }
 
 #[cfg(test)]
