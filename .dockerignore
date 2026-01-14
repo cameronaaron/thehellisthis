@@ -1,0 +1,6 @@
+target
+.git
+.github
+fly.toml
+Dockerfile
+*.log
