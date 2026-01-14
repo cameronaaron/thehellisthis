@@ -51,6 +51,8 @@ const MAX_TOTAL_ROOMS_MEMORY: usize = 400_000_000;
 const MAX_MESSAGES_PER_ROOM: usize = 500;
 const MAX_MESSAGE_AGE: Duration = Duration::from_secs(86400 * 30);
 const CLEANUP_BATCH_SIZE: usize = 100;
+const TYPING_EVENT_MIN_INTERVAL: Duration = Duration::from_millis(200);
+const READ_RECEIPT_MIN_INTERVAL: Duration = Duration::from_millis(200);
 
 // Memory + reconnection
 const ESTIMATED_MESSAGE_SIZE: usize = 1024;
@@ -265,6 +267,8 @@ struct UserData {
     connection_state: ConnectionState,
     last_read_message: Option<Uuid>,
     is_typing: bool,
+    last_typing_event: Option<Instant>,
+    last_read_receipt_event: Option<Instant>,
     rate_limiter: RateLimiter,
     last_sanitized_message: Option<(String, Instant)>,
 }
@@ -793,6 +797,29 @@ impl RoomState {
         }
     }
 
+    fn trim_to_max_messages(&mut self, memory_tracker: &MemoryTracker) {
+        if self.chat_history.len() > MAX_MESSAGES_PER_ROOM {
+            let start_idx = self.chat_history.len() - MAX_MESSAGES_PER_ROOM;
+            let removed_bytes = self.chat_history[..start_idx]
+                .iter()
+                .map(|msg| msg.estimate_size())
+                .sum::<usize>();
+
+            self.chat_history = self.chat_history[start_idx..].to_vec();
+
+            let new_total = self
+                .chat_history
+                .iter()
+                .map(|msg| msg.estimate_size())
+                .sum::<usize>();
+            self.total_memory_bytes.store(new_total, Ordering::SeqCst);
+
+            if removed_bytes > 0 {
+                memory_tracker.remove_bytes(removed_bytes);
+            }
+        }
+    }
+
     fn is_user_allowed(&mut self, user_id: &str) -> bool {
         let connected_count = self
             .users
@@ -1090,6 +1117,11 @@ async fn ws_handler_inner(
             room_state.preserve_messages(&state.memory_tracker);
         }
 
+        // Ensure we don't send more than MAX_MESSAGES_PER_ROOM on connect
+        if room_state.chat_history.len() > MAX_MESSAGES_PER_ROOM {
+            room_state.trim_to_max_messages(&state.memory_tracker);
+        }
+
         let now = Instant::now();
         let (cookie_user_id, cookie_animal) = cookie
             .as_ref()
@@ -1141,6 +1173,8 @@ async fn ws_handler_inner(
                             },
                             last_read_message: None,
                             is_typing: false,
+                            last_typing_event: None,
+                            last_read_receipt_event: None,
                             rate_limiter: RateLimiter::new(),
                             last_sanitized_message: None,
                         },
@@ -1166,6 +1200,8 @@ async fn ws_handler_inner(
                         },
                         last_read_message: None,
                         is_typing: false,
+                        last_typing_event: None,
+                        last_read_receipt_event: None,
                         rate_limiter: RateLimiter::new(),
                         last_sanitized_message: None,
                     },
@@ -1273,6 +1309,8 @@ async fn handle_websocket(
                     },
                     last_read_message: None,
                     is_typing: false,
+                    last_typing_event: None,
+                    last_read_receipt_event: None,
                     rate_limiter: RateLimiter::new(),
                     last_sanitized_message: None,
                 },
@@ -1503,6 +1541,13 @@ async fn handle_websocket(
                                             }
                                         }
                                         ClientEvent::Typing { is_typing } => {
+                                            let now = Instant::now();
+                                            if let Some(last) = user.last_typing_event {
+                                                if now.duration_since(last) < TYPING_EVENT_MIN_INTERVAL {
+                                                    continue;
+                                                }
+                                            }
+                                            user.last_typing_event = Some(now);
                                             let (uid, animal) = {
                                                 user.is_typing = is_typing;
                                                 (
@@ -1520,6 +1565,13 @@ async fn handle_websocket(
                                             );
                                         }
                                         ClientEvent::ReadReceipt { message_id } => {
+                                            let now = Instant::now();
+                                            if let Some(last) = user.last_read_receipt_event {
+                                                if now.duration_since(last) < READ_RECEIPT_MIN_INTERVAL {
+                                                    continue;
+                                                }
+                                            }
+                                            user.last_read_receipt_event = Some(now);
                                             if let Ok(msg_id) = Uuid::parse_str(&message_id) {
                                                 let (uid, animal) = {
                                                     user.last_read_message = Some(msg_id);
