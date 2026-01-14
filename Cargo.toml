@@ -5,52 +5,50 @@ edition = "2021"
 
 [dependencies]
 # Async Runtime
-tokio = { version = "1.35.1", features = ["full"] }
+tokio = { version = "1.49.0", features = ["full"] }
 
 # Web Framework
-axum = { version = "0.7.9", features = ["ws", "http2"] }
-axum-server = { version = "0.6.0" }  # Remove features specification
-tower = { version = "0.4.13", features = ["full"] }
-tower-http = { version = "0.5.1", features = [
+axum = { version = "0.8.8", features = ["ws", "macros"] }
+axum-server = "0.8.0"
+tower = { version = "0.5.3", features = ["full"] }
+tower-http = { version = "0.6.8", features = [
     "cors",
     "trace",
     "set-header",
     "limit",
     "auth"
 ] }
-hyper = { version = "1.1.0", features = ["full"] }
-async-trait = "0.1.77"
+hyper = { version = "1.8.1", features = ["full"] }
+async-trait = "0.1.89"
 
 # Serialization
-serde = { version = "1.0.195", features = ["derive"] }
-serde_json = "1.0.111"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
 
 # Utilities
-futures = "0.3.30"
-uuid = { version = "1.0", features = ["v4", "serde"] }
+futures = "0.3.31"
+uuid = { version = "1.19.0", features = ["v4", "serde"] }
 rand = "0.8.5"
+bytes = "1.11.0"
 
 # Logging & Monitoring
-tracing = "0.1.40"
-tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
-metrics = "0.21"
-metrics-exporter-prometheus = { version = "0.12", features = ["http-listener"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+metrics = "0.24.3"
+metrics-exporter-prometheus = { version = "0.18.1", features = ["http-listener"] }
 
 # Content Processing
-comrak = "0.20.0"
-ammonia = "3.3.0"
+comrak = "0.49.0"
+ammonia = "4.1.2"
 
 # Security
-tower-cookies = "0.9.0"
-http = "1.0.0"
-rustls = "0.21"
-rustls-pemfile = "1.0"
+tower-cookies = "0.11.0"
+http = "1.4.0"
 
-# Add these new dependencies
-regex = "1.10.2"
+# Utilities
+regex = "1.12.2"
 lazy_static = "1.5.0"
-thiserror = "1.0"
+thiserror = "2.0.17"
+
 [dev-dependencies]
-# Move test-only dependencies here
-tokio = { version = "1", features = ["full"] }
-# ... other test dependencies ...
+tokio = { version = "1.49.0", features = ["full"] }

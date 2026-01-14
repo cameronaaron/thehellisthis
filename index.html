@@ -226,9 +226,42 @@ h1 {
     justify-content: center;
     transition: all 0.3s;
 }
-.send-button:hover {
+.send-button:hover, .send-button:focus {
     transform: scale(1.1) rotate(10deg);
     box-shadow: 0 0 15px var(--mdc-theme-primary);
+    outline: none;
+}
+.send-button:focus-visible {
+    outline: 2px solid var(--mdc-theme-primary-light);
+    outline-offset: 2px;
+}
+#messageInput:focus-visible {
+    outline: 2px solid var(--mdc-theme-primary-light);
+    outline-offset: -2px;
+}
+@media (max-width: 600px) {
+    .app-bar {
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        padding: 0.75rem;
+    }
+    .room-info {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.25rem;
+    }
+    .header-bar {
+        padding: 0.75rem;
+    }
+    .instructions {
+        font-size: 0.8rem;
+    }
+    .message {
+        max-width: 90%;
+    }
+    .input-container {
+        padding: 0.75rem;
+    }
 }
 @keyframes fadeIn {
     from { opacity: 0; transform: translateY(10px); }
@@ -282,27 +315,51 @@ h1 {
         This is a social art experiment. Relax, have fun, and connect with cool strangers.
     </p>
 </div>
-<div id="chat"></div>
-<div id="typingIndicator" class="typing-indicator hidden"></div>
+<div id="chat" role="log" aria-live="polite" aria-label="Chat messages"></div>
+<div id="typingIndicator" class="typing-indicator hidden" role="status" aria-live="polite"></div>
 <div class="input-container">
-    <input id="messageInput" type="text" placeholder="Type a message..." />
-    <button class="send-button">
-        <span class="material-icons">send</span>
+    <input id="messageInput" type="text" placeholder="Type a message..." aria-label="Message input" autocomplete="off" maxlength="8000" />
+    <button class="send-button" aria-label="Send message" type="button">
+        <span class="material-icons" aria-hidden="true">send</span>
     </button>
 </div>
-<audio id="messageSound" src="data:audio/mpeg;base64,SUQz..." preload="auto"></audio>
+<audio id="messageSound" preload="auto"></audio>
 <script>
-let ws, myAnimalName = null;
+// Create notification sound using Web Audio API
+const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+function playNotificationSound() {
+    const oscillator = audioContext.createOscillator();
+    const gainNode = audioContext.createGain();
+    oscillator.connect(gainNode);
+    gainNode.connect(audioContext.destination);
+    oscillator.frequency.value = 880;
+    oscillator.type = 'sine';
+    gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+    gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.2);
+    oscillator.start(audioContext.currentTime);
+    oscillator.stop(audioContext.currentTime + 0.2);
+}
+</script>
+<script>
+let ws, myAnimalName = null, myUserId = null;
 const chat = document.getElementById('chat');
 const input = document.getElementById('messageInput');
 const sendButton = document.querySelector('.send-button');
 const userCountEl = document.getElementById('userCount');
 const onlineIndicator = document.querySelector('.online-indicator');
 const typingIndicator = document.getElementById('typingIndicator');
+const typingUsers = new Map(); // Track multiple typing users
 
 const pathParts = window.location.pathname.split('/');
 const roomName = pathParts[pathParts.length-1] || 'main';
 document.getElementById('roomName').textContent = `Room: ${roomName}`;
+
+// Helper to escape HTML and prevent XSS
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
 
 const protocol = (location.protocol === 'https:') ? 'wss:' : 'ws:';
 const wsURL = protocol + '//' + location.host + '/ws/' + roomName;
@@ -385,29 +442,46 @@ function handleServerEvent(data) {
 }
 
 function handleIncomingMessage(msg) {
+    // Detect our own animal name from user_id if not set
+    if (myUserId && msg.user_id === myUserId && !myAnimalName) {
+        myAnimalName = msg.animal_name;
+        console.log("Detected my animal name from message:", myAnimalName);
+    }
+    
+    const isSent = (myUserId && msg.user_id === myUserId) || (myAnimalName && msg.animal_name === myAnimalName);
+    
     const timestamp = new Date(parseInt(msg.timestamp))
         .toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
 
     const div = document.createElement('div');
-    div.className = `message ${msg.animal_name === myAnimalName ? 'sent' : 'received'}`;
+    div.className = `message ${isSent ? 'sent' : 'received'}`;
     div.setAttribute('data-message-id', msg.message_id);
+    div.setAttribute('data-user-id', msg.user_id);
+    div.setAttribute('role', 'article');
+    div.setAttribute('aria-label', `Message from ${msg.animal_name} at ${timestamp}`);
+    
+    // msg.text is already sanitized HTML from server
     div.innerHTML = `
         <div class="header">
-            <div class="avatar">${msg.animal_name[0]}</div>
-            <strong>${msg.animal_name}</strong>
+            <div class="avatar" aria-hidden="true">${escapeHtml(msg.animal_name[0])}</div>
+            <strong>${escapeHtml(msg.animal_name)}</strong>
         </div>
-        ${msg.text}
+        <div class="message-content">${msg.text}</div>
         <div class="timestamp">${timestamp}${renderReadReceipt(msg.message_id)}</div>
     `;
     chat.appendChild(div);
     chat.scrollTop = chat.scrollHeight;
 
-    if (msg.animal_name !== myAnimalName) {
-        document.getElementById('messageSound').play().catch(()=>{});
-    }
-
-    if (myAnimalName && msg.animal_name === myAnimalName) {
-        sendReadReceipt(msg.message_id);
+    if (!isSent) {
+        if (audioContext.state === 'suspended') {
+            audioContext.resume();
+        }
+        playNotificationSound();
+        
+        // Auto-send read receipt if scrolled to bottom
+        if (chat.scrollHeight - chat.scrollTop - chat.clientHeight < 50) {
+            sendReadReceipt(msg.message_id);
+        }
     }
 }
 
@@ -421,23 +495,37 @@ function renderReadReceipt(message_id) {
 
 function handleSystemEvent(event) {
     if (event.UserJoined) {
-        if (!myAnimalName) {
+        // First UserJoined after connect is usually ourselves
+        if (!myUserId) {
+            myUserId = event.UserJoined.user_id;
             myAnimalName = event.UserJoined.animal_name;
-            console.log("My animal name:", myAnimalName);
+            console.log("My identity:", myUserId, myAnimalName);
         }
         const sysDiv = document.createElement('div');
         sysDiv.className = 'system-message';
+        sysDiv.setAttribute('role', 'status');
         sysDiv.textContent = `${event.UserJoined.animal_name} appears in this strange realm`;
         chat.appendChild(sysDiv);
     } else if (event.UserLeft) {
+        // Clear typing indicator for this user
+        typingUsers.delete(event.UserLeft.animal_name);
+        updateTypingIndicator();
+        
         const sysDiv = document.createElement('div');
         sysDiv.className = 'system-message';
+        sysDiv.setAttribute('role', 'status');
         sysDiv.textContent = `${event.UserLeft.animal_name} vanishes into the ether`;
         chat.appendChild(sysDiv);
     } else if (event.Typing) {
         handleTypingIndicator(event.Typing.animal_name, event.Typing.is_typing);
     } else if (event.ReadReceipt) {
         updateReadReceipt(event.ReadReceipt.animal_name, event.ReadReceipt.message_id);
+    } else if (event.ServerShutdown) {
+        const sysDiv = document.createElement('div');
+        sysDiv.className = 'system-message';
+        sysDiv.setAttribute('role', 'alert');
+        sysDiv.textContent = `Server shutting down: ${event.ServerShutdown.reason}`;
+        chat.appendChild(sysDiv);
     }
 
     chat.scrollTop = chat.scrollHeight;
@@ -445,11 +533,36 @@ function handleSystemEvent(event) {
 
 function handleTypingIndicator(name, isTyping) {
     if (name === myAnimalName) return;
+    
     if (isTyping) {
-        typingIndicator.textContent = `${name} is typing...`;
+        typingUsers.set(name, Date.now());
+    } else {
+        typingUsers.delete(name);
+    }
+    updateTypingIndicator();
+}
+
+function updateTypingIndicator() {
+    // Clean up stale typing indicators (>5 seconds)
+    const now = Date.now();
+    for (const [name, timestamp] of typingUsers) {
+        if (now - timestamp > 5000) {
+            typingUsers.delete(name);
+        }
+    }
+    
+    const names = Array.from(typingUsers.keys());
+    if (names.length === 0) {
+        typingIndicator.classList.add('hidden');
+    } else if (names.length === 1) {
+        typingIndicator.textContent = `${names[0]} is typing...`;
+        typingIndicator.classList.remove('hidden');
+    } else if (names.length === 2) {
+        typingIndicator.textContent = `${names[0]} and ${names[1]} are typing...`;
         typingIndicator.classList.remove('hidden');
     } else {
-        typingIndicator.classList.add('hidden');
+        typingIndicator.textContent = `${names.length} people are typing...`;
+        typingIndicator.classList.remove('hidden');
     }
 }
 
@@ -471,23 +584,52 @@ function updateReadReceipt(animal_name, message_id) {
 
 function sendMessage() {
     const text = input.value.trim();
-    if (text && connected) {
+    if (!text) return;
+    
+    if (!connected) {
+        showError('Not connected. Please wait...');
+        return;
+    }
+    
+    try {
         ws.send(JSON.stringify({ type: "Message", text }));
         input.value = '';
         isCurrentlyTyping = false;
         sendTypingIndicator(false);
+    } catch (e) {
+        console.error('Failed to send message:', e);
+        showError('Failed to send message. Please try again.');
     }
 }
 
+function showError(message) {
+    const errorDiv = document.createElement('div');
+    errorDiv.className = 'system-message';
+    errorDiv.setAttribute('role', 'alert');
+    errorDiv.style.color = '#f44336';
+    errorDiv.textContent = message;
+    chat.appendChild(errorDiv);
+    chat.scrollTop = chat.scrollHeight;
+    
+    // Auto-remove after 5 seconds
+    setTimeout(() => errorDiv.remove(), 5000);
+}
+
 input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
+    if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
         sendMessage();
-    } else {
+    } else if (e.key !== 'Enter') {
         handleTyping();
     }
 });
 
+// Mobile touch support
 sendButton.addEventListener('click', sendMessage);
+sendButton.addEventListener('touchend', (e) => {
+    e.preventDefault();
+    sendMessage();
+});
 
 function handleTyping() {
     if (!isCurrentlyTyping) {

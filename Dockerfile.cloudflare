@@ -1,0 +1,48 @@
+# Multi-stage build for Cloudflare Containers
+# Compile with Rust toolchain, run on minimal runtime
+
+FROM rust:latest AS builder
+
+# Install minimal build deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config \
+    libssl-dev \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy source files
+COPY Cargo.toml Cargo.lock* ./
+COPY src ./src
+COPY index.html ./index.html
+COPY robots.txt ./robots.txt
+
+# Build release binary with optimizations
+RUN cargo build --release
+
+# Runtime image - use minimal Alpine for smaller image
+FROM debian:bookworm-slim AS runtime
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy binary and static assets
+COPY --from=builder /app/target/release/infinite-chat /app/infinite-chat
+COPY index.html ./index.html
+COPY robots.txt ./robots.txt
+
+# Cloudflare Containers expects port 3000 by default
+ENV PORT=3000
+ENV RUST_LOG=info
+
+# Expose the port for Cloudflare to connect
+EXPOSE 3000
+
+# Use exec form for proper signal handling
+CMD ["./infinite-chat"]
+
+# Cloudflare Containers uses SIGINT for graceful shutdown
+STOPSIGNAL SIGINT

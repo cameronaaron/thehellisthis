@@ -1,0 +1,21 @@
+{
+  "name": "infinite-chat-cloudflare",
+  "version": "1.0.0",
+  "description": "Cloudflare Containers deployment for Infinite Chat WebSocket server",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "build": "tsc",
+    "types": "wrangler types --include-runtime=false"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.0.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0",
+    "wrangler": "^4.59.0"
+  },
+  "dependencies": {
+    "@cloudflare/containers": "^0.0.31"
+  }
+}

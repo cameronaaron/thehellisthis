@@ -1,16 +1,18 @@
 #[cfg(test)]
 mod tests;
 
-use async_trait::async_trait;
 use axum::extract::ws::{Message, WebSocket};
 use axum::{
-    extract::{FromRequestParts, Path, State, WebSocketUpgrade},
+    extract::{ConnectInfo, FromRequestParts, Path, State, WebSocketUpgrade},
     response::{Html, IntoResponse, Redirect, Response},
     routing::get,
-    Router,
+    Json, Router,
 };
 use axum_server::Server;
-use comrak::{markdown_to_html, ComrakOptions};
+use bytes::Bytes;
+use http::{header, HeaderMap, StatusCode};
+use tower_http::cors::{Any, CorsLayer};
+use comrak::{markdown_to_html, Options as ComrakOptions};
 use futures::{SinkExt, StreamExt};
 use http::request::Parts;
 use lazy_static::lazy_static;
@@ -63,6 +65,9 @@ const MAX_PAYLOAD_SIZE: usize = 512 * 1024;
 // Per-user constraints
 const MAX_CONCURRENT_USERS: usize = 400;
 
+// Health check
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 #[derive(Debug, Clone)]
 struct RateLimiter {
     window_start: Instant,
@@ -95,6 +100,11 @@ impl RateLimiter {
     }
 
     fn can_join_room(&mut self) -> bool {
+        let now = Instant::now();
+        if now.duration_since(self.window_start) > RATE_LIMIT_WINDOW {
+            self.window_start = now;
+            self.join_attempts = 0;
+        }
         self.join_attempts += 1;
         self.join_attempts <= MAX_ROOM_JOIN_ATTEMPTS
     }
@@ -129,15 +139,18 @@ struct UserCookie {
     animal_name: String,
 }
 
+/// Wrapper for optional UserCookie
+#[derive(Debug, Clone)]
+struct OptionalUserCookie(Option<UserCookie>);
+
 /// Parse both `user_id` and `animal_name` cookies from the request (if present).
-#[async_trait]
-impl<S> FromRequestParts<S> for UserCookie
+impl<S> FromRequestParts<S> for OptionalUserCookie
 where
     S: Send + Sync,
 {
-    type Rejection = ();
+    type Rejection = std::convert::Infallible;
 
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, ()> {
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
         info!("Attempting to extract UserCookie from request headers...");
 
         let mut user_id = None;
@@ -165,15 +178,15 @@ where
         if let (Some(u), Some(a)) = (user_id, animal_name) {
             if !u.is_empty() && !a.is_empty() {
                 info!("Found valid user_id [{}] and animal_name [{}]", u, a);
-                return Ok(UserCookie {
+                return Ok(OptionalUserCookie(Some(UserCookie {
                     user_id: u,
                     animal_name: a,
-                });
+                })));
             }
         }
 
         info!("No valid user_id and animal_name cookies found, treating as new user.");
-        Err(())
+        Ok(OptionalUserCookie(None))
     }
 }
 
@@ -285,6 +298,33 @@ pub enum ChatError {
     RateLimitError(String),
 }
 
+impl IntoResponse for ChatError {
+    fn into_response(self) -> Response {
+        let (status, message) = match &self {
+            ChatError::RoomFull => (StatusCode::SERVICE_UNAVAILABLE, "Room is full"),
+            ChatError::RateLimited | ChatError::RateLimitError(_) => {
+                (StatusCode::TOO_MANY_REQUESTS, "Rate limit exceeded")
+            }
+            ChatError::InvalidMessage(_) => (StatusCode::BAD_REQUEST, "Invalid message"),
+            ChatError::ResourceLimit(_) => {
+                (StatusCode::SERVICE_UNAVAILABLE, "Server at capacity")
+            }
+            ChatError::ConnectionError(_) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, "Connection error")
+            }
+            ChatError::SecurityError(_) => (StatusCode::FORBIDDEN, "Access denied"),
+            ChatError::RoomError(_) => (StatusCode::BAD_REQUEST, "Room operation failed"),
+        };
+
+        let body = serde_json::json!({
+            "error": message,
+            "details": self.to_string()
+        });
+
+        (status, Json(body)).into_response()
+    }
+}
+
 type ChatResult<T> = Result<T, ChatError>;
 
 // Memory tracking
@@ -336,7 +376,13 @@ impl MemoryTracker {
             .as_secs();
 
         let last = self.last_gc.load(Ordering::Relaxed);
-        now - last > 300 // GC every 5 minutes
+        if now - last > 300 {
+            // Update last_gc timestamp
+            self.last_gc.store(now, Ordering::SeqCst);
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -681,9 +727,15 @@ impl RoomState {
         let _ = self.sender.send(OutgoingEvent::System { event });
     }
 
-    async fn cleanup_messages(&mut self, now: Instant) {
+    async fn cleanup_messages(&mut self, _now: Instant, memory_tracker: &MemoryTracker) {
         let mut removed = 0;
+        let mut removed_bytes = 0;
         let mut messages_to_retain = Vec::new();
+
+        let current_time_ms = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
 
         for msg in self.chat_history.iter() {
             if removed >= CLEANUP_BATCH_SIZE {
@@ -691,12 +743,13 @@ impl RoomState {
                 continue;
             }
 
-            if let Ok(ts) = msg.timestamp.parse::<u128>() {
-                let age = now.duration_since(Instant::now() - Duration::from_millis(ts as u64));
-                if age <= MAX_MESSAGE_AGE {
+            if let Ok(msg_time_ms) = msg.timestamp.parse::<u128>() {
+                let age_ms = current_time_ms.saturating_sub(msg_time_ms);
+                if age_ms <= MAX_MESSAGE_AGE.as_millis() {
                     messages_to_retain.push(msg.clone());
                 } else {
                     removed += 1;
+                    removed_bytes += msg.estimate_size();
                 }
             } else {
                 messages_to_retain.push(msg.clone());
@@ -711,6 +764,8 @@ impl RoomState {
                 .map(|msg| msg.estimate_size())
                 .sum::<usize>();
             self.total_memory_bytes.store(new_total, Ordering::SeqCst);
+            // Update global memory tracker
+            memory_tracker.remove_bytes(removed_bytes);
         }
     }
 
@@ -745,9 +800,9 @@ impl RoomState {
         }
     }
 
-    async fn trigger_cleanup(&mut self) {
+    async fn trigger_cleanup(&mut self, memory_tracker: &MemoryTracker) {
         if self.total_memory_bytes.load(Ordering::Relaxed) > (MAX_TOTAL_ROOMS_MEMORY * 9) / 10 {
-            self.cleanup_messages(Instant::now()).await;
+            self.cleanup_messages(Instant::now(), memory_tracker).await;
         }
     }
 }
@@ -793,7 +848,7 @@ impl AppState {
                 .sum::<usize>();
             if total_memory > MAX_TOTAL_ROOMS_MEMORY {
                 for room in rooms.values_mut() {
-                    room.trigger_cleanup().await;
+                    room.trigger_cleanup(&self.memory_tracker).await;
                 }
             }
         }
@@ -847,6 +902,9 @@ async fn room_handler(
         "main",
         "admin",
         "api",
+        "health",
+        "metrics",
+        "ws",
     ];
     if reserved_paths.contains(&room.as_str()) {
         warn!("Attempted to access reserved path as room: {}", room);
@@ -905,39 +963,83 @@ fn validate_input(text: &str, max_len: usize) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// Extract client IP from headers or connection info
+fn extract_client_ip(headers: &HeaderMap, conn_info: Option<&ConnectInfo<SocketAddr>>) -> Option<String> {
+    // Try X-Forwarded-For first (for reverse proxies like Fly.io, nginx)
+    if let Some(forwarded) = headers.get("x-forwarded-for") {
+        if let Ok(forwarded_str) = forwarded.to_str() {
+            // X-Forwarded-For can contain multiple IPs, take the first (client)
+            if let Some(client_ip) = forwarded_str.split(',').next() {
+                let ip = client_ip.trim().to_string();
+                if !ip.is_empty() {
+                    return Some(ip);
+                }
+            }
+        }
+    }
+
+    // Try X-Real-IP (alternative header)
+    if let Some(real_ip) = headers.get("x-real-ip") {
+        if let Ok(ip_str) = real_ip.to_str() {
+            let ip = ip_str.trim().to_string();
+            if !ip.is_empty() {
+                return Some(ip);
+            }
+        }
+    }
+
+    // Fall back to direct connection IP
+    conn_info.map(|ci| ci.0.ip().to_string())
+}
+
 /// Upgrades the connection to WebSocket for the specified room
-/// Returns `Response` on success, or `Html` error on failure.
+#[axum::debug_handler]
 async fn ws_handler(
-    Path(room): Path<String>,
     State(state): State<Arc<AppState>>,
-    cookie: Option<UserCookie>,
+    conn_info: ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    OptionalUserCookie(cookie): OptionalUserCookie,
+    Path(room): Path<String>,
     ws: WebSocketUpgrade,
+) -> impl IntoResponse {
+    let ip = extract_client_ip(&headers, Some(&conn_info));
+    
+    match ws_handler_inner(state, ip, cookie, room, ws).await {
+        Ok(response) => response.into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+/// Inner implementation for ws_handler
+async fn ws_handler_inner(
+    state: Arc<AppState>,
     ip: Option<String>,
-) -> Result<Response, Html<String>> {
-    info!("WebSocket upgrade request for room: {}", room);
+    cookie: Option<UserCookie>,
+    room: String,
+    ws: WebSocketUpgrade,
+) -> Result<Response, ChatError> {
+    info!("WebSocket upgrade request for room: {} from IP: {:?}", room, ip);
 
     if let Some(ip) = &ip {
-        if let Err(e) = state.security_manager.check_ip(ip).await {
-            return Err(Html(e.to_string()));
-        }
+        state.security_manager.check_ip(ip).await?;
         if !state.connection_pool.can_accept(ip).await {
             let _ = state
                 .security_manager
                 .record_suspicious_activity(ip)
                 .await;
-            return Err(Html("Too many connections from your IP".to_string()));
+            return Err(ChatError::RateLimitError(
+                "Too many connections from your IP".to_string(),
+            ));
         }
-        if let Err(e) = state.connection_pool.add_connection(ip).await {
-            return Err(Html(e.to_string()));
-        }
+        state.connection_pool.add_connection(ip).await?;
     }
 
     if !state.resource_monitor.can_accept_connection() {
-        return Err(Html("Server is at capacity".to_string()));
+        return Err(ChatError::ResourceLimit("Server is at capacity".to_string()));
     }
 
     if let Err(e) = validate_input(&room, MAX_ROOM_NAME_LEN) {
-        return Err(Html(e.to_string()));
+        return Err(ChatError::InvalidMessage(e.to_string()));
     }
 
     state
@@ -950,7 +1052,7 @@ async fn ws_handler(
         if let Some(room_state) = rooms.get_mut(&room) {
             if !room_state.is_user_allowed("") {
                 error!("Room {} connection limit reached", room);
-                return Err(Html("Room connection limit reached".to_string()));
+                return Err(ChatError::RoomFull);
             }
         }
     }
@@ -968,7 +1070,7 @@ async fn ws_handler(
                 .count();
             if connected_count >= 100 {
                 error!("Room {} connection limit reached", room);
-                return Err(Html("Room connection limit reached".to_string()));
+                return Err(ChatError::RoomFull);
             }
         }
     }
@@ -1089,6 +1191,7 @@ async fn ws_handler(
         final_user_id, final_animal_name, connection_id
     );
 
+    let client_ip_clone = ip.clone();
     let mut res = ws
         .on_upgrade(move |socket| {
             handle_websocket(
@@ -1098,6 +1201,7 @@ async fn ws_handler(
                 final_animal_name,
                 socket,
                 connection_id,
+                client_ip_clone,
             )
         })
         .into_response();
@@ -1129,6 +1233,7 @@ async fn handle_websocket(
     animal_name: String,
     socket: WebSocket,
     connection_id: String,
+    client_ip: Option<String>,
 ) {
     info!(
         "handle_websocket started for user_id [{}], room [{}], conn_id [{}]",
@@ -1207,12 +1312,12 @@ async fn handle_websocket(
                 message: message.clone(),
             }) {
                 let mut tx = ws_tx.lock().await;
-                if tx.send(Message::Text(json)).await.is_err() {
+                if tx.send(Message::Text(json.into())).await.is_err() {
                     warn!(
                         "Client disconnected during history send for user_id {}",
                         user_id
                     );
-                    cleanup_user(&state, &room, &user_id, &connection_id, None).await;
+                    cleanup_user(&state, &room, &user_id, &connection_id, client_ip.as_deref()).await;
                     return;
                 }
             }
@@ -1229,7 +1334,7 @@ async fn handle_websocket(
         token: reconnect_token,
     }) {
         let mut tx = ws_tx.lock().await;
-        let _ = tx.send(Message::Text(json)).await;
+        let _ = tx.send(Message::Text(json.into())).await;
     }
 
     // forward_task: broadcasted events -> this user
@@ -1241,7 +1346,7 @@ async fn handle_websocket(
             while let Ok(event) = receiver.recv().await {
                 if let Ok(msg_json) = serde_json::to_string(&event) {
                     let mut tx = ws_tx.lock().await;
-                    if tx.send(Message::Text(msg_json)).await.is_err() {
+                    if tx.send(Message::Text(msg_json.into())).await.is_err() {
                         warn!("forward_task: client {} disconnected", user_id);
                         break;
                     }
@@ -1276,12 +1381,13 @@ async fn handle_websocket(
                 };
                 match msg {
                     Message::Text(text) => {
-                        if text.len() > MAX_PAYLOAD_SIZE {
-                            warn!("Payload too large from user_id {}: {}", user_id, text.len());
+                        let text_str = text.as_str();
+                        if text_str.len() > MAX_PAYLOAD_SIZE {
+                            warn!("Payload too large from user_id {}: {}", user_id, text_str.len());
                             continue;
                         }
-                        debug!("Received text from user_id {}: {}", user_id, text);
-                        let evt: Result<ClientEvent, _> = serde_json::from_str(&text);
+                        debug!("Received text from user_id {}: {}", user_id, text_str);
+                        let evt: Result<ClientEvent, _> = serde_json::from_str(text_str);
                         if let Ok(evt) = evt {
                             let mut rooms = state.rooms.write().await;
                             if let Some(room_state) = rooms.get_mut(&room) {
@@ -1440,7 +1546,7 @@ async fn handle_websocket(
                         } else {
                             warn!(
                                 "Failed to parse client event from user_id {}: {}",
-                                user_id, text
+                                user_id, text_str
                             );
                         }
                     }
@@ -1484,7 +1590,7 @@ async fn handle_websocket(
             loop {
                 interval.tick().await;
                 let mut tx = ws_tx.lock().await;
-                if tx.send(Message::Ping(vec![])).await.is_err() {
+                if tx.send(Message::Ping(Bytes::new())).await.is_err() {
                     warn!("ping_task: client {} disconnected", user_id);
                     break;
                 }
@@ -1510,7 +1616,7 @@ async fn handle_websocket(
                     let mut tx = ws_tx.lock().await;
                     let beat_str =
                         serde_json::to_string(&OutgoingEvent::Heartbeat).unwrap_or_default();
-                    if tx.send(Message::Text(beat_str)).await.is_err() {
+                    if tx.send(Message::Text(beat_str.into())).await.is_err() {
                         warn!("heartbeat_task: client {} disconnected", user_id);
                         break;
                     }
@@ -1548,7 +1654,7 @@ async fn handle_websocket(
         "All tasks ended for user_id {} in room {}. Cleaning up.",
         user_id, room
     );
-    cleanup_user(&state, &room, &user_id, &connection_id, None).await;
+    cleanup_user(&state, &room, &user_id, &connection_id, client_ip.as_deref()).await;
 }
 
 async fn cleanup_user(
@@ -1616,6 +1722,28 @@ async fn cleanup_rooms(state: &Arc<AppState>) {
     let mut rooms_to_remove = Vec::new();
 
     for (room_name, room) in rooms.iter_mut() {
+        // Clean up stale disconnected users from all rooms
+        let stale_users: Vec<String> = room
+            .users
+            .iter()
+            .filter_map(|(uid, user)| {
+                if let ConnectionState::Disconnected { since } = &user.connection_state {
+                    if now.duration_since(*since) > Duration::from_secs(3600) {
+                        return Some(uid.clone());
+                    }
+                }
+                None
+            })
+            .collect();
+        
+        for uid in stale_users {
+            if let Some(user) = room.users.remove(&uid) {
+                // Return animal name to pool
+                room.available_animals.push_back(user.animal_name);
+                info!("Removed stale disconnected user {} from room {}", uid, room_name);
+            }
+        }
+
         if room_name == "main" {
             // Just trim the main room
             if room.chat_history.len() > MAX_MESSAGES_PER_ROOM + 1 {
@@ -1638,7 +1766,10 @@ async fn cleanup_rooms(state: &Arc<AppState>) {
         }
 
         let inactive_duration = now.duration_since(room.last_activity);
-        if inactive_duration >= Duration::from_secs(7200) && room.users.is_empty() {
+        let active_users = room.users.values().any(|u| {
+            matches!(u.connection_state, ConnectionState::Connected { .. })
+        });
+        if inactive_duration >= Duration::from_secs(7200) && !active_users {
             rooms_to_remove.push(room_name.clone());
         }
     }
@@ -1712,6 +1843,76 @@ async fn robots_txt_handler() -> impl IntoResponse {
         .unwrap()
 }
 
+/// Health check endpoint for load balancers
+#[derive(Serialize)]
+struct HealthResponse {
+    status: &'static str,
+    version: &'static str,
+    connections: usize,
+    rooms: usize,
+    memory_bytes: usize,
+}
+
+async fn health_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let rooms = state.rooms.read().await;
+    let room_count = rooms.len();
+    let connections = state.resource_monitor.total_connections.load(Ordering::Relaxed);
+    let memory = state.memory_tracker.total_bytes.load(Ordering::Relaxed);
+    drop(rooms);
+
+    Json(HealthResponse {
+        status: "healthy",
+        version: VERSION,
+        connections,
+        rooms: room_count,
+        memory_bytes: memory,
+    })
+}
+
+/// Prometheus-compatible metrics endpoint
+async fn metrics_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let rooms = state.rooms.read().await;
+    let room_count = rooms.len();
+    let total_users: usize = rooms.values().map(|r| r.users.len()).sum();
+    let total_messages: usize = rooms.values().map(|r| r.chat_history.len()).sum();
+    drop(rooms);
+
+    let connections = state.resource_monitor.total_connections.load(Ordering::Relaxed);
+    let memory = state.memory_tracker.total_bytes.load(Ordering::Relaxed);
+    let peak_memory = state.memory_tracker.peak_bytes.load(Ordering::Relaxed);
+    let active_pool = state.connection_pool.active.load(Ordering::Relaxed);
+
+    let metrics = format!(
+        "# HELP chat_rooms_total Total number of active chat rooms\n\
+         # TYPE chat_rooms_total gauge\n\
+         chat_rooms_total {}\n\
+         # HELP chat_connections_total Total active WebSocket connections\n\
+         # TYPE chat_connections_total gauge\n\
+         chat_connections_total {}\n\
+         # HELP chat_users_total Total users across all rooms\n\
+         # TYPE chat_users_total gauge\n\
+         chat_users_total {}\n\
+         # HELP chat_messages_total Total messages in memory\n\
+         # TYPE chat_messages_total gauge\n\
+         chat_messages_total {}\n\
+         # HELP chat_memory_bytes Current memory usage in bytes\n\
+         # TYPE chat_memory_bytes gauge\n\
+         chat_memory_bytes {}\n\
+         # HELP chat_memory_peak_bytes Peak memory usage in bytes\n\
+         # TYPE chat_memory_peak_bytes gauge\n\
+         chat_memory_peak_bytes {}\n\
+         # HELP chat_connection_pool_active Active connections in pool\n\
+         # TYPE chat_connection_pool_active gauge\n\
+         chat_connection_pool_active {}\n",
+        room_count, connections, total_users, total_messages, memory, peak_memory, active_pool
+    );
+
+    Response::builder()
+        .header("Content-Type", "text/plain; version=0.0.4")
+        .body(metrics)
+        .unwrap()
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
@@ -1753,22 +1954,21 @@ async fn main() {
         let _ = tx.send(());
     });
 
+    // Configure CORS
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION]);
+
     let app = Router::new()
         .route("/", get(root_redirect))
         .route("/main", get(main_room_handler))
-        .route(
-            "/ws/:room",
-            get(|path, state, cookie: Option<UserCookie>, ws| async move {
-                // We inject `Option<String>` for IP if you want to track IP
-                let ip_addr = None;
-                match ws_handler(path, state, cookie, ws, ip_addr).await {
-                    Ok(response) => response,
-                    Err(html) => html.into_response(),
-                }
-            }),
-        )
-        .route("/:room", get(room_handler))
+        .route("/health", get(health_handler))
+        .route("/metrics", get(metrics_handler))
+        .route("/ws/{room}", get(ws_handler))
+        .route("/{room}", get(room_handler))
         .route("/robots.txt", get(robots_txt_handler))
+        .layer(cors)
         .with_state(app_state);
 
     let port = std::env::var("PORT")
@@ -1778,7 +1978,7 @@ async fn main() {
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
 
     info!("Listening on {}", addr);
-    let server = Server::bind(addr).serve(app.into_make_service());
+    let server = Server::bind(addr).serve(app.into_make_service_with_connect_info::<SocketAddr>());
 
     tokio::select! {
         result = server => {

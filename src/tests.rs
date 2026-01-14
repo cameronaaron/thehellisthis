@@ -44,7 +44,7 @@ async fn test_main_room_handler() {
 async fn test_room_handler_invalid_length() {
     let app_state = Arc::new(AppState::new());
     let app = Router::new()
-        .route("/:room", get(room_handler))
+        .route("/{room}", get(room_handler))
         .with_state(app_state);
 
     let response = app
@@ -62,7 +62,7 @@ async fn test_room_handler_invalid_length() {
 async fn test_room_handler_reserved_path() {
     let app_state = Arc::new(AppState::new());
     let app = Router::new()
-        .route("/:room", get(room_handler))
+        .route("/{room}", get(room_handler))
         .with_state(app_state);
 
     let response = app

@@ -1,0 +1,41 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "infinite-chat",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-04-03",
+  
+  // Enable observability for logging
+  "observability": {
+    "enabled": true
+  },
+  
+  // Container configuration for the Rust WebSocket server
+  "containers": [
+    {
+      // Path to Dockerfile in parent directory
+      "image": "../Dockerfile.cloudflare",
+      "class_name": "InfiniteChatContainer",
+      "name": "infinite-chat-container",
+      // Maximum concurrent container instances
+      "max_instances": 5
+    }
+  ],
+  
+  // Durable Objects binding
+  "durable_objects": {
+    "bindings": [
+      {
+        "class_name": "InfiniteChatContainer",
+        "name": "CHAT_CONTAINER"
+      }
+    ]
+  },
+  
+  // Required migration for new SQLite-backed Durable Objects
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["InfiniteChatContainer"]
+    }
+  ]
+}
