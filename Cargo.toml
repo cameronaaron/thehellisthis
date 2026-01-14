@@ -48,13 +48,8 @@ rustls-pemfile = "1.0"
 
 # Add these new dependencies
 regex = "1.10.2"
-html-escape = "0.2.13"
-redis = { version = "0.23", features = ["tokio-comp", "aio"] }
-deadpool-redis = { version = "0.12", features = ["rt_tokio_1"] }
 lazy_static = "1.5.0"
-tokio-tungstenite = "0.24.0"
 thiserror = "1.0"
-tungstenite = "0.24.0"
 [dev-dependencies]
 # Move test-only dependencies here
 tokio = { version = "1", features = ["full"] }

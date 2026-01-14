@@ -2,4 +2,4 @@ build:
   languages:
     - rust
 run:
-  web: ./target/release/init
+  web: ./target/release/infinite-chat

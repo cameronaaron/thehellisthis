@@ -1,36 +1,36 @@
+#[cfg(test)]
 mod tests;
 
+use async_trait::async_trait;
+use axum::extract::ws::{Message, WebSocket};
 use axum::{
-    extract::{Path, State, WebSocketUpgrade, FromRequestParts},
+    extract::{FromRequestParts, Path, State, WebSocketUpgrade},
     response::{Html, IntoResponse, Redirect, Response},
     routing::get,
     Router,
 };
-use axum::extract::ws::{Message, WebSocket};
+use axum_server::Server;
+use comrak::{markdown_to_html, ComrakOptions};
 use futures::{SinkExt, StreamExt};
+use http::request::Parts;
+use lazy_static::lazy_static;
+use rand::prelude::SliceRandom;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::SystemTime;
 use std::{
     collections::{HashMap, VecDeque},
     net::SocketAddr,
     sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::sync::{broadcast, RwLock, Mutex};
-use uuid::Uuid;
-use tracing::{info, warn, error, debug};
-use comrak::{ComrakOptions, markdown_to_html};
-use rand::prelude::SliceRandom;
-use axum_server::Server;
-use async_trait::async_trait;
-use http::request::Parts;
-use tower_cookies::Cookie;
-use ammonia;
-use lazy_static::lazy_static;
-use regex::Regex;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use thiserror::Error;
-use std::sync::atomic::AtomicU64;
-use std::time::SystemTime;
+use tokio::sync::{broadcast, Mutex, RwLock};
+use tower_cookies::Cookie;
+use tracing::{debug, error, info, warn};
+use uuid::Uuid;
 
 // Constants and settings
 const MAX_ROOMS: usize = 100;
@@ -44,19 +44,14 @@ const MESSAGE_RATE_LIMIT: Duration = Duration::from_millis(500);
 const MAX_MESSAGES_PER_WINDOW: usize = 30;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(6);
-const RECONNECTION_TIMEOUT: Duration = Duration::from_secs(300);
-const MAX_RECONNECT_ATTEMPTS: u32 = 5;
-
 const ROOM_CLEANUP_INTERVAL: Duration = Duration::from_secs(3600);
-const MAX_ROOM_AGE: Duration = Duration::from_secs(86400); 
 const MAX_TOTAL_ROOMS_MEMORY: usize = 400_000_000;
 const MAX_MESSAGES_PER_ROOM: usize = 500;
 const MAX_MESSAGE_AGE: Duration = Duration::from_secs(86400 * 30);
 const CLEANUP_BATCH_SIZE: usize = 100;
 
 // Memory + reconnection
-const ESTIMATED_MESSAGE_SIZE: usize = 1024; 
-const RECONNECT_BACKOFF_BASE: Duration = Duration::from_secs(5);
+const ESTIMATED_MESSAGE_SIZE: usize = 1024;
 
 // Rate limiting
 const MAX_CONCURRENT_CONNECTIONS_PER_IP: usize = 3;
@@ -66,18 +61,13 @@ const SANITIZE_TIMEOUT: Duration = Duration::from_millis(50);
 const MAX_PAYLOAD_SIZE: usize = 512 * 1024;
 
 // Per-user constraints
-const MAX_USER_ID_LEN: usize = 36; // Typical UUID length
 const MAX_CONCURRENT_USERS: usize = 400;
-const MAX_MEMORY_PER_USER: usize = 1024 * 1024; // 1MB per user
-const MAX_BACKOFF_ATTEMPTS: u32 = 3;
-const BACKOFF_BASE_MS: u64 = 1000;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct RateLimiter {
     window_start: Instant,
     message_count: usize,
     join_attempts: usize,
-    burst_allowance: usize,
 }
 
 impl RateLimiter {
@@ -86,7 +76,6 @@ impl RateLimiter {
             window_start: Instant::now(),
             message_count: 0,
             join_attempts: 0,
-            burst_allowance: 3,
         }
     }
 
@@ -108,30 +97,6 @@ impl RateLimiter {
     fn can_join_room(&mut self) -> bool {
         self.join_attempts += 1;
         self.join_attempts <= MAX_ROOM_JOIN_ATTEMPTS
-    }
-
-    fn check_rate_limit(&mut self) -> Result<(), ChatError> {
-        let now = Instant::now();
-        if now.duration_since(self.window_start) > RATE_LIMIT_WINDOW {
-            self.reset_counts(now);
-            Ok(())
-        } else if self.message_count >= MAX_MESSAGES_PER_WINDOW {
-            if self.burst_allowance > 0 {
-                self.burst_allowance -= 1;
-                Ok(())
-            } else {
-                Err(ChatError::RateLimitError("Too many messages".into()))
-            }
-        } else {
-            self.message_count += 1;
-            Ok(())
-        }
-    }
-
-    fn reset_counts(&mut self, now: Instant) {
-        self.window_start = now;
-        self.message_count = 0;
-        self.burst_allowance = 3;
     }
 }
 
@@ -215,8 +180,8 @@ where
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct OutgoingMessage {
     message_id: Uuid,
-    user_id: String,      // ** Added user_id to differentiate server-side
-    animal_name: String,  
+    user_id: String, // ** Added user_id to differentiate server-side
+    animal_name: String,
     text: String,
     timestamp: String,
 }
@@ -235,42 +200,37 @@ impl OutgoingMessage {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 enum SystemEvent {
-    UserJoined { user_id: String, animal_name: String },
-    UserLeft { user_id: String, animal_name: String },
-    Typing { user_id: String, animal_name: String, is_typing: bool },
-    ReadReceipt { user_id: String, animal_name: String, message_id: Uuid },
-    ServerShutdown { reason: String },
+    UserJoined {
+        user_id: String,
+        animal_name: String,
+    },
+    UserLeft {
+        user_id: String,
+        animal_name: String,
+    },
+    Typing {
+        user_id: String,
+        animal_name: String,
+        is_typing: bool,
+    },
+    ReadReceipt {
+        user_id: String,
+        animal_name: String,
+        message_id: Uuid,
+    },
+    ServerShutdown {
+        reason: String,
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(tag = "type")]
 enum OutgoingEvent {
-    Message {
-        message: OutgoingMessage,
-    },
-    System {
-        event: SystemEvent,
-    },
-    UserCount {
-        count: usize,
-    },
+    Message { message: OutgoingMessage },
+    System { event: SystemEvent },
+    UserCount { count: usize },
     Heartbeat,
     ReconnectToken { token: String },
-}
-
-#[derive(Serialize, Deserialize)]
-struct IncomingMessage {
-    text: String,
-}
-
-#[derive(Serialize, Deserialize)]
-struct IncomingTyping {
-    is_typing: bool,
-}
-
-#[derive(Serialize, Deserialize)]
-struct IncomingReadReceipt {
-    message_id: Uuid,
 }
 
 // Connection states
@@ -280,50 +240,16 @@ enum ConnectionState {
         last_heartbeat: Instant,
         connection_id: String,
     },
-    Disconnected {
-        since: Instant,
-        attempts: u32,
-        last_connection_id: String,
-    },
+    Disconnected { since: Instant },
 }
 
-impl ConnectionState {
-    fn attempts(&self) -> u32 {
-        match self {
-            ConnectionState::Connected { .. } => 0,
-            ConnectionState::Disconnected { attempts, .. } => *attempts,
-        }
-    }
-
-    fn update_heartbeat(&mut self) -> Result<(), ChatError> {
-        match self {
-            ConnectionState::Connected { last_heartbeat, .. } => {
-                *last_heartbeat = Instant::now();
-                Ok(())
-            }
-            _ => Err(ChatError::ConnectionError("Not connected".into())),
-        }
-    }
-
-    fn is_stale(&self) -> bool {
-        match self {
-            ConnectionState::Connected { last_heartbeat, .. } => {
-                last_heartbeat.elapsed() > HEARTBEAT_TIMEOUT
-            }
-            ConnectionState::Disconnected { since, .. } => {
-                since.elapsed() > RECONNECTION_TIMEOUT
-            }
-        }
-    }
-}
-
+#[derive(Clone)]
 struct UserData {
     user_id: String,
     animal_name: String,
     last_active: Instant,
     last_message_time: Instant,
     connection_state: ConnectionState,
-    connection_id: String,
     last_read_message: Option<Uuid>,
     is_typing: bool,
     rate_limiter: RateLimiter,
@@ -331,7 +257,6 @@ struct UserData {
 }
 
 struct RoomState {
-    created_at: Instant,
     last_activity: Instant,
     total_memory_bytes: AtomicUsize,
     users: HashMap<String, UserData>,
@@ -453,7 +378,9 @@ impl ConnectionPool {
 
         if counter.fetch_add(1, Ordering::SeqCst) >= MAX_CONCURRENT_CONNECTIONS_PER_IP {
             counter.fetch_sub(1, Ordering::SeqCst);
-            return Err(ChatError::ResourceLimit("Too many connections from IP".into()));
+            return Err(ChatError::ResourceLimit(
+                "Too many connections from IP".into(),
+            ));
         }
 
         if self.active.fetch_add(1, Ordering::SeqCst) >= MAX_CONCURRENT_USERS {
@@ -528,26 +455,142 @@ struct AppState {
 fn create_room() -> RoomState {
     info!("Creating a new room with a large, diverse set of animal names...");
     let mut animals = vec![
-        "dog","cat","lion","tiger","elephant","giraffe","koala","penguin","panda","dolphin",
-        "whale","bear","wolf","zebra","fox","owl","rabbit","kangaroo","monkey","snake",
-        "parrot","cheetah","jaguar","lynx","otter","seal","peacock","sparrow","crow","hedgehog",
-        "flamingo","shark","stingray","starfish","octopus","seahorse","crab","lobster","squid",
-        "antelope","badger","bison","buffalo","camel","chameleon","crocodile","eagle","ferret",
-        "gecko","gorilla","heron","hyena","ibis","iguana","lemur","leopard","manatee","mole",
-        "moose","narwhal","newt","ostrich","platypus","porcupine","raven","salamander","sloth",
-        "stork","tapir","toad","turkey","vulture","wallaby","walrus","wolverine","yak","hippo",
-        "rhino","anteater","armadillo","beaver","butterfly","cormorant","coyote","dingo","dragonfly",
-        "firefly","grasshopper","hamster","honeyeater","hummingbird","kingfisher","ladybug","llama",
-        "meerkat","moth","ox","puffin","quail","ringtail","swan","tortoise","turtle","woodpecker",
-        "wombat","orangutan","seal","manta-ray","crow","robin","grasshopper","musk-ox",
-        "kiwi","harpy-eagle","peafowl","margay","capybara","squid","urchin","bandicoot","guinea-pig",
-        "axolotl","dugong","fennec-fox","lynx","pika","tamarin","aardwolf","colugo","dhole","galago",
+        "dog",
+        "cat",
+        "lion",
+        "tiger",
+        "elephant",
+        "giraffe",
+        "koala",
+        "penguin",
+        "panda",
+        "dolphin",
+        "whale",
+        "bear",
+        "wolf",
+        "zebra",
+        "fox",
+        "owl",
+        "rabbit",
+        "kangaroo",
+        "monkey",
+        "snake",
+        "parrot",
+        "cheetah",
+        "jaguar",
+        "lynx",
+        "otter",
+        "seal",
+        "peacock",
+        "sparrow",
+        "crow",
+        "hedgehog",
+        "flamingo",
+        "shark",
+        "stingray",
+        "starfish",
+        "octopus",
+        "seahorse",
+        "crab",
+        "lobster",
+        "squid",
+        "antelope",
+        "badger",
+        "bison",
+        "buffalo",
+        "camel",
+        "chameleon",
+        "crocodile",
+        "eagle",
+        "ferret",
+        "gecko",
+        "gorilla",
+        "heron",
+        "hyena",
+        "ibis",
+        "iguana",
+        "lemur",
+        "leopard",
+        "manatee",
+        "mole",
+        "moose",
+        "narwhal",
+        "newt",
+        "ostrich",
+        "platypus",
+        "porcupine",
+        "raven",
+        "salamander",
+        "sloth",
+        "stork",
+        "tapir",
+        "toad",
+        "turkey",
+        "vulture",
+        "wallaby",
+        "walrus",
+        "wolverine",
+        "yak",
+        "hippo",
+        "rhino",
+        "anteater",
+        "armadillo",
+        "beaver",
+        "butterfly",
+        "cormorant",
+        "coyote",
+        "dingo",
+        "dragonfly",
+        "firefly",
+        "grasshopper",
+        "hamster",
+        "honeyeater",
+        "hummingbird",
+        "kingfisher",
+        "ladybug",
+        "llama",
+        "meerkat",
+        "moth",
+        "ox",
+        "puffin",
+        "quail",
+        "ringtail",
+        "swan",
+        "tortoise",
+        "turtle",
+        "woodpecker",
+        "wombat",
+        "orangutan",
+        "seal",
+        "manta-ray",
+        "crow",
+        "robin",
+        "grasshopper",
+        "musk-ox",
+        "kiwi",
+        "harpy-eagle",
+        "peafowl",
+        "margay",
+        "capybara",
+        "squid",
+        "urchin",
+        "bandicoot",
+        "guinea-pig",
+        "axolotl",
+        "dugong",
+        "fennec-fox",
+        "lynx",
+        "pika",
+        "tamarin",
+        "aardwolf",
+        "colugo",
+        "dhole",
+        "galago",
     ];
     animals.shuffle(&mut rand::thread_rng());
     let (tx, _) = broadcast::channel::<OutgoingEvent>(1000);
 
     RoomState {
-        created_at: Instant::now(),
         last_activity: Instant::now(),
         total_memory_bytes: AtomicUsize::new(0),
         users: HashMap::new(),
@@ -578,20 +621,26 @@ impl RoomState {
         name
     }
 
-    fn add_message(&mut self, msg: OutgoingMessage) {
+    fn add_message(&mut self, msg: OutgoingMessage, memory_tracker: &MemoryTracker) {
         self.last_activity = Instant::now();
         let msg_size = msg.estimate_size();
 
         let current_memory = self.total_memory_bytes.load(Ordering::Relaxed);
         if current_memory + msg_size > MAX_TOTAL_ROOMS_MEMORY {
-            self.prune_old_messages(msg_size);
+            self.prune_old_messages(msg_size, memory_tracker);
         }
 
-        self.total_memory_bytes.fetch_add(msg_size, Ordering::SeqCst);
+        if !memory_tracker.add_bytes(msg_size) {
+            warn!("Dropping message because memory budget exceeded");
+            return;
+        }
+
+        self.total_memory_bytes
+            .fetch_add(msg_size, Ordering::SeqCst);
         self.chat_history.push(msg);
     }
 
-    fn prune_old_messages(&mut self, needed_space: usize) {
+    fn prune_old_messages(&mut self, needed_space: usize, memory_tracker: &MemoryTracker) {
         let mut removed_size = 0;
         while removed_size < needed_space && !self.chat_history.is_empty() {
             if let Some(msg) = self.chat_history.first() {
@@ -602,6 +651,10 @@ impl RoomState {
         let current = self.total_memory_bytes.load(Ordering::SeqCst);
         self.total_memory_bytes
             .store(current.saturating_sub(removed_size), Ordering::SeqCst);
+
+        if removed_size > 0 {
+            memory_tracker.remove_bytes(removed_size);
+        }
     }
 
     fn broadcast_user_count(&self) {
@@ -609,20 +662,18 @@ impl RoomState {
         let connected_count = self
             .users
             .values()
-            .filter(|u| {
-                match &u.connection_state {
-                    ConnectionState::Connected { last_heartbeat, .. } => {
-                        now.duration_since(*last_heartbeat) <= HEARTBEAT_TIMEOUT
-                    }
-                    _ => false,
+            .filter(|u| match &u.connection_state {
+                ConnectionState::Connected { last_heartbeat, .. } => {
+                    now.duration_since(*last_heartbeat) <= HEARTBEAT_TIMEOUT
                 }
+                _ => false,
             })
             .count();
 
         info!("Broadcasting user count: {}", connected_count);
-        let _ = self
-            .sender
-            .send(OutgoingEvent::UserCount { count: connected_count });
+        let _ = self.sender.send(OutgoingEvent::UserCount {
+            count: connected_count,
+        });
     }
 
     fn broadcast_system_event(&self, event: SystemEvent) {
@@ -663,40 +714,6 @@ impl RoomState {
         }
     }
 
-    async fn cleanup_users(&mut self, now: Instant) -> Result<Vec<(String, String)>, &'static str> {
-        let mut removed_users = Vec::new();
-        let mut users_to_remove = Vec::new();
-
-        for (user_id, user) in &mut self.users {
-            let remove_due_to_inactivity = now.duration_since(user.last_message_time) > INACTIVE_TIMEOUT;
-            let should_remove = match &user.connection_state {
-                ConnectionState::Connected { last_heartbeat, .. } => {
-                    remove_due_to_inactivity || now.duration_since(*last_heartbeat) > HEARTBEAT_TIMEOUT
-                }
-                ConnectionState::Disconnected { since, attempts, .. } => {
-                    now.duration_since(*since) > RECONNECTION_TIMEOUT
-                        || *attempts > MAX_RECONNECT_ATTEMPTS
-                        || remove_due_to_inactivity
-                }
-            };
-            if should_remove {
-                users_to_remove.push(user_id.clone());
-                removed_users.push((user_id.clone(), user.animal_name.clone()));
-            }
-        }
-
-        for user_id in users_to_remove {
-            self.users.remove(&user_id);
-        }
-
-        Ok(removed_users)
-    }
-
-    fn get_reconnection_timeout(&self, attempts: u32) -> Duration {
-        let backoff = RECONNECT_BACKOFF_BASE * 2u32.pow(attempts);
-        std::cmp::min(backoff, RECONNECTION_TIMEOUT)
-    }
-
     fn preserve_messages(&mut self) {
         if self.chat_history.len() > MAX_MESSAGES_PER_ROOM + 100 {
             let start_idx = self.chat_history.len() - MAX_MESSAGES_PER_ROOM;
@@ -726,47 +743,6 @@ impl RoomState {
         } else {
             true
         }
-    }
-
-    fn update_memory_usage(&mut self) {
-        let new_total = self
-            .chat_history
-            .iter()
-            .map(|msg| msg.estimate_size())
-            .sum::<usize>()
-            + self.users.len() * MAX_MEMORY_PER_USER;
-
-        self.total_memory_bytes.store(new_total, Ordering::SeqCst);
-    }
-
-    fn prune_message_queue(&mut self) {
-        while self.total_memory_bytes.load(Ordering::Relaxed) > MAX_TOTAL_ROOMS_MEMORY {
-            if !self.chat_history.is_empty() {
-                self.chat_history.remove(0);
-                self.update_memory_usage();
-            } else {
-                break;
-            }
-        }
-    }
-
-    fn broadcast_with_retry(&self, event: OutgoingEvent) -> Result<(), &'static str> {
-        for attempt in 0..MAX_BACKOFF_ATTEMPTS {
-            match self.sender.send(event.clone()) {
-                Ok(_) => return Ok(()),
-                Err(_) if attempt < MAX_BACKOFF_ATTEMPTS - 1 => {
-                    tokio::task::spawn(async move {
-                        tokio::time::sleep(Duration::from_millis(
-                            BACKOFF_BASE_MS * 2u64.pow(attempt),
-                        ))
-                        .await;
-                    });
-                    continue;
-                }
-                Err(_) => return Err("Failed to broadcast after retries"),
-            }
-        }
-        Err("Broadcast failed")
     }
 
     async fn trigger_cleanup(&mut self) {
@@ -822,22 +798,6 @@ impl AppState {
             }
         }
     }
-
-    async fn graceful_shutdown(&self) {
-        info!("Starting graceful shutdown...");
-        let mut rooms = self.rooms.write().await;
-        for (room_name, room) in rooms.iter_mut() {
-            info!("Shutting down room: {}", room_name);
-            let shutdown_msg = OutgoingEvent::System {
-                event: SystemEvent::ServerShutdown {
-                    reason: "Server maintenance".into(),
-                },
-            };
-            let _ = room.sender.send(shutdown_msg);
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        info!("Graceful shutdown complete");
-    }
 }
 
 /// Creates two cookies for a user: `user_id` and `animal_name`.
@@ -873,10 +833,21 @@ async fn main_room_handler() -> impl IntoResponse {
 }
 
 /// Serves the dynamic room page
-async fn room_handler(Path(room): Path<String>, State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn room_handler(
+    Path(room): Path<String>,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
     info!("HTTP request for room: {}", room);
 
-    let reserved_paths = ["robots.txt", "sitemap.xml", "favicon.ico", ".well-known", "main", "admin", "api"];
+    let reserved_paths = [
+        "robots.txt",
+        "sitemap.xml",
+        "favicon.ico",
+        ".well-known",
+        "main",
+        "admin",
+        "api",
+    ];
     if reserved_paths.contains(&room.as_str()) {
         warn!("Attempted to access reserved path as room: {}", room);
         return Html("Invalid room name".to_string());
@@ -905,7 +876,9 @@ async fn room_handler(Path(room): Path<String>, State(state): State<Arc<AppState
     }
 
     if room.len() > MAX_ROOM_NAME_LEN
-        || !room.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+        || !room
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
     {
         warn!("Invalid room name requested: {}", room);
         return Html("Invalid room name".to_string());
@@ -923,7 +896,10 @@ fn validate_input(text: &str, max_len: usize) -> Result<(), &'static str> {
     if text.len() > max_len {
         return Err("Input too long");
     }
-    if !text.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+    if !text
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    {
         return Err("Input contains invalid characters");
     }
     Ok(())
@@ -945,6 +921,10 @@ async fn ws_handler(
             return Err(Html(e.to_string()));
         }
         if !state.connection_pool.can_accept(ip).await {
+            let _ = state
+                .security_manager
+                .record_suspicious_activity(ip)
+                .await;
             return Err(Html("Too many connections from your IP".to_string()));
         }
         if let Err(e) = state.connection_pool.add_connection(ip).await {
@@ -1014,33 +994,62 @@ async fn ws_handler(
             .unwrap_or((String::new(), String::new()));
 
         // Logic: If the user_id is valid and in room_state, reuse it. Else assign new.
-        let (actual_user_id, actual_animal_name) = if !cookie_user_id.is_empty() && !cookie_animal.is_empty() {
-            if let Some(user) = room_state.users.get_mut(&cookie_user_id) {
-                // Reuse the same user ID
-                let user_id = user.user_id.clone();
-                info!(
-                    "Cookie indicates existing user_id {} with animal_name {}",
-                    user_id, user.animal_name
-                );
+        let (actual_user_id, actual_animal_name) =
+            if !cookie_user_id.is_empty() && !cookie_animal.is_empty() {
+                if let Some(user) = room_state.users.get_mut(&cookie_user_id) {
+                    // Reuse the same user ID
+                    let user_id = user.user_id.clone();
+                    info!(
+                        "Cookie indicates existing user_id {} with animal_name {}",
+                        user_id, user.animal_name
+                    );
 
-                // If the user has a stale connection, reclaim them
-                user.connection_state = ConnectionState::Connected {
-                    last_heartbeat: now,
-                    connection_id: connection_id.clone(),
-                };
-                user.last_active = now;
-                user.last_message_time = now;
+                    // If the user has a stale connection, reclaim them
+                    user.connection_state = ConnectionState::Connected {
+                        last_heartbeat: now,
+                        connection_id: connection_id.clone(),
+                    };
+                    user.last_active = now;
+                    user.last_message_time = now;
 
-                (user_id, user.animal_name.clone())
-            } else {
-                info!("Cookie had user_id {}, but not found in room. Creating new user...", cookie_user_id);
-                let user_id = Uuid::new_v4().to_string();
-                let name = if !cookie_animal.is_empty() {
-                    cookie_animal
+                    (user_id, user.animal_name.clone())
                 } else {
-                    room_state.assign_animal()
-                };
+                    info!(
+                        "Cookie had user_id {}, but not found in room. Creating new user...",
+                        cookie_user_id
+                    );
+                    let user_id = Uuid::new_v4().to_string();
+                    let name = if !cookie_animal.is_empty() {
+                        cookie_animal
+                    } else {
+                        room_state.assign_animal()
+                    };
 
+                    room_state.users.insert(
+                        user_id.clone(),
+                        UserData {
+                            user_id: user_id.clone(),
+                            animal_name: name.clone(),
+                            last_active: now,
+                            last_message_time: now,
+                            connection_state: ConnectionState::Connected {
+                                last_heartbeat: now,
+                                connection_id: connection_id.clone(),
+                            },
+                            last_read_message: None,
+                            is_typing: false,
+                            rate_limiter: RateLimiter::new(),
+                            last_sanitized_message: None,
+                        },
+                    );
+
+                    (user_id, name)
+                }
+            } else {
+                // No cookie or invalid cookie, new user
+                info!("No valid user_id cookie. Creating brand new user...");
+                let user_id = Uuid::new_v4().to_string();
+                let name = room_state.assign_animal();
                 room_state.users.insert(
                     user_id.clone(),
                     UserData {
@@ -1052,41 +1061,14 @@ async fn ws_handler(
                             last_heartbeat: now,
                             connection_id: connection_id.clone(),
                         },
-                        connection_id: connection_id.clone(),
                         last_read_message: None,
                         is_typing: false,
                         rate_limiter: RateLimiter::new(),
                         last_sanitized_message: None,
                     },
                 );
-
                 (user_id, name)
-            }
-        } else {
-            // No cookie or invalid cookie, new user
-            info!("No valid user_id cookie. Creating brand new user...");
-            let user_id = Uuid::new_v4().to_string();
-            let name = room_state.assign_animal();
-            room_state.users.insert(
-                user_id.clone(),
-                UserData {
-                    user_id: user_id.clone(),
-                    animal_name: name.clone(),
-                    last_active: now,
-                    last_message_time: now,
-                    connection_state: ConnectionState::Connected {
-                        last_heartbeat: now,
-                        connection_id: connection_id.clone(),
-                    },
-                    connection_id: connection_id.clone(),
-                    last_read_message: None,
-                    is_typing: false,
-                    rate_limiter: RateLimiter::new(),
-                    last_sanitized_message: None,
-                },
-            );
-            (user_id, name)
-        };
+            };
 
         // Send user joined event
         let _ = room_state.sender.send(OutgoingEvent::System {
@@ -1099,12 +1081,7 @@ async fn ws_handler(
 
         // Create cookies
         let (uid_cookie, an_cookie) = create_user_cookies(&actual_user_id, &actual_animal_name);
-        (
-            actual_user_id,
-            actual_animal_name,
-            uid_cookie,
-            an_cookie,
-        )
+        (actual_user_id, actual_animal_name, uid_cookie, an_cookie)
     };
 
     info!(
@@ -1194,7 +1171,6 @@ async fn handle_websocket(
                         last_heartbeat: now,
                         connection_id: connection_id.clone(),
                     },
-                    connection_id: connection_id.clone(),
                     last_read_message: None,
                     is_typing: false,
                     rate_limiter: RateLimiter::new(),
@@ -1210,7 +1186,10 @@ async fn handle_websocket(
         }
         room_state.broadcast_user_count();
 
-        (room_state.sender.subscribe(), room_state.chat_history.clone())
+        (
+            room_state.sender.subscribe(),
+            room_state.chat_history.clone(),
+        )
     };
 
     let ws_tx = Arc::new(Mutex::new(ws_tx));
@@ -1229,7 +1208,10 @@ async fn handle_websocket(
             }) {
                 let mut tx = ws_tx.lock().await;
                 if tx.send(Message::Text(json)).await.is_err() {
-                    warn!("Client disconnected during history send for user_id {}", user_id);
+                    warn!(
+                        "Client disconnected during history send for user_id {}",
+                        user_id
+                    );
                     cleanup_user(&state, &room, &user_id, &connection_id, None).await;
                     return;
                 }
@@ -1244,7 +1226,7 @@ async fn handle_websocket(
         reconnect_token, user_id, room
     );
     if let Ok(json) = serde_json::to_string(&OutgoingEvent::ReconnectToken {
-        token: reconnect_token
+        token: reconnect_token,
     }) {
         let mut tx = ws_tx.lock().await;
         let _ = tx.send(Message::Text(json)).await;
@@ -1328,7 +1310,10 @@ async fn handle_websocket(
                                                     && now.duration_since(*last_time)
                                                         < SANITIZE_TIMEOUT
                                                 {
-                                                    warn!("Duplicate message from user_id {}", user_id);
+                                                    warn!(
+                                                        "Duplicate message from user_id {}",
+                                                        user_id
+                                                    );
                                                     continue;
                                                 }
                                             }
@@ -1346,11 +1331,18 @@ async fn handle_websocket(
                                                     }
                                                     message_count += 1;
                                                     if message_count > MAX_MESSAGES_PER_WINDOW {
-                                                        warn!("Rate limit exceeded for user_id {}", user_id);
+                                                        warn!(
+                                                            "Rate limit exceeded for user_id {}",
+                                                            user_id
+                                                        );
                                                         continue;
                                                     }
                                                     if text.len() > MAX_MESSAGE_LEN {
-                                                        warn!("Message too long from user_id {}: {}", user_id, text.len());
+                                                        warn!(
+                                                            "Message too long from user_id {}: {}",
+                                                            user_id,
+                                                            text.len()
+                                                        );
                                                         continue;
                                                     }
 
@@ -1375,12 +1367,15 @@ async fn handle_websocket(
                                                     };
 
                                                     user.last_message_time = Instant::now();
-                                                    room_state.add_message(outgoing.clone());
-                                                    let _ = room_state
-                                                        .sender
-                                                        .send(OutgoingEvent::Message {
+                                                    room_state.add_message(
+                                                        outgoing.clone(),
+                                                        &state.memory_tracker,
+                                                    );
+                                                    let _ = room_state.sender.send(
+                                                        OutgoingEvent::Message {
                                                             message: outgoing,
-                                                        });
+                                                        },
+                                                    );
                                                 }
                                                 Err(e) => {
                                                     warn!(
@@ -1392,20 +1387,36 @@ async fn handle_websocket(
                                             }
                                         }
                                         ClientEvent::Typing { is_typing } => {
-                                            user.is_typing = is_typing;
-                                            room_state.broadcast_system_event(SystemEvent::Typing {
-                                                user_id: user.user_id.clone(),
-                                                animal_name: user.animal_name.clone(),
-                                                is_typing,
-                                            });
+                                            let (uid, animal) = {
+                                                user.is_typing = is_typing;
+                                                (
+                                                    user.user_id.clone(),
+                                                    user.animal_name.clone(),
+                                                )
+                                            };
+
+                                            room_state.broadcast_system_event(
+                                                SystemEvent::Typing {
+                                                    user_id: uid,
+                                                    animal_name: animal,
+                                                    is_typing,
+                                                },
+                                            );
                                         }
                                         ClientEvent::ReadReceipt { message_id } => {
                                             if let Ok(msg_id) = Uuid::parse_str(&message_id) {
-                                                user.last_read_message = Some(msg_id);
+                                                let (uid, animal) = {
+                                                    user.last_read_message = Some(msg_id);
+                                                    (
+                                                        user.user_id.clone(),
+                                                        user.animal_name.clone(),
+                                                    )
+                                                };
+
                                                 room_state.broadcast_system_event(
                                                     SystemEvent::ReadReceipt {
-                                                        user_id: user.user_id.clone(),
-                                                        animal_name: user.animal_name.clone(),
+                                                        user_id: uid,
+                                                        animal_name: animal,
                                                         message_id: msg_id,
                                                     },
                                                 );
@@ -1434,10 +1445,16 @@ async fn handle_websocket(
                         }
                     }
                     Message::Binary(_) => {
-                        warn!("Unexpected binary message from user_id {}, ignoring...", user_id);
+                        warn!(
+                            "Unexpected binary message from user_id {}, ignoring...",
+                            user_id
+                        );
                     }
                     Message::Ping(payload) => {
-                        debug!("Received ping from user_id {} with payload {:?}", user_id, payload);
+                        debug!(
+                            "Received ping from user_id {} with payload {:?}",
+                            user_id, payload
+                        );
                         let mut tx = ws_tx.lock().await;
                         if tx.send(Message::Pong(payload)).await.is_err() {
                             warn!("Failed to send Pong to user_id {}", user_id);
@@ -1508,7 +1525,10 @@ async fn handle_websocket(
                         } = user.connection_state
                         {
                             *last_heartbeat = Instant::now();
-                            debug!("Updated last_heartbeat for user_id {} in room {}", user_id, room);
+                            debug!(
+                                "Updated last_heartbeat for user_id {} in room {}",
+                                user_id, room
+                            );
                         }
                     }
                 }
@@ -1524,7 +1544,10 @@ async fn handle_websocket(
         _ = heartbeat_task => (),
     }
 
-    info!("All tasks ended for user_id {} in room {}. Cleaning up.", user_id, room);
+    info!(
+        "All tasks ended for user_id {} in room {}. Cleaning up.",
+        user_id, room
+    );
     cleanup_user(&state, &room, &user_id, &connection_id, None).await;
 }
 
@@ -1551,7 +1574,11 @@ async fn cleanup_user(
     let mut rooms = state.rooms.write().await;
     if let Some(room_state) = rooms.get_mut(room) {
         if let Some(user) = room_state.users.get_mut(user_id) {
-            if let ConnectionState::Connected { connection_id: cur_id, .. } = &user.connection_state {
+            if let ConnectionState::Connected {
+                connection_id: cur_id,
+                ..
+            } = &user.connection_state
+            {
                 if cur_id == connection_id {
                     // Send "UserLeft" before switching to Disconnected
                     let _ = room_state.sender.send(OutgoingEvent::System {
@@ -1562,8 +1589,6 @@ async fn cleanup_user(
                     });
                     user.connection_state = ConnectionState::Disconnected {
                         since: Instant::now(),
-                        attempts: 0,
-                        last_connection_id: connection_id.to_string(),
                     };
                     room_state.broadcast_user_count();
                     info!("Set user_id {} in room {} as Disconnected", user_id, room);
@@ -1575,7 +1600,10 @@ async fn cleanup_user(
                 }
             }
         } else {
-            warn!("User_id {} not found in room {} during cleanup", user_id, room);
+            warn!(
+                "User_id {} not found in room {} during cleanup",
+                user_id, room
+            );
         }
     } else {
         warn!("Room {} not found during cleanup user_id {}", room, user_id);
@@ -1621,15 +1649,42 @@ async fn cleanup_rooms(state: &Arc<AppState>) {
     }
 }
 
+#[cfg(test)]
 fn generate_random_room_name() -> String {
     info!("Generating random room name...");
     let adjs = [
-        "latent", "mellow", "shiny", "mystic", "curious", "whimsical", "cosmic", "hidden", "vivid",
-        "serendipitous", "obscure", "nebular", "celestial", "fae", "ethereal",
+        "latent",
+        "mellow",
+        "shiny",
+        "mystic",
+        "curious",
+        "whimsical",
+        "cosmic",
+        "hidden",
+        "vivid",
+        "serendipitous",
+        "obscure",
+        "nebular",
+        "celestial",
+        "fae",
+        "ethereal",
     ];
     let nouns = [
-        "toy", "garden", "forest", "ocean", "cavern", "nebula", "playground", "bazaar", "temple",
-        "dojo", "lair", "grove", "spire", "oasis", "realm",
+        "toy",
+        "garden",
+        "forest",
+        "ocean",
+        "cavern",
+        "nebula",
+        "playground",
+        "bazaar",
+        "temple",
+        "dojo",
+        "lair",
+        "grove",
+        "spire",
+        "oasis",
+        "realm",
     ];
     let mut rng = rand::thread_rng();
     let a = adjs.choose(&mut rng).unwrap_or(&"hidden");
@@ -1652,7 +1707,7 @@ async fn robots_txt_handler() -> impl IntoResponse {
             Crawl-delay: 10\n\n\
             # Prevent access to WebSocket endpoints\n\
             Disallow: /ws/*\n"
-            .to_string(),
+                .to_string(),
         )
         .unwrap()
 }
@@ -1744,41 +1799,11 @@ fn validate_message(text: &str) -> Result<String, ChatError> {
     if text.len() > MAX_MESSAGE_LEN {
         return Err(ChatError::InvalidMessage("Message too long".into()));
     }
-    let clean_text = ammonia::clean(&text);
+    let clean_text = ammonia::clean(text);
     if clean_text.len() > MAX_MESSAGE_LEN {
-        return Err(ChatError::InvalidMessage("Sanitized message too long".into()));
+        return Err(ChatError::InvalidMessage(
+            "Sanitized message too long".into(),
+        ));
     }
     Ok(clean_text)
-}
-
-async fn handle_connection_error(
-    state: &Arc<AppState>,
-    room: &str,
-    user_id: &str,
-    error: &str,
-) -> Result<(), &'static str> {
-    let mut rooms = state.rooms.write().await;
-    if let Some(room_state) = rooms.get_mut(room) {
-        let (animal_name, connection_id) = if let Some(user) = room_state.users.get(user_id) {
-            (user.animal_name.clone(), user.connection_id.clone())
-        } else {
-            return Ok(());
-        };
-        if let Some(user) = room_state.users.get_mut(user_id) {
-            let attempts = user.connection_state.attempts();
-            user.connection_state = ConnectionState::Disconnected {
-                since: Instant::now(),
-                attempts: attempts + 1,
-                last_connection_id: connection_id,
-            };
-        }
-        let _ = room_state.broadcast_with_retry(OutgoingEvent::System {
-            event: SystemEvent::UserLeft {
-                user_id: user_id.to_string(),
-                animal_name,
-            },
-        })?;
-        room_state.broadcast_user_count();
-    }
-    Ok(())
 }
