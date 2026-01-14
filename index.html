@@ -196,6 +196,8 @@ h1 {
     margin-bottom: 0.25rem;
     font-size: 0.875rem;
     font-weight: 500;
+    max-width: 90%;
+    overflow: hidden;
 }
 
 .message .avatar {
@@ -214,6 +216,8 @@ h1 {
 }
 
 .message .message-content {
+    max-height: 400px;
+    overflow-y: auto;
     word-wrap: break-word;
     overflow-wrap: break-word;
 }
@@ -230,6 +234,7 @@ h1 {
     border-radius: 0.25rem;
     font-family: 'Courier New', monospace;
     font-size: 0.9em;
+    word-break: break-all;
 }
 
 .message .message-content pre {
@@ -431,6 +436,7 @@ h1 {
 
 .typing-indicator.hidden {
     display: none;
+    animation: none;
 }
 
 .modal {
@@ -714,6 +720,7 @@ class ChatApp {
         this.updateConnectionStatus('connected');
         this.sendButton.disabled = false;
         this.input.disabled = false;
+        this.input.focus();
     }
     
     handleWebSocketClose() {
@@ -791,15 +798,6 @@ class ChatApp {
         const isSent = (this.myUserId && msg.user_id === this.myUserId);
         this.renderMessage(msg, isSent);
         
-        // Manage message history
-        this.messageCount++;
-        if (this.messageCount > this.maxMessages) {
-            const oldestMessage = this.chat.querySelector('.message');
-            if (oldestMessage) {
-                oldestMessage.remove();
-            }
-        }
-        
         // Auto-scroll if user is at bottom
         if (this.shouldAutoScroll) {
             setTimeout(() => {
@@ -819,12 +817,17 @@ class ChatApp {
     }
     
     renderMessage(msg, isSent) {
-        const timestamp = this.formatTimestamp(parseInt(msg.timestamp));
+        // Prevent duplicate message renders
+        if (this.chat.querySelector(`[data-message-id="${msg.message_id}"]`)) {
+            return;
+        }
+        
+        const timestamp = this.formatTimestamp(this.parseTimestamp(msg.timestamp));
         
         const div = document.createElement('div');
         div.className = `message ${isSent ? 'sent' : 'received'}`;
-        div.setAttribute('data-message-id', msg.message_id);
-        div.setAttribute('data-user-id', msg.user_id);
+        div.dataset.messageId = msg.message_id;
+        div.dataset.userId = msg.user_id;
         div.setAttribute('role', 'article');
         div.setAttribute('aria-label', `Message from ${msg.animal_name} at ${timestamp}`);
         
@@ -837,6 +840,9 @@ class ChatApp {
         header.className = 'header';
         const name = document.createElement('strong');
         name.textContent = this.escapeHtml(msg.animal_name);
+        name.style.textOverflow = 'ellipsis';
+        name.style.whiteSpace = 'nowrap';
+        name.style.overflow = 'hidden';
         header.appendChild(avatar);
         header.appendChild(name);
         
@@ -853,6 +859,16 @@ class ChatApp {
         div.appendChild(tsDiv);
         
         this.chat.appendChild(div);
+        
+        // Increment count and cleanup if needed
+        this.messageCount++;
+        if (this.messageCount > this.maxMessages) {
+            const oldestMessage = this.chat.querySelector('.message');
+            if (oldestMessage) {
+                oldestMessage.remove();
+                this.messageCount--;
+            }
+        }
     }
     
     handleSystemEvent(event) {
@@ -864,16 +880,28 @@ class ChatApp {
                 this.myAnimalName = event.UserJoined.animal_name;
             }
             this.addSystemMessage(`${this.escapeHtml(event.UserJoined.animal_name)} appears in this strange realm`, 'success');
+            this.messageCount++;
         } else if (event.UserLeft) {
             this.typingUsers.delete(event.UserLeft.animal_name);
             this.updateTypingIndicator();
             this.addSystemMessage(`${this.escapeHtml(event.UserLeft.animal_name)} vanishes into the ether`);
+            this.messageCount++;
         } else if (event.Typing) {
             this.handleTypingIndicator(event.Typing.animal_name, event.Typing.is_typing);
         } else if (event.ReadReceipt) {
             this.updateReadReceipt(event.ReadReceipt.animal_name, event.ReadReceipt.message_id);
         } else if (event.ServerShutdown) {
             this.addSystemMessage(`Server shutting down: ${event.ServerShutdown.reason}`, 'warning');
+            this.messageCount++;
+        }
+        
+        // Cleanup old system messages if needed
+        if (this.messageCount > this.maxMessages) {
+            const firstSystemMsg = this.chat.querySelector('.system-message');
+            if (firstSystemMsg) {
+                firstSystemMsg.remove();
+                this.messageCount--;
+            }
         }
         
         if (this.shouldAutoScroll) {
@@ -918,9 +946,9 @@ class ChatApp {
         } else {
             let text;
             if (names.length === 1) {
-                text = `${names[0]} is typing...`;
+                text = `${this.escapeHtml(names[0])} is typing...`;
             } else if (names.length === 2) {
-                text = `${names[0]} and ${names[1]} are typing...`;
+                text = `${this.escapeHtml(names[0])} and ${this.escapeHtml(names[1])} are typing...`;
             } else {
                 text = `${names.length} people are typing...`;
             }
@@ -997,6 +1025,7 @@ class ChatApp {
             this.input.value = '';
             this.charCount.textContent = '0';
             this.isCurrentlyTyping = false;
+            if (this.typingTimeout) clearTimeout(this.typingTimeout);
             this.sendTypingIndicator(false);
             this.input.focus();
         } catch (e) {
@@ -1026,14 +1055,15 @@ class ChatApp {
     }
     
     handleChatScroll() {
+        const wasAtBottom = this.shouldAutoScroll;
         this.shouldAutoScroll = this.isAtBottom();
         
-        // Send read receipt when scrolled to bottom
-        if (this.shouldAutoScroll) {
+        // Only send read receipt if user just scrolled to bottom (debounce)
+        if (this.shouldAutoScroll && !wasAtBottom) {
             const messages = this.chat.querySelectorAll('.message');
             if (messages.length > 0) {
                 const lastMsg = messages[messages.length - 1];
-                const messageID = lastMsg.getAttribute('data-message-id');
+                const messageID = lastMsg.dataset.messageId;
                 if (messageID && messageID !== this.lastReadMessageId) {
                     this.sendReadReceipt(messageID);
                 }
@@ -1114,6 +1144,12 @@ class ChatApp {
         } catch (e) {
             console.warn('Failed to play notification sound:', e);
         }
+    }
+    
+    parseTimestamp(ts) {
+        // Validate timestamp - if less than 1e12, assume seconds and convert to ms
+        const num = parseInt(ts);
+        return num < 1e12 ? num * 1000 : num;
     }
     
     escapeHtml(text) {
