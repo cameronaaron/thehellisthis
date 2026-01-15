@@ -8314,3 +8314,31 @@ async fn test_all_timing_constants_are_consistent() {
         "User inactive timeout should exceed room cleanup delay"
     );
 }
+
+#[test]
+fn test_user_idle_for_too_long() {
+    let now = Instant::now();
+
+    let mut user = UserData {
+        user_id: "u1".to_string(),
+        animal_name: "lion".to_string(),
+        last_active: now,
+        last_message_time: now,
+        connection_state: ConnectionState::Connected {
+            last_heartbeat: now,
+            connection_id: "conn".to_string(),
+        },
+        last_read_message: None,
+        is_typing: false,
+        last_typing_event: None,
+        last_read_receipt_event: None,
+        rate_limiter: RateLimiter::new(),
+        last_sanitized_message: None,
+    };
+
+    user.last_message_time = now - (USER_IDLE_MESSAGE_TIMEOUT - Duration::from_secs(1));
+    assert!(!user_idle_for_too_long(&user, now));
+
+    user.last_message_time = now - (USER_IDLE_MESSAGE_TIMEOUT + Duration::from_secs(1));
+    assert!(user_idle_for_too_long(&user, now));
+}

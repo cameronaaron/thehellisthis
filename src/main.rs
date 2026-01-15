@@ -306,6 +306,10 @@ pub enum ChatError {
     RateLimitError(String),
 }
 
+fn user_idle_for_too_long(user: &UserData, now: Instant) -> bool {
+    now.duration_since(user.last_message_time) >= USER_IDLE_MESSAGE_TIMEOUT
+}
+
 impl IntoResponse for ChatError {
     fn into_response(self) -> Response {
         let (status, message) = match &self {
@@ -1882,11 +1886,12 @@ async fn handle_websocket(
                         } = user.connection_state
                         {
                             *last_heartbeat = Instant::now();
-                            let idle = Instant::now().duration_since(user.last_message_time);
-                            idle_too_long = idle >= USER_IDLE_MESSAGE_TIMEOUT;
+                            idle_too_long = user_idle_for_too_long(user, Instant::now());
                             debug!(
                                 "Updated last_heartbeat for user_id {} in room {} (idle {:?})",
-                                user_id, room, idle
+                                user_id,
+                                room,
+                                Instant::now().duration_since(user.last_message_time)
                             );
                         }
                     }
