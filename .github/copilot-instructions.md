@@ -110,6 +110,7 @@ cargo clippy --all-targets --all-features -- -D warnings  # Lint
 2. **Avoid long-held locks**: Never hold `RwLock` write lock across `.await` (follow existing patterns—lock, clone data, drop lock, then await)
 3. **Add tests**: Mirror behavior in [src/tests.rs](src/tests.rs) (see `test_room_validation`, `test_rate_limiting`)
 4. **Update events**: If adding new `ClientEvent`/`OutgoingEvent` variants, update both server enums and client JS in [index.html](index.html)
+5. **Keep timing in sync**: If changing any timing constants (cleanup delays, heartbeat intervals, etc.), run `cargo test test_frontend` to verify frontend HTML still matches. The tests embed index.html and parse it to detect drift.
 
 ### Logging
 - **Framework**: `tracing` (configured via `tracing_subscriber::fmt::init()`)
