@@ -1,8 +1,30 @@
+# Rust build artifacts
 /target/
-.DS_Store
-.env
-*.pdb
-*.log
+Cargo.lock
+
+# Dependencies
 cloudflare/node_modules/
 cloudflare/.wrangler/
+
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+
+# OS & IDE
+.DS_Store
+*.log
+*.pdb
 tmp.txt
+
+# Test artifacts
+test-frontend.html
+tests.html
+*.swp
+*.swo
+*~
+
+# Development
+.idea/
+.vscode/
+*.iml
