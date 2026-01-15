@@ -1218,6 +1218,10 @@ class ChatApp {
         this.heartbeatIntervalId = null;
         this.fadeWarningShown = false;
         
+        // Heartbeat monitoring - detect server silence
+        this.lastHeartbeatTime = Date.now();
+        this.heartbeatTimeoutId = null;
+        
         // DOM elements
         this.chat = document.getElementById('chat');
         this.input = document.getElementById('messageInput');
@@ -1390,6 +1394,7 @@ class ChatApp {
     
     handleWebSocketClose() {
         console.log('WebSocket disconnected');
+        if (this.heartbeatTimeoutId) clearTimeout(this.heartbeatTimeoutId);
         this.connected = false;
         this.updateConnectionStatus('disconnected');
         this.sendButton.disabled = true;
@@ -1403,6 +1408,21 @@ class ChatApp {
     
     handleWebSocketMessage(event) {
         try {
+            
+            // Reset heartbeat timeout on any message (heartbeat + data)
+            this.lastHeartbeatTime = Date.now();
+            if (this.heartbeatTimeoutId) clearTimeout(this.heartbeatTimeoutId);
+            
+            // Set timeout for next heartbeat (server sends every 5s, timeout at 8s)
+            this.heartbeatTimeoutId = setTimeout(() => {
+                console.warn('Heartbeat timeout - server not responding');
+                this.connected = false;
+                this.updateConnectionStatus('disconnected');
+                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                    this.ws.close();
+                }
+            }, 8000);
+            
             const data = JSON.parse(event.data);
             this.handleServerEvent(data);
         } catch (e) {
