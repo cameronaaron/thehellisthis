@@ -1161,27 +1161,30 @@ class ChatApp {
             return;
         }
         
-        // Detect our own identity early from any message that has our user_id
-        // This handles chat history on reconnect before UserJoined event
-        if (msg.user_id && !this.myUserId) {
-            // Check if this message matches our cookie user_id
+        // Get user_id from cookie for comparison (handles reconnect before UserJoined)
+        let cookieUserId = this.myUserId;
+        if (!cookieUserId) {
             const cookies = document.cookie.split(';').map(c => c.trim());
             const userIdCookie = cookies.find(c => c.startsWith('user_id='));
             if (userIdCookie) {
-                const cookieUserId = userIdCookie.split('=')[1];
-                if (msg.user_id === cookieUserId) {
-                    this.myUserId = cookieUserId;
-                    this.myAnimalName = msg.animal_name;
-                }
+                cookieUserId = userIdCookie.split('=')[1];
             }
         }
         
-        // Also set from any message if we already know our user_id
+        // Detect if this message is from us
+        const isSent = (cookieUserId && msg.user_id === cookieUserId);
+        
+        // Set our identity if we found a match
+        if (isSent && !this.myUserId) {
+            this.myUserId = cookieUserId;
+            this.myAnimalName = msg.animal_name;
+        }
+        
+        // Also set animal name if we know user_id but not animal name
         if (this.myUserId && msg.user_id === this.myUserId && !this.myAnimalName) {
             this.myAnimalName = msg.animal_name;
         }
         
-        const isSent = (this.myUserId && msg.user_id === this.myUserId);
         this.renderMessage(msg, isSent);
         
         // Auto-scroll if user is at bottom
