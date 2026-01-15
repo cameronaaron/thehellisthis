@@ -16,9 +16,9 @@
     }
   ],
   
-  // Enable observability for logging
+  // Disable observability for cost savings (no active logging needed)
   "observability": {
-    "enabled": true
+    "enabled": false
   },
   
   // Container configuration for the Rust WebSocket server
@@ -29,7 +29,9 @@
       "class_name": "InfiniteChatContainer",
       "name": "infinite-chat-container",
       // Hobby tier: single instance to minimize memory costs (~$0.50-2/month)
-      "max_instances": 1
+      "max_instances": 1,
+      // Sleep after 5 min idle to save costs when not in use
+      "sleepAfter": 300
     }
   ],
   
