@@ -4,6 +4,18 @@
   "main": "src/index.ts",
   "compatibility_date": "2025-04-03",
   
+  // Custom domain configuration
+  "routes": [
+    {
+      "pattern": "thehellisthis.com/*",
+      "zone_name": "thehellisthis.com"
+    },
+    {
+      "pattern": "www.thehellisthis.com/*",
+      "zone_name": "thehellisthis.com"
+    }
+  ],
+  
   // Enable observability for logging
   "observability": {
     "enabled": true
