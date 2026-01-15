@@ -2015,18 +2015,32 @@ async fn cleanup_rooms(state: &Arc<AppState>) {
             }
 
             if room_name == "main" {
-                // Just trim the main room
-                if room.chat_history.len() > MAX_MESSAGES_PER_ROOM + 1 {
-                    info!(
-                        "Trimming main room messages from {} to {}",
-                        room.chat_history.len(),
-                        MAX_MESSAGES_PER_ROOM
-                    );
-                    let start_idx = room.chat_history.len() - MAX_MESSAGES_PER_ROOM;
+                // Main room also experiences message fade if idle
+                let inactive_duration = now.duration_since(room.last_activity);
+                let target_messages = if inactive_duration >= EMPTY_ROOM_CLEANUP_DELAY {
+                    // If main room has been idle 3+ minutes, aggressively fade: keep only ~10 recent
+                    10
+                } else if inactive_duration >= Duration::from_secs(90) {
+                    // At 90s idle, trim down to ~100
+                    100
+                } else {
+                    // Normal: keep up to MAX
+                    MAX_MESSAGES_PER_ROOM
+                };
+
+                if room.chat_history.len() > target_messages {
+                    let start_idx = room.chat_history.len().saturating_sub(target_messages);
                     let removed_bytes = room.chat_history[..start_idx]
                         .iter()
                         .map(|msg| msg.estimate_size())
                         .sum::<usize>();
+
+                    info!(
+                        "Fading main room messages from {} to {} (idle {}s)",
+                        room.chat_history.len(),
+                        target_messages,
+                        inactive_duration.as_secs()
+                    );
 
                     room.chat_history = room.chat_history[start_idx..].to_vec();
 
