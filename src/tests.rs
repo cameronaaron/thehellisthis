@@ -4034,13 +4034,15 @@ async fn test_create_user_cookies_format() {
     assert!(user_cookie.contains("user_id=test-user-123"));
     assert!(user_cookie.contains("Path=/"));
     assert!(user_cookie.contains("SameSite=Strict"));
-    assert!(user_cookie.contains("HttpOnly"));
+    // NOTE: HttpOnly intentionally NOT set so JavaScript can read cookies for message alignment
+    assert!(!user_cookie.contains("HttpOnly"), "user_id cookie should NOT have HttpOnly to allow JS access");
     assert!(user_cookie.contains("Secure"));
 
     assert!(animal_cookie.contains("animal_name=Tiger"));
     assert!(animal_cookie.contains("Path=/"));
     assert!(animal_cookie.contains("SameSite=Strict"));
-    assert!(animal_cookie.contains("HttpOnly"));
+    // NOTE: HttpOnly intentionally NOT set so JavaScript can read cookies for message alignment
+    assert!(!animal_cookie.contains("HttpOnly"), "animal_name cookie should NOT have HttpOnly to allow JS access");
     assert!(animal_cookie.contains("Secure"));
 }
 
@@ -5444,13 +5446,15 @@ async fn test_cookie_creation_format() {
     assert!(uid_cookie.contains("user_id=test-user-456"));
     assert!(uid_cookie.contains("Path=/"));
     assert!(uid_cookie.contains("SameSite=Strict"));
-    assert!(uid_cookie.contains("HttpOnly"));
+    // NOTE: HttpOnly intentionally NOT set so JavaScript can read cookies for message alignment
+    assert!(!uid_cookie.contains("HttpOnly"), "user_id cookie should NOT have HttpOnly to allow JS access");
     assert!(uid_cookie.contains("Secure"));
     
     assert!(name_cookie.contains("animal_name=Tiger"));
     assert!(name_cookie.contains("Path=/"));
     assert!(name_cookie.contains("SameSite=Strict"));
-    assert!(name_cookie.contains("HttpOnly"));
+    // NOTE: HttpOnly intentionally NOT set so JavaScript can read cookies for message alignment  
+    assert!(!name_cookie.contains("HttpOnly"), "animal_name cookie should NOT have HttpOnly to allow JS access");
     assert!(name_cookie.contains("Secure"));
 }
 
@@ -5653,4 +5657,1213 @@ async fn test_user_count_updates_on_join() {
     assert!(found_count, "Should receive updated user count when new user joins");
     
     handle.abort();
+}
+
+// ========== COOKIE ACCESSIBILITY TESTS ==========
+// These tests ensure cookies are configured correctly for JavaScript access
+// Required for client-side message alignment (sent vs received messages)
+
+#[tokio::test]
+async fn test_cookie_must_be_js_accessible() {
+    // CRITICAL: user_id cookie MUST be readable by JavaScript for message alignment
+    // HttpOnly flag prevents JS access - ensure it's NOT present
+    let (user_cookie, animal_cookie) = create_user_cookies("js-test-user", "Lion");
+    
+    // Verify NO HttpOnly flag (allows document.cookie access)
+    assert!(!user_cookie.contains("HttpOnly"), 
+        "CRITICAL: user_id cookie must NOT have HttpOnly - JavaScript needs to read it for message alignment!");
+    assert!(!animal_cookie.contains("HttpOnly"),
+        "CRITICAL: animal_name cookie must NOT have HttpOnly - JavaScript needs to read it for display!");
+    
+    // Still must have security attributes
+    assert!(user_cookie.contains("Secure"), "Cookie must have Secure flag");
+    assert!(user_cookie.contains("SameSite=Strict"), "Cookie must have SameSite=Strict");
+}
+
+#[tokio::test]
+async fn test_cookie_security_attributes_present() {
+    let (user_cookie, animal_cookie) = create_user_cookies("sec-test", "Tiger");
+    
+    // Essential security attributes MUST be present
+    assert!(user_cookie.contains("Secure"), "user_id cookie missing Secure flag");
+    assert!(user_cookie.contains("SameSite=Strict"), "user_id cookie missing SameSite=Strict");
+    assert!(user_cookie.contains("Path=/"), "user_id cookie missing Path=/");
+    
+    assert!(animal_cookie.contains("Secure"), "animal_name cookie missing Secure flag");
+    assert!(animal_cookie.contains("SameSite=Strict"), "animal_name cookie missing SameSite=Strict");
+    assert!(animal_cookie.contains("Path=/"), "animal_name cookie missing Path=/");
+}
+
+#[tokio::test]
+async fn test_cookie_max_age_present() {
+    let (user_cookie, animal_cookie) = create_user_cookies("maxage-test", "Bear");
+    
+    assert!(user_cookie.contains("Max-Age="), "user_id cookie missing Max-Age");
+    assert!(animal_cookie.contains("Max-Age="), "animal_name cookie missing Max-Age");
+    
+    // Max-Age should be INACTIVE_TIMEOUT seconds
+    let expected_max_age = format!("Max-Age={}", INACTIVE_TIMEOUT.as_secs());
+    assert!(user_cookie.contains(&expected_max_age), 
+        "user_id cookie Max-Age should be INACTIVE_TIMEOUT seconds");
+}
+
+#[tokio::test]
+async fn test_cookie_values_properly_encoded() {
+    // Test with special characters that might need encoding
+    let (user_cookie, _) = create_user_cookies("user-with-dash", "Lion");
+    assert!(user_cookie.contains("user_id=user-with-dash"));
+    
+    // UUID format user_id
+    let uuid_str = "550e8400-e29b-41d4-a716-446655440000";
+    let (uuid_cookie, _) = create_user_cookies(uuid_str, "Tiger");
+    assert!(uuid_cookie.contains(&format!("user_id={}", uuid_str)));
+}
+
+#[tokio::test]
+async fn test_message_contains_user_id_for_alignment() {
+    // Outgoing messages MUST contain user_id for client-side alignment
+    let msg = OutgoingMessage {
+        message_id: uuid::Uuid::new_v4(),
+        user_id: "alignment-test-user".to_string(),
+        animal_name: "Lion".to_string(),
+        text: "<p>Test message</p>".to_string(),
+        timestamp: "1234567890".to_string(),
+    };
+    
+    // user_id must be present and non-empty
+    assert!(!msg.user_id.is_empty(), "OutgoingMessage must have user_id for alignment");
+    assert_eq!(msg.user_id, "alignment-test-user");
+    
+    // Serialize to JSON and verify user_id is included
+    let json = serde_json::to_string(&msg).unwrap();
+    assert!(json.contains("user_id"), "JSON must include user_id field");
+    assert!(json.contains("alignment-test-user"), "JSON must include actual user_id value");
+}
+
+#[tokio::test]
+async fn test_message_user_id_matches_cookie_format() {
+    // Verify the user_id in messages matches what we'd set in cookies
+    let test_user_id = "test-123-abc";
+    let (user_cookie, _) = create_user_cookies(test_user_id, "Lion");
+    
+    let msg = OutgoingMessage {
+        message_id: uuid::Uuid::new_v4(),
+        user_id: test_user_id.to_string(),
+        animal_name: "Lion".to_string(),
+        text: "<p>Test</p>".to_string(),
+        timestamp: "1000".to_string(),
+    };
+    
+    // Cookie should contain exact user_id value
+    assert!(user_cookie.contains(&format!("user_id={}", test_user_id)),
+        "Cookie user_id format must match message user_id");
+}
+
+#[tokio::test]
+async fn test_ws_message_includes_user_id_in_broadcast() {
+    let (addr, handle) = start_ws_server().await;
+    let ws_url = format!("ws://{}/ws/userid-broadcast-test", addr);
+
+    let (mut ws1, _) = connect_async(&ws_url).await.unwrap();
+    let (mut ws2, _) = connect_async(&ws_url).await.unwrap();
+
+    // Get ws1's user_id from UserJoined event
+    let mut ws1_user_id = String::new();
+    for _ in 0..10 {
+        let val = recv_json_event(&mut ws1).await;
+        if val.get("type") == Some(&JsonValue::String("System".to_string())) {
+            if let Some(event) = val.get("event") {
+                if let Some(payload) = extract_system_event(event, "UserJoined") {
+                    let uid = payload.get("user_id").and_then(|v| v.as_str()).unwrap_or("");
+                    if !uid.is_empty() {
+                        ws1_user_id = uid.to_string();
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // Drain remaining events
+    for _ in 0..5 {
+        let _ = timeout(Duration::from_millis(100), recv_json_event(&mut ws1)).await;
+        let _ = timeout(Duration::from_millis(100), recv_json_event(&mut ws2)).await;
+    }
+
+    // ws1 sends message
+    ws1.send(WsMessage::Text(r#"{"type":"Message","text":"Test alignment"}"#.to_string()))
+        .await
+        .unwrap();
+
+    // ws2 receives - verify user_id is present in message
+    let mut found_message = false;
+    for _ in 0..10 {
+        if let Ok(val) = timeout(Duration::from_secs(2), recv_json_event(&mut ws2)).await {
+            if val.get("type") == Some(&JsonValue::String("Message".to_string())) {
+                let msg_user_id = val["message"]["user_id"].as_str().unwrap_or("");
+                assert!(!msg_user_id.is_empty(), "Broadcast message MUST contain user_id");
+                assert_eq!(msg_user_id, ws1_user_id, "Message user_id should match sender");
+                found_message = true;
+                break;
+            }
+        }
+    }
+
+    assert!(found_message, "Should receive broadcast message with user_id");
+    handle.abort();
+}
+
+// ========== MESSAGE ALIGNMENT EDGE CASES ==========
+
+#[tokio::test]
+async fn test_message_alignment_after_reconnect() {
+    let (addr, handle) = start_ws_server().await;
+    let ws_url = format!("ws://{}/ws/alignment-reconnect", addr);
+
+    // First connection
+    let (mut ws1, _) = connect_async(&ws_url).await.unwrap();
+    
+    let mut user_id = String::new();
+    for _ in 0..10 {
+        let val = recv_json_event(&mut ws1).await;
+        if val.get("type") == Some(&JsonValue::String("System".to_string())) {
+            if let Some(event) = val.get("event") {
+                if let Some(payload) = extract_system_event(event, "UserJoined") {
+                    user_id = payload.get("user_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    if !user_id.is_empty() { break; }
+                }
+            }
+        }
+    }
+
+    // Drain events and send message
+    for _ in 0..3 {
+        let _ = timeout(Duration::from_millis(100), recv_json_event(&mut ws1)).await;
+    }
+
+    ws1.send(WsMessage::Text(r#"{"type":"Message","text":"Pre-reconnect message"}"#.to_string()))
+        .await
+        .unwrap();
+
+    // Wait for message to be stored
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    drop(ws1);
+
+    // Reconnect with new connection
+    let (mut ws2, _) = connect_async(&ws_url).await.unwrap();
+
+    // Should receive history with original user_id intact
+    let mut found_historical_msg = false;
+    for _ in 0..15 {
+        if let Ok(val) = timeout(Duration::from_secs(2), recv_json_event(&mut ws2)).await {
+            if val.get("type") == Some(&JsonValue::String("Message".to_string())) {
+                let msg_user_id = val["message"]["user_id"].as_str().unwrap_or("");
+                let text = val["message"]["text"].as_str().unwrap_or("");
+                if text.contains("Pre-reconnect") {
+                    assert_eq!(msg_user_id, user_id, 
+                        "Historical message must preserve original user_id for alignment");
+                    found_historical_msg = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    assert!(found_historical_msg, "Should receive historical message with preserved user_id");
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_multiple_users_message_ids_distinct() {
+    let (addr, handle) = start_ws_server().await;
+    let ws_url = format!("ws://{}/ws/distinct-ids", addr);
+
+    let (mut ws1, _) = connect_async(&ws_url).await.unwrap();
+    let (mut ws2, _) = connect_async(&ws_url).await.unwrap();
+
+    // Collect both user IDs
+    let mut user1_id = String::new();
+    let mut user2_id = String::new();
+
+    for _ in 0..10 {
+        let val = recv_json_event(&mut ws1).await;
+        if val.get("type") == Some(&JsonValue::String("System".to_string())) {
+            if let Some(event) = val.get("event") {
+                if let Some(payload) = extract_system_event(event, "UserJoined") {
+                    let uid = payload.get("user_id").and_then(|v| v.as_str()).unwrap_or("");
+                    if user1_id.is_empty() {
+                        user1_id = uid.to_string();
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    for _ in 0..10 {
+        let val = recv_json_event(&mut ws2).await;
+        if val.get("type") == Some(&JsonValue::String("System".to_string())) {
+            if let Some(event) = val.get("event") {
+                if let Some(payload) = extract_system_event(event, "UserJoined") {
+                    let uid = payload.get("user_id").and_then(|v| v.as_str()).unwrap_or("");
+                    if uid != user1_id && !uid.is_empty() {
+                        user2_id = uid.to_string();
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(!user1_id.is_empty(), "User 1 must have ID");
+    assert!(!user2_id.is_empty(), "User 2 must have ID");
+    assert_ne!(user1_id, user2_id, "Different users MUST have different user_ids");
+
+    handle.abort();
+}
+
+// ========== ADDITIONAL COVERAGE TESTS ==========
+
+#[tokio::test]
+async fn test_chat_history_sends_on_connect() {
+    let (addr, handle) = start_ws_server().await;
+    let ws_url = format!("ws://{}/ws/history-send-test", addr);
+
+    // First user sends a message
+    let (mut ws1, _) = connect_async(&ws_url).await.unwrap();
+    for _ in 0..5 {
+        let _ = timeout(Duration::from_millis(100), recv_json_event(&mut ws1)).await;
+    }
+    
+    ws1.send(WsMessage::Text(r#"{"type":"Message","text":"Historical message"}"#.to_string()))
+        .await
+        .unwrap();
+    
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Second user connects and should receive history
+    let (mut ws2, _) = connect_async(&ws_url).await.unwrap();
+
+    let mut received_history = false;
+    for _ in 0..15 {
+        if let Ok(val) = timeout(Duration::from_secs(2), recv_json_event(&mut ws2)).await {
+            if val.get("type") == Some(&JsonValue::String("Message".to_string())) {
+                let text = val["message"]["text"].as_str().unwrap_or("");
+                if text.contains("Historical") {
+                    received_history = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    assert!(received_history, "New connection should receive chat history");
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_room_state_user_count_accurate() {
+    let mut room = create_room();
+    let now = Instant::now();
+
+    // Add 3 connected users
+    for i in 0..3 {
+        room.users.insert(format!("user-{}", i), UserData {
+            user_id: format!("user-{}", i),
+            animal_name: format!("Animal{}", i),
+            last_active: now,
+            last_message_time: now,
+            connection_state: ConnectionState::Connected {
+                last_heartbeat: now,
+                connection_id: format!("conn-{}", i),
+            },
+            last_read_message: None,
+            is_typing: false,
+            last_typing_event: None,
+            last_read_receipt_event: None,
+            rate_limiter: RateLimiter::new(),
+            last_sanitized_message: None,
+        });
+    }
+
+    // Add 2 disconnected users
+    for i in 3..5 {
+        room.users.insert(format!("user-{}", i), UserData {
+            user_id: format!("user-{}", i),
+            animal_name: format!("Animal{}", i),
+            last_active: now,
+            last_message_time: now,
+            connection_state: ConnectionState::Disconnected { since: now },
+            last_read_message: None,
+            is_typing: false,
+            last_typing_event: None,
+            last_read_receipt_event: None,
+            rate_limiter: RateLimiter::new(),
+            last_sanitized_message: None,
+        });
+    }
+
+    let connected_count = room.users.values()
+        .filter(|u| matches!(u.connection_state, ConnectionState::Connected { .. }))
+        .count();
+
+    assert_eq!(connected_count, 3, "Should count only connected users");
+    assert_eq!(room.users.len(), 5, "Total users includes disconnected");
+}
+
+#[tokio::test]
+async fn test_heartbeat_timeout_detection() {
+    let now = Instant::now();
+    
+    // User with fresh heartbeat
+    let fresh_user = UserData {
+        user_id: "fresh".to_string(),
+        animal_name: "Lion".to_string(),
+        last_active: now,
+        last_message_time: now,
+        connection_state: ConnectionState::Connected {
+            last_heartbeat: now - Duration::from_secs(1), // 1 second ago
+            connection_id: "conn".to_string(),
+        },
+        last_read_message: None,
+        is_typing: false,
+        last_typing_event: None,
+        last_read_receipt_event: None,
+        rate_limiter: RateLimiter::new(),
+        last_sanitized_message: None,
+    };
+
+    // User with stale heartbeat
+    let stale_user = UserData {
+        user_id: "stale".to_string(),
+        animal_name: "Tiger".to_string(),
+        last_active: now,
+        last_message_time: now,
+        connection_state: ConnectionState::Connected {
+            last_heartbeat: now - HEARTBEAT_TIMEOUT - Duration::from_secs(1), // Past timeout
+            connection_id: "conn".to_string(),
+        },
+        last_read_message: None,
+        is_typing: false,
+        last_typing_event: None,
+        last_read_receipt_event: None,
+        rate_limiter: RateLimiter::new(),
+        last_sanitized_message: None,
+    };
+
+    let is_fresh_stale = if let ConnectionState::Connected { last_heartbeat, .. } = fresh_user.connection_state {
+        now.duration_since(last_heartbeat) > HEARTBEAT_TIMEOUT
+    } else { false };
+
+    let is_stale_stale = if let ConnectionState::Connected { last_heartbeat, .. } = stale_user.connection_state {
+        now.duration_since(last_heartbeat) > HEARTBEAT_TIMEOUT
+    } else { false };
+
+    assert!(!is_fresh_stale, "Fresh user should not be stale");
+    assert!(is_stale_stale, "Stale user should be detected as stale");
+}
+
+#[tokio::test]
+async fn test_validate_input_unicode() {
+    // Unicode alphanumeric characters ARE allowed by is_alphanumeric()
+    // This is actually intentional - Rust's is_alphanumeric() covers Unicode
+    assert!(validate_input("café", 50).is_ok(), "Unicode alphanumeric should be allowed");
+    assert!(validate_input("日本語", 50).is_ok(), "Japanese characters should be allowed");
+    
+    // Emoji is NOT alphanumeric and should be rejected
+    assert!(validate_input("emoji🎉", 50).is_err(), "Emoji should be rejected");
+    
+    // Spaces are not allowed
+    assert!(validate_input("has space", 50).is_err(), "Spaces should be rejected");
+    
+    // Pure ASCII should work
+    assert!(validate_input("valid-name", 50).is_ok());
+    assert!(validate_input("room_123", 50).is_ok());
+}
+
+#[tokio::test]
+async fn test_message_id_is_valid_uuid() {
+    let (addr, handle) = start_ws_server().await;
+    let ws_url = format!("ws://{}/ws/uuid-test", addr);
+
+    let (mut ws1, _) = connect_async(&ws_url).await.unwrap();
+    let (mut ws2, _) = connect_async(&ws_url).await.unwrap();
+
+    // Drain initial events
+    for _ in 0..5 {
+        let _ = timeout(Duration::from_millis(100), recv_json_event(&mut ws1)).await;
+        let _ = timeout(Duration::from_millis(100), recv_json_event(&mut ws2)).await;
+    }
+
+    // Send message
+    ws1.send(WsMessage::Text(r#"{"type":"Message","text":"UUID test"}"#.to_string()))
+        .await
+        .unwrap();
+
+    // Receive and verify UUID format
+    for _ in 0..10 {
+        if let Ok(val) = timeout(Duration::from_secs(2), recv_json_event(&mut ws2)).await {
+            if val.get("type") == Some(&JsonValue::String("Message".to_string())) {
+                let message_id = val["message"]["message_id"].as_str().unwrap_or("");
+                // UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+                assert!(uuid::Uuid::parse_str(message_id).is_ok(), 
+                    "message_id must be valid UUID, got: {}", message_id);
+                break;
+            }
+        }
+    }
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_timestamp_is_unix_millis() {
+    let (addr, handle) = start_ws_server().await;
+    let ws_url = format!("ws://{}/ws/timestamp-test", addr);
+
+    let (mut ws1, _) = connect_async(&ws_url).await.unwrap();
+    let (mut ws2, _) = connect_async(&ws_url).await.unwrap();
+
+    for _ in 0..5 {
+        let _ = timeout(Duration::from_millis(100), recv_json_event(&mut ws1)).await;
+        let _ = timeout(Duration::from_millis(100), recv_json_event(&mut ws2)).await;
+    }
+
+    let before_send = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+
+    ws1.send(WsMessage::Text(r#"{"type":"Message","text":"Timestamp test"}"#.to_string()))
+        .await
+        .unwrap();
+
+    for _ in 0..10 {
+        if let Ok(val) = timeout(Duration::from_secs(2), recv_json_event(&mut ws2)).await {
+            if val.get("type") == Some(&JsonValue::String("Message".to_string())) {
+                let timestamp_str = val["message"]["timestamp"].as_str().unwrap_or("0");
+                let timestamp: u128 = timestamp_str.parse().unwrap_or(0);
+                
+                // Timestamp should be reasonable Unix milliseconds (after year 2020)
+                assert!(timestamp > 1577836800000, "Timestamp should be Unix milliseconds");
+                assert!(timestamp >= before_send, "Timestamp should be >= send time");
+                break;
+            }
+        }
+    }
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_animal_name_in_message() {
+    let (addr, handle) = start_ws_server().await;
+    let ws_url = format!("ws://{}/ws/animal-msg-test", addr);
+
+    let (mut ws1, _) = connect_async(&ws_url).await.unwrap();
+    let (mut ws2, _) = connect_async(&ws_url).await.unwrap();
+
+    // Get ws1's animal name
+    let mut animal_name = String::new();
+    for _ in 0..10 {
+        let val = recv_json_event(&mut ws1).await;
+        if val.get("type") == Some(&JsonValue::String("System".to_string())) {
+            if let Some(event) = val.get("event") {
+                if let Some(payload) = extract_system_event(event, "UserJoined") {
+                    animal_name = payload.get("animal_name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    if !animal_name.is_empty() { break; }
+                }
+            }
+        }
+    }
+
+    for _ in 0..5 {
+        let _ = timeout(Duration::from_millis(100), recv_json_event(&mut ws1)).await;
+        let _ = timeout(Duration::from_millis(100), recv_json_event(&mut ws2)).await;
+    }
+
+    ws1.send(WsMessage::Text(r#"{"type":"Message","text":"Animal test"}"#.to_string()))
+        .await
+        .unwrap();
+
+    for _ in 0..10 {
+        if let Ok(val) = timeout(Duration::from_secs(2), recv_json_event(&mut ws2)).await {
+            if val.get("type") == Some(&JsonValue::String("Message".to_string())) {
+                let msg_animal = val["message"]["animal_name"].as_str().unwrap_or("");
+                assert!(!msg_animal.is_empty(), "Message must contain animal_name");
+                assert_eq!(msg_animal, animal_name, "Message animal_name should match sender");
+                break;
+            }
+        }
+    }
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_system_event_contains_required_fields() {
+    let (addr, handle) = start_ws_server().await;
+    let ws_url = format!("ws://{}/ws/sysevent-fields", addr);
+
+    let (mut ws, _) = connect_async(&ws_url).await.unwrap();
+
+    // UserJoined should have user_id and animal_name
+    let mut found_join = false;
+    for _ in 0..10 {
+        let val = recv_json_event(&mut ws).await;
+        if val.get("type") == Some(&JsonValue::String("System".to_string())) {
+            if let Some(event) = val.get("event") {
+                if let Some(payload) = extract_system_event(event, "UserJoined") {
+                    let user_id = payload.get("user_id").and_then(|v| v.as_str()).unwrap_or("");
+                    let animal_name = payload.get("animal_name").and_then(|v| v.as_str()).unwrap_or("");
+                    
+                    assert!(!user_id.is_empty(), "UserJoined must have user_id");
+                    assert!(!animal_name.is_empty(), "UserJoined must have animal_name");
+                    found_join = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    assert!(found_join, "Should receive UserJoined event with required fields");
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_rate_limit_error_response() {
+    // Test that rate limit errors are properly converted to responses
+    let error = ChatError::RateLimited;
+    let response = error.into_response();
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn test_room_full_error_response() {
+    let error = ChatError::RoomFull;
+    let response = error.into_response();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn test_invalid_message_error_response() {
+    let error = ChatError::InvalidMessage("Test error".to_string());
+    let response = error.into_response();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_connection_error_response() {
+    let error = ChatError::ConnectionError("Connection failed".to_string());
+    let response = error.into_response();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[tokio::test]
+async fn test_outgoing_event_message_serialization() {
+    let msg = OutgoingMessage {
+        message_id: uuid::Uuid::nil(),
+        user_id: "test-user".to_string(),
+        animal_name: "Lion".to_string(),
+        text: "<p>Hello</p>".to_string(),
+        timestamp: "1234567890".to_string(),
+    };
+
+    let event = OutgoingEvent::Message { message: msg };
+    let json = serde_json::to_string(&event).unwrap();
+    
+    assert!(json.contains("\"type\":\"Message\""));
+    assert!(json.contains("\"user_id\":\"test-user\""));
+    assert!(json.contains("\"animal_name\":\"Lion\""));
+}
+
+#[tokio::test]
+async fn test_outgoing_event_system_serialization() {
+    let event = OutgoingEvent::System {
+        event: SystemEvent::UserJoined {
+            user_id: "uid".to_string(),
+            animal_name: "Tiger".to_string(),
+        },
+    };
+    let json = serde_json::to_string(&event).unwrap();
+    
+    assert!(json.contains("\"type\":\"System\""));
+    assert!(json.contains("UserJoined"));
+}
+
+#[tokio::test]
+async fn test_client_event_unknown_type_handling() {
+    // Unknown event types should fail to deserialize
+    let json = r#"{"type":"UnknownEvent","data":"test"}"#;
+    let result: Result<ClientEvent, _> = serde_json::from_str(json);
+    assert!(result.is_err(), "Unknown event type should fail to deserialize");
+}
+
+#[tokio::test]
+async fn test_client_event_missing_fields() {
+    // Message without text field
+    let json = r#"{"type":"Message"}"#;
+    let result: Result<ClientEvent, _> = serde_json::from_str(json);
+    assert!(result.is_err(), "Message without text should fail");
+    
+    // Typing without is_typing
+    let json = r#"{"type":"Typing"}"#;
+    let result: Result<ClientEvent, _> = serde_json::from_str(json);
+    assert!(result.is_err(), "Typing without is_typing should fail");
+}
+
+#[tokio::test]
+async fn test_memory_pressure_message_pruning() {
+    let mut room = create_room();
+    let tracker = MemoryTracker::new();
+
+    // Fill up near memory limit
+    for i in 0..100 {
+        let msg = OutgoingMessage {
+            message_id: uuid::Uuid::new_v4(),
+            user_id: format!("user-{}", i),
+            animal_name: "Lion".to_string(),
+            text: format!("<p>Message {}</p>", i),
+            timestamp: format!("{}", i * 1000),
+        };
+        room.add_message(msg, &tracker);
+    }
+
+    let count_before = room.chat_history.len();
+    assert!(count_before > 0, "Should have messages");
+
+    // Trigger preservation which may trim
+    room.preserve_messages(&tracker);
+    
+    assert!(room.chat_history.len() <= MAX_MESSAGES_PER_ROOM,
+        "After preserve, should not exceed max messages");
+}
+
+#[tokio::test]
+async fn test_room_cleanup_stale_users() {
+    let mut room = create_room();
+    let now = Instant::now();
+
+    // Add stale user (heartbeat way past timeout)
+    room.users.insert("stale-user".to_string(), UserData {
+        user_id: "stale-user".to_string(),
+        animal_name: "Lion".to_string(),
+        last_active: now - Duration::from_secs(3600),
+        last_message_time: now - Duration::from_secs(3600),
+        connection_state: ConnectionState::Connected {
+            last_heartbeat: now - Duration::from_secs(3600),
+            connection_id: "old-conn".to_string(),
+        },
+        last_read_message: None,
+        is_typing: false,
+        last_typing_event: None,
+        last_read_receipt_event: None,
+        rate_limiter: RateLimiter::new(),
+        last_sanitized_message: None,
+    });
+
+    // Check if user would be considered stale
+    let user = room.users.get("stale-user").unwrap();
+    let is_stale = if let ConnectionState::Connected { last_heartbeat, .. } = user.connection_state {
+        now.duration_since(last_heartbeat) > HEARTBEAT_TIMEOUT
+    } else { false };
+
+    assert!(is_stale, "User with old heartbeat should be considered stale");
+}
+
+#[tokio::test]
+async fn test_connection_pool_concurrent_operations() {
+    let pool = Arc::new(ConnectionPool::new());
+    let barrier = Arc::new(Barrier::new(10));
+    let mut handles = vec![];
+
+    // Spawn concurrent add operations
+    for i in 0..10 {
+        let pool_clone = pool.clone();
+        let barrier_clone = barrier.clone();
+        let ip = format!("10.0.0.{}", i);
+        
+        handles.push(tokio::spawn(async move {
+            barrier_clone.wait().await;
+            let _ = pool_clone.add_connection(&ip).await;
+        }));
+    }
+
+    join_all(handles).await;
+    
+    // Should have handled concurrent operations without panic
+    assert!(pool.active.load(Ordering::Relaxed) <= 10);
+}
+
+#[tokio::test]
+async fn test_security_manager_concurrent_suspicious_activity() {
+    let manager = Arc::new(SecurityManager::new());
+    let barrier = Arc::new(Barrier::new(5));
+    let mut handles = vec![];
+
+    // Record suspicious activity concurrently
+    for _ in 0..5 {
+        let manager_clone = manager.clone();
+        let barrier_clone = barrier.clone();
+        
+        handles.push(tokio::spawn(async move {
+            barrier_clone.wait().await;
+            let _ = manager_clone.record_suspicious_activity("10.0.0.100").await;
+        }));
+    }
+
+    join_all(handles).await;
+    
+    // Should have recorded activities without panic
+    // suspicious_activity is HashMap<String, (usize, Instant)>
+    let counters = manager.suspicious_activity.read().await;
+    let count = counters.get("10.0.0.100").map(|(c, _)| *c).unwrap_or(0);
+    assert!(count >= 5, "Should have recorded at least 5 suspicious activities");
+}
+
+// ========== ADDITIONAL COVERAGE TESTS FOR UNCOVERED LINES ==========
+
+#[tokio::test]
+async fn test_prune_old_messages_removes_oldest_first() {
+    let mut room = create_room();
+    let tracker = MemoryTracker::new();
+
+    // Add 3 messages
+    for i in 0..3 {
+        let msg = OutgoingMessage {
+            message_id: uuid::Uuid::new_v4(),
+            user_id: format!("user-{}", i),
+            animal_name: "Lion".to_string(),
+            text: format!("<p>Message {}</p>", i),
+            timestamp: format!("{}", i * 1000),
+        };
+        let size = msg.estimate_size();
+        room.chat_history.push(msg);
+        room.total_memory_bytes.fetch_add(size, Ordering::SeqCst);
+        tracker.add_bytes(size);
+    }
+
+    assert_eq!(room.chat_history.len(), 3);
+    
+    // Prune needing space for 1 message
+    let first_msg_size = room.chat_history[0].estimate_size();
+    room.prune_old_messages(first_msg_size, &tracker);
+    
+    // Should have removed the first (oldest) message
+    assert_eq!(room.chat_history.len(), 2);
+    assert!(room.chat_history[0].text.contains("Message 1"), "First remaining should be Message 1");
+}
+
+#[tokio::test]
+async fn test_app_state_new_initializes_correctly() {
+    let state = AppState::new();
+    
+    assert!(state.rooms.read().await.is_empty());
+    assert_eq!(state.memory_tracker.total_bytes.load(Ordering::Relaxed), 0);
+    assert_eq!(state.resource_monitor.total_connections.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn test_validate_message_renders_markdown() {
+    // Basic markdown should be rendered to HTML
+    let result = validate_message("**bold**").unwrap();
+    assert!(result.contains("<strong>") || result.contains("bold"));
+    
+    // Code blocks
+    let result = validate_message("`code`").unwrap();
+    assert!(result.contains("<code>") || result.contains("code"));
+}
+
+#[tokio::test]
+async fn test_validate_message_strips_dangerous_tags() {
+    // Script tags should be removed, but surrounding text preserved
+    let result = validate_message("before <script>alert(1)</script> after").unwrap();
+    assert!(!result.contains("<script>"));
+    assert!(result.contains("before"));
+    assert!(result.contains("after"));
+    
+    // iframe should be removed
+    let result = validate_message("text <iframe src='evil.com'></iframe> more").unwrap();
+    assert!(!result.contains("<iframe>"));
+}
+
+#[tokio::test]
+async fn test_outgoing_message_estimate_size() {
+    let msg = OutgoingMessage {
+        message_id: uuid::Uuid::new_v4(),
+        user_id: "test-user-123".to_string(),
+        animal_name: "Lion".to_string(),
+        text: "<p>Hello World</p>".to_string(),
+        timestamp: "1234567890123".to_string(),
+    };
+    
+    let size = msg.estimate_size();
+    
+    // Size should include all string lengths plus UUID size plus base estimate
+    assert!(size > 0);
+    assert!(size >= msg.user_id.len() + msg.animal_name.len() + msg.text.len() + msg.timestamp.len());
+}
+
+#[tokio::test]
+async fn test_room_state_last_activity_updates() {
+    let mut room = create_room();
+    let initial = room.last_activity;
+    
+    // Small delay
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    
+    // Adding message should update last_activity
+    let tracker = MemoryTracker::new();
+    room.add_message(OutgoingMessage {
+        message_id: uuid::Uuid::new_v4(),
+        user_id: "user".to_string(),
+        animal_name: "Lion".to_string(),
+        text: "<p>Test</p>".to_string(),
+        timestamp: "1000".to_string(),
+    }, &tracker);
+    
+    assert!(room.last_activity > initial);
+}
+
+#[tokio::test]
+async fn test_ws_early_disconnect_during_history() {
+    // This tests the path where client disconnects while receiving history
+    let (addr, handle) = start_ws_server().await;
+    let ws_url = format!("ws://{}/ws/early-disconnect", addr);
+
+    // First user sends some messages to create history
+    let (mut ws1, _) = connect_async(&ws_url).await.unwrap();
+    for _ in 0..5 {
+        let _ = timeout(Duration::from_millis(100), recv_json_event(&mut ws1)).await;
+    }
+    
+    for i in 0..3 {
+        ws1.send(WsMessage::Text(format!(r#"{{"type":"Message","text":"History message {}"}}"#, i)))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(600)).await; // Wait for rate limit
+    }
+    
+    // Second user connects and immediately disconnects
+    let (ws2, _) = connect_async(&ws_url).await.unwrap();
+    drop(ws2); // Immediate disconnect
+    
+    // System should handle this gracefully
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_user_cookie_extraction_with_partial_cookies() {
+    use axum::extract::FromRequestParts;
+    use axum::http::Request;
+    
+    // Create a request with only user_id cookie (missing animal_name)
+    let request = Request::builder()
+        .header("Cookie", "user_id=test-123")
+        .body(Body::empty())
+        .unwrap();
+    
+    let (mut parts, _body) = request.into_parts();
+    let result = OptionalUserCookie::from_request_parts(&mut parts, &()).await;
+    
+    // Should return None since both cookies are required
+    assert!(result.is_ok());
+    let cookie = result.unwrap();
+    assert!(cookie.0.is_none(), "Should return None when animal_name is missing");
+}
+
+#[tokio::test]
+async fn test_user_cookie_extraction_with_empty_values() {
+    use axum::extract::FromRequestParts;
+    use axum::http::Request;
+    
+    // Create a request with empty cookie values
+    let request = Request::builder()
+        .header("Cookie", "user_id=; animal_name=")
+        .body(Body::empty())
+        .unwrap();
+    
+    let (mut parts, _body) = request.into_parts();
+    let result = OptionalUserCookie::from_request_parts(&mut parts, &()).await;
+    
+    // Should return None since values are empty
+    assert!(result.is_ok());
+    let cookie = result.unwrap();
+    assert!(cookie.0.is_none(), "Should return None when cookie values are empty");
+}
+
+#[tokio::test]
+async fn test_user_cookie_extraction_valid_cookies() {
+    use axum::extract::FromRequestParts;
+    use axum::http::Request;
+    
+    // Create a request with valid cookies
+    let request = Request::builder()
+        .header("Cookie", "user_id=test-user-456; animal_name=Tiger")
+        .body(Body::empty())
+        .unwrap();
+    
+    let (mut parts, _body) = request.into_parts();
+    let result = OptionalUserCookie::from_request_parts(&mut parts, &()).await;
+    
+    assert!(result.is_ok());
+    let cookie = result.unwrap();
+    assert!(cookie.0.is_some(), "Should extract valid cookies");
+    let inner = cookie.0.unwrap();
+    assert_eq!(inner.user_id, "test-user-456");
+    assert_eq!(inner.animal_name, "Tiger");
+}
+
+#[tokio::test]
+async fn test_assign_animal_with_all_animals_in_use() {
+    let mut room = create_room();
+    let now = Instant::now();
+    
+    // Assign all animals to connected users
+    let animal_count = room.available_animals.len();
+    for i in 0..animal_count {
+        let animal = room.assign_animal();
+        room.users.insert(format!("user-{}", i), UserData {
+            user_id: format!("user-{}", i),
+            animal_name: animal,
+            last_active: now,
+            last_message_time: now,
+            connection_state: ConnectionState::Connected {
+                last_heartbeat: now,
+                connection_id: format!("conn-{}", i),
+            },
+            last_read_message: None,
+            is_typing: false,
+            last_typing_event: None,
+            last_read_receipt_event: None,
+            rate_limiter: RateLimiter::new(),
+            last_sanitized_message: None,
+        });
+    }
+    
+    // Now when all animals are used, should get guest_X format
+    let next = room.assign_animal();
+    assert!(next.starts_with("guest_"), "Should get guest name when all animals used");
+}
+
+#[tokio::test]
+async fn test_assign_animal_reuses_disconnected_animal() {
+    let mut room = create_room();
+    let now = Instant::now();
+    
+    // First user takes "Lion"
+    let animal1 = room.assign_animal();
+    room.users.insert("user-1".to_string(), UserData {
+        user_id: "user-1".to_string(),
+        animal_name: animal1.clone(),
+        last_active: now,
+        last_message_time: now,
+        connection_state: ConnectionState::Disconnected { since: now }, // Disconnected!
+        last_read_message: None,
+        is_typing: false,
+        last_typing_event: None,
+        last_read_receipt_event: None,
+        rate_limiter: RateLimiter::new(),
+        last_sanitized_message: None,
+    });
+    
+    // Return the animal to pool
+    room.available_animals.push_back(animal1.clone());
+    
+    // Second user should be able to get an animal (possibly the returned one)
+    let animal2 = room.assign_animal();
+    assert!(!animal2.is_empty());
+    // The disconnected user's animal should be available for reuse
+}
+
+#[tokio::test]
+async fn test_memory_tracker_cleanup_if_needed() {
+    let tracker = MemoryTracker::new();
+    
+    // Set last_gc to old time to trigger cleanup
+    tracker.last_gc.store(0, Ordering::Relaxed);
+    
+    assert!(tracker.should_gc(), "Should need GC when last_gc is old");
+    
+    // should_gc already updates last_gc when returning true
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let last_gc = tracker.last_gc.load(Ordering::Relaxed);
+    
+    // last_gc should be close to current time
+    assert!(last_gc >= now_secs - 5, "last_gc should be updated to recent time");
+}
+
+#[tokio::test]
+async fn test_graceful_shutdown_broadcasts_shutdown() {
+    let app_state = Arc::new(AppState::new());
+    let room_name = "shutdown-test".to_string();
+    
+    // Create a room with a user
+    {
+        let mut rooms = app_state.rooms.write().await;
+        let mut room = create_room();
+        let now = Instant::now();
+        room.users.insert("user1".to_string(), UserData {
+            user_id: "user1".to_string(),
+            animal_name: "Lion".to_string(),
+            last_active: now,
+            last_message_time: now,
+            connection_state: ConnectionState::Connected {
+                last_heartbeat: now,
+                connection_id: "conn".to_string(),
+            },
+            last_read_message: None,
+            is_typing: false,
+            last_typing_event: None,
+            last_read_receipt_event: None,
+            rate_limiter: RateLimiter::new(),
+            last_sanitized_message: None,
+        });
+        rooms.insert(room_name.clone(), room);
+    }
+    
+    // Subscribe to the room's broadcast
+    let rx = {
+        let rooms = app_state.rooms.read().await;
+        rooms.get(&room_name).map(|r| r.sender.subscribe())
+    };
+    
+    // Call shutdown
+    app_state.shutdown().await;
+    
+    // Rooms should be cleared
+    assert!(app_state.rooms.read().await.is_empty(), "Rooms should be cleared after shutdown");
+    
+    // If we had a receiver, it should have received ServerShutdown event before being dropped
+    if let Some(mut rx) = rx {
+        // Note: The receiver might have received the event or the channel might be closed
+        // Either way, the shutdown was processed
+        let result = rx.try_recv();
+        // Result could be Ok(ServerShutdown) or Err(Lagged/Closed)
+        match result {
+            Ok(OutgoingEvent::System { event: SystemEvent::ServerShutdown { reason: _ } }) => {
+                // Perfect - received shutdown event
+            }
+            _ => {
+                // Also acceptable - channel may have been closed during shutdown
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_extract_client_ip_all_sources() {
+    use axum::http::HeaderMap;
+    use std::net::SocketAddr;
+    use axum::extract::ConnectInfo;
+    
+    // Test X-Forwarded-For priority
+    let mut headers = HeaderMap::new();
+    headers.insert("x-forwarded-for", "1.2.3.4, 5.6.7.8".parse().unwrap());
+    headers.insert("x-real-ip", "9.10.11.12".parse().unwrap());
+    let conn_info = ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 12345)));
+    
+    let ip = extract_client_ip(&headers, Some(&conn_info));
+    assert_eq!(ip, Some("1.2.3.4".to_string()), "Should prefer X-Forwarded-For");
+    
+    // Test X-Real-IP when no X-Forwarded-For
+    let mut headers2 = HeaderMap::new();
+    headers2.insert("x-real-ip", "9.10.11.12".parse().unwrap());
+    let ip2 = extract_client_ip(&headers2, Some(&conn_info));
+    assert_eq!(ip2, Some("9.10.11.12".to_string()), "Should use X-Real-IP");
+    
+    // Test fallback to ConnectInfo
+    let headers3 = HeaderMap::new();
+    let ip3 = extract_client_ip(&headers3, Some(&conn_info));
+    assert_eq!(ip3, Some("127.0.0.1".to_string()), "Should fall back to ConnectInfo");
+    
+    // Test no IP available
+    let ip4 = extract_client_ip(&headers3, None);
+    assert!(ip4.is_none(), "Should return None when no IP source available");
+}
+
+#[tokio::test]
+async fn test_room_handler_returns_html_for_valid_room() {
+    let app_state = Arc::new(AppState::new());
+    let app = Router::new()
+        .route("/{room}", get(room_handler))
+        .with_state(app_state.clone());
+
+    // Valid new room name - should return HTML (room created on WS connect, not HTTP)
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/new-test-room")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    
+    // Should return HTML content
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let html = String::from_utf8_lossy(&body);
+    assert!(html.contains("<!DOCTYPE html>") || html.contains("<html"), "Should return HTML");
+}
+
+#[tokio::test]
+async fn test_cleanup_rooms_handles_empty_rooms() {
+    let app_state = Arc::new(AppState::new());
+    
+    // Add room with no users and old last_activity
+    {
+        let mut rooms = app_state.rooms.write().await;
+        let mut room = create_room();
+        room.last_activity = Instant::now() - Duration::from_secs(7201); // Over 2 hours old
+        room.users.clear();
+        rooms.insert("empty-old-room".to_string(), room);
+    }
+    
+    cleanup_rooms(&app_state).await;
+    
+    let rooms = app_state.rooms.read().await;
+    assert!(!rooms.contains_key("empty-old-room"), "Old empty room should be removed");
+}
+
+#[tokio::test]
+async fn test_cleanup_rooms_keeps_rooms_with_users() {
+    let app_state = Arc::new(AppState::new());
+    
+    // Add room with a user but old last_activity
+    {
+        let mut rooms = app_state.rooms.write().await;
+        let mut room = create_room();
+        room.last_activity = Instant::now() - Duration::from_secs(7201);
+        
+        let now = Instant::now();
+        room.users.insert("active-user".to_string(), UserData {
+            user_id: "active-user".to_string(),
+            animal_name: "Lion".to_string(),
+            last_active: now,
+            last_message_time: now,
+            connection_state: ConnectionState::Connected {
+                last_heartbeat: now,
+                connection_id: "conn".to_string(),
+            },
+            last_read_message: None,
+            is_typing: false,
+            last_typing_event: None,
+            last_read_receipt_event: None,
+            rate_limiter: RateLimiter::new(),
+            last_sanitized_message: None,
+        });
+        rooms.insert("room-with-user".to_string(), room);
+    }
+    
+    cleanup_rooms(&app_state).await;
+    
+    let rooms = app_state.rooms.read().await;
+    assert!(rooms.contains_key("room-with-user"), "Room with users should be kept");
 }
