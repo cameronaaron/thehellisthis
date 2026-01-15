@@ -50,6 +50,7 @@ const ROOM_CLEANUP_INTERVAL: Duration = Duration::from_secs(60); // Check every 
 const EMPTY_ROOM_CLEANUP_DELAY: Duration = Duration::from_secs(60); // Delete empty rooms after 1 min
 const MAX_TOTAL_ROOMS_MEMORY: usize = 400_000_000;
 const MAX_MESSAGES_PER_ROOM: usize = 500;
+const USER_IDLE_MESSAGE_TIMEOUT: Duration = Duration::from_secs(600); // Disconnect if no messages for 10 minutes
 const MAX_MESSAGE_AGE: Duration = Duration::from_secs(86400 * 30);
 const CLEANUP_BATCH_SIZE: usize = 100;
 const TYPING_EVENT_MIN_INTERVAL: Duration = Duration::from_millis(200);
@@ -1872,6 +1873,7 @@ async fn handle_websocket(
                 }
 
                 let mut rooms = state.rooms.write().await;
+                let mut idle_too_long = false;
                 if let Some(room_state) = rooms.get_mut(&room) {
                     if let Some(user) = room_state.users.get_mut(&user_id) {
                         if let ConnectionState::Connected {
@@ -1880,12 +1882,27 @@ async fn handle_websocket(
                         } = user.connection_state
                         {
                             *last_heartbeat = Instant::now();
+                            let idle = Instant::now().duration_since(user.last_message_time);
+                            idle_too_long = idle >= USER_IDLE_MESSAGE_TIMEOUT;
                             debug!(
-                                "Updated last_heartbeat for user_id {} in room {}",
-                                user_id, room
+                                "Updated last_heartbeat for user_id {} in room {} (idle {:?})",
+                                user_id, room, idle
                             );
                         }
                     }
+                }
+
+                // Drop room lock before attempting to close socket
+                drop(rooms);
+
+                if idle_too_long {
+                    info!(
+                        "Disconnecting user_id {} in room {} after {:?} of no messages",
+                        user_id, room, USER_IDLE_MESSAGE_TIMEOUT
+                    );
+                    let mut tx = ws_tx.lock().await;
+                    let _ = tx.send(Message::Close(None)).await;
+                    break;
                 }
             }
             info!("heartbeat_task ended for user_id {}", user_id);
