@@ -11,6 +11,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::Barrier;
+use tokio::time::timeout;
 use tower::util::ServiceExt;
 use futures::future::join_all;
 
@@ -871,6 +872,224 @@ async fn test_oversized_message_rejection() {
     let huge_msg = "a".repeat(MAX_MESSAGE_LEN + 1);
     let result = validate_message(&huge_msg);
     assert!(result.is_err());
+}
+
+// ========== BROADCAST EVENTS ==========
+
+#[tokio::test]
+async fn test_broadcast_user_count_sends_event() {
+    let mut room = create_room();
+    let now = Instant::now();
+
+    room.users.insert(
+        "user1".to_string(),
+        UserData {
+            user_id: "user1".to_string(),
+            animal_name: "Lion".to_string(),
+            last_active: now,
+            last_message_time: now,
+            connection_state: ConnectionState::Connected {
+                last_heartbeat: now,
+                connection_id: "conn1".to_string(),
+            },
+            last_read_message: None,
+            is_typing: false,
+            last_typing_event: None,
+            last_read_receipt_event: None,
+            rate_limiter: RateLimiter::new(),
+            last_sanitized_message: None,
+        },
+    );
+
+    room.users.insert(
+        "user2".to_string(),
+        UserData {
+            user_id: "user2".to_string(),
+            animal_name: "Tiger".to_string(),
+            last_active: now,
+            last_message_time: now,
+            connection_state: ConnectionState::Connected {
+                last_heartbeat: now - Duration::from_secs(10),
+                connection_id: "conn2".to_string(),
+            },
+            last_read_message: None,
+            is_typing: false,
+            last_typing_event: None,
+            last_read_receipt_event: None,
+            rate_limiter: RateLimiter::new(),
+            last_sanitized_message: None,
+        },
+    );
+
+    let mut rx = room.sender.subscribe();
+    room.broadcast_user_count();
+
+    let event = timeout(Duration::from_millis(100), rx.recv())
+        .await
+        .expect("no broadcast received")
+        .expect("broadcast recv failed");
+
+    match event {
+        OutgoingEvent::UserCount { count } => assert_eq!(count, 1),
+        other => panic!("unexpected event: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_broadcast_system_event_sends_event() {
+    let room = create_room();
+    let mut rx = room.sender.subscribe();
+
+    room.broadcast_system_event(SystemEvent::UserJoined {
+        user_id: "u1".to_string(),
+        animal_name: "Lion".to_string(),
+    });
+
+    let event = timeout(Duration::from_millis(100), rx.recv())
+        .await
+        .expect("no broadcast received")
+        .expect("broadcast recv failed");
+
+    match event {
+        OutgoingEvent::System { event } => match event {
+            SystemEvent::UserJoined { user_id, animal_name } => {
+                assert_eq!(user_id, "u1");
+                assert_eq!(animal_name, "Lion");
+            }
+            other => panic!("unexpected system event: {other:?}"),
+        },
+        other => panic!("unexpected event: {other:?}"),
+    }
+}
+
+// ========== MEMORY PRUNING & LIMITS ==========
+
+#[tokio::test]
+async fn test_prune_old_messages_updates_tracker() {
+    let mut room = create_room();
+    let tracker = MemoryTracker::new();
+
+    let msg1 = OutgoingMessage {
+        message_id: uuid::Uuid::new_v4(),
+        user_id: "user1".to_string(),
+        animal_name: "Lion".to_string(),
+        text: "<p>One</p>".to_string(),
+        timestamp: "1000".to_string(),
+    };
+    let msg2 = OutgoingMessage {
+        message_id: uuid::Uuid::new_v4(),
+        user_id: "user1".to_string(),
+        animal_name: "Lion".to_string(),
+        text: "<p>Two</p>".to_string(),
+        timestamp: "2000".to_string(),
+    };
+    let msg3 = OutgoingMessage {
+        message_id: uuid::Uuid::new_v4(),
+        user_id: "user1".to_string(),
+        animal_name: "Lion".to_string(),
+        text: "<p>Three</p>".to_string(),
+        timestamp: "3000".to_string(),
+    };
+
+    let size1 = msg1.estimate_size();
+    let size2 = msg2.estimate_size();
+    let size3 = msg3.estimate_size();
+    let total = size1 + size2 + size3;
+
+    room.chat_history.push(msg1);
+    room.chat_history.push(msg2);
+    room.chat_history.push(msg3);
+    room.total_memory_bytes.store(total, Ordering::SeqCst);
+    tracker.add_bytes(total);
+
+    room.prune_old_messages(size1, &tracker);
+
+    assert_eq!(room.chat_history.len(), 2);
+    let tracker_total = tracker.total_bytes.load(Ordering::Relaxed);
+    assert_eq!(tracker_total, total - size1);
+}
+
+#[tokio::test]
+async fn test_add_message_drops_when_global_memory_full() {
+    let mut room = create_room();
+    let tracker = MemoryTracker::new();
+
+    tracker
+        .total_bytes
+        .store(MAX_TOTAL_ROOMS_MEMORY, Ordering::SeqCst);
+
+    let msg = OutgoingMessage {
+        message_id: uuid::Uuid::new_v4(),
+        user_id: "user1".to_string(),
+        animal_name: "Lion".to_string(),
+        text: "<p>Test</p>".to_string(),
+        timestamp: "1000".to_string(),
+    };
+
+    room.add_message(msg, &tracker);
+    assert!(room.chat_history.is_empty());
+    assert_eq!(room.total_memory_bytes.load(Ordering::Relaxed), 0);
+}
+
+// ========== ANIMAL FALLBACK ==========
+
+#[tokio::test]
+async fn test_assign_animal_fallback_guest() {
+    let mut room = create_room();
+    room.available_animals.clear();
+
+    let assigned = room.assign_animal();
+    assert_eq!(assigned, "guest_1");
+}
+
+// ========== CLEANUP TIMESTAMP EDGE ==========
+
+#[tokio::test]
+async fn test_cleanup_messages_keeps_invalid_timestamp() {
+    let mut room = create_room();
+    let tracker = MemoryTracker::new();
+
+    let msg = OutgoingMessage {
+        message_id: uuid::Uuid::new_v4(),
+        user_id: "user1".to_string(),
+        animal_name: "Lion".to_string(),
+        text: "<p>Bad time</p>".to_string(),
+        timestamp: "not-a-number".to_string(),
+    };
+
+    let size = msg.estimate_size();
+    room.chat_history.push(msg);
+    room.total_memory_bytes.store(size, Ordering::SeqCst);
+    tracker.add_bytes(size);
+
+    room.cleanup_messages(Instant::now(), &tracker).await;
+    assert_eq!(room.chat_history.len(), 1);
+}
+
+// ========== CONNECTION POOL & SECURITY ==========
+
+#[tokio::test]
+async fn test_connection_pool_rejects_when_active_full() {
+    let pool = ConnectionPool::new();
+    pool.active.store(MAX_CONCURRENT_USERS, Ordering::SeqCst);
+
+    let result = pool.add_connection("203.0.113.5").await;
+    assert!(matches!(result, Err(ChatError::ResourceLimit(_))));
+}
+
+#[tokio::test]
+async fn test_security_manager_ban_expires() {
+    let security_manager = SecurityManager::new();
+    {
+        let mut banned = security_manager.banned_ips.write().await;
+        banned.insert(
+            "10.0.0.99".to_string(),
+            Instant::now() - Duration::from_secs(3700),
+        );
+    }
+
+    let result = security_manager.check_ip("10.0.0.99").await;
+    assert!(result.is_ok());
 }
 
 // ========== RESOURCE MONITOR & POOL HOUSEKEEPING ==========
