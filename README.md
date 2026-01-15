@@ -49,7 +49,7 @@ src/
   main.rs         — Server: WS handlers, room state, rate limiting
   tests.rs        — Integration tests (397 tests, all passing)
 index.html        — Client: plain JS, WebSocket, read receipts, typing indicators
-Procfile          — Heroku dyno command
+cloudflare/       — Cloudflare Workers + Container deployment
 .github/copilot-instructions.md  — Dev guidelines & deployment docs
 .github/workflows/ci.yml  — GitHub Actions (fmt/clippy/test/build)
 ```
@@ -114,17 +114,10 @@ Tests cover:
 
 ## Deployment
 
-### Heroku
+### Cloudflare Workers + Containers
 
 ```bash
-git push heroku main
-```
-
-### Docker / Self-hosted
-
-```bash
-cargo build --release
-PORT=3000 ./target/release/infinite-chat
+cd cloudflare && npm install && npm run deploy
 ```
 
 See [.github/copilot-instructions.md](.github/copilot-instructions.md) for detailed setup, monitoring, and performance tuning.
@@ -170,7 +163,7 @@ See [.github/copilot-instructions.md](.github/copilot-instructions.md) for detai
 - [x] All tests passing
 - [x] Release build optimized
 - [x] CI/CD pipeline configured
-- [x] Heroku deployment aligned
+- [x] Cloudflare deployment aligned
 - [x] Cookie security hardened
 - [x] Rate limiting enforced
 - [x] Message sanitization strict

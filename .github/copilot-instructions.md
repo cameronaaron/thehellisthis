@@ -100,15 +100,9 @@ cargo clippy --all-targets --all-features -- -D warnings  # Lint
 - Binary size is ~7.5 MB
 - GitHub Actions CI/CD configured
 
-### Deployment Targets
+### Deployment Target
 
-**Heroku** (simple, classic PaaS)
-```bash
-git push heroku main
-```
-Uses [Procfile](Procfile) to run `infinite-chat` binary. Binary name must match Cargo.toml `[package] name`. Heroku automatically detects Rust buildpack and compiles from source.
-
-**Cloudflare Containers** (edge, WebSocket-native, scales to zero)
+**Cloudflare Workers + Containers** (edge, WebSocket-native, scales to zero)
 ```bash
 cd cloudflare && npm install && npm run deploy
 ```
@@ -230,11 +224,6 @@ All limits enforced in [src/main.rs](src/main.rs):
 7. Implement rich media (image previews, link embeds)
 
 ## Deployment Troubleshooting
-
-### Heroku Issues
-- Binary size > 500 MB? Causes slug compilation timeout. Use `cargo build --release` locally, commit binary.
-- Port binding fails? Verify `PORT` env var is read in [src/main.rs](src/main.rs) — default is 3000.
-- Dyno memory limit? 512 MB dyos can run single room with ~50 users. Use larger dyos for scale.
 
 ### Cloudflare Issues
 - Container doesn't start? Verify `docker build -f Dockerfile.cloudflare .` succeeds locally.
