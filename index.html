@@ -372,13 +372,22 @@ h1 {
     opacity: 0.8;
 }
 
-/* Fading messages when room is dying */
+/* Fading messages when room is dying - cascading gradient fade */
 .room-fading .message {
-    transition: opacity 0.5s;
+    transition: opacity 0.5s ease-in-out;
 }
 
-.room-fading .message:nth-last-child(n+10) {
-    opacity: 0.3;
+/* Oldest messages fade out first */
+.room-fading .message:nth-last-child(n+20) {
+    opacity: 0.1;
+}
+
+.room-fading .message:nth-last-child(n+15):nth-last-child(-n+19) {
+    opacity: 0.2;
+}
+
+.room-fading .message:nth-last-child(n+10):nth-last-child(-n+14) {
+    opacity: 0.35;
 }
 
 .room-fading .message:nth-last-child(n+7):nth-last-child(-n+9) {
@@ -386,7 +395,16 @@ h1 {
 }
 
 .room-fading .message:nth-last-child(n+4):nth-last-child(-n+6) {
-    opacity: 0.7;
+    opacity: 0.65;
+}
+
+.room-fading .message:nth-last-child(-n+3) {
+    opacity: 0.8;
+}
+
+/* Extra: gradient animation effect */
+.room-fading {
+    background: linear-gradient(to bottom, rgba(26, 115, 232, 0.02) 0%, rgba(26, 115, 232, 0.01) 100%);
 }
 
 /* Message combo burst effect */
