@@ -34,19 +34,16 @@ export default {
     
     // Check if this is a WebSocket upgrade request
     const upgradeHeader = request.headers.get('Upgrade');
+    const connectionHeader = request.headers.get('Connection');
     const isWebSocket = upgradeHeader?.toLowerCase() === 'websocket';
     
     // WebSocket connections to /ws/:room
     if (isWebSocket && pathname.startsWith('/ws/')) {
       console.log(`Proxying WebSocket connection to ${pathname}`);
+      console.log(`Headers: Upgrade=${upgradeHeader}, Connection=${connectionHeader}`);
       
-      // Create a new request with the same headers for the container
-      const wsRequest = new Request(`http://localhost:3000${pathname}`, {
-        method: request.method,
-        headers: request.headers,
-      });
-      
-      return container.fetch(wsRequest);
+      // Pass the original request directly to preserve all WebSocket headers
+      return container.fetch(request);
     }
     
     // All other HTTP requests (static pages, health, metrics, etc.)
