@@ -1115,7 +1115,7 @@ h1 {
             Welcome to a social art experiment
         </h2>
         <p class="instructions">
-            Chat freely. Anonymous, no tracking, nothing saved forever. Your custom rooms disappear when everyone leaves. The main room sticks around, but only if you keep talking—go silent for three minutes and it fades too. Keep the conversation alive or watch it vanish. Share the link, use <em>*markdown*</em>, and remember: the longer you talk, the longer it lasts.
+            Chat freely. Anonymous, no tracking, nothing saved forever. Your custom rooms disappear when everyone leaves. The main room sticks around, but only if you keep talking—go silent for two minutes and it fades too. Keep the conversation alive or watch it vanish. Share the link, use <em>*markdown*</em>, and remember: the longer you talk, the longer it lasts.
         </p>
         <div class="welcome-chips">
             <button class="welcome-chip" id="createRoomBtn">
@@ -1914,25 +1914,25 @@ class ChatApp {
             this.roomLifespan.textContent = `${hours}h ${mins}m alive`;
         }
         
-        // Update heartbeat state based on activity
+        // Update heartbeat state based on activity (2 minute room timeout)
         this.roomHeartbeat.classList.remove('active', 'warning', 'critical');
         this.chat.classList.remove('room-fading');
         
-        if (idleSeconds < 30) {
-            // Active: recent messages (0-30s)
+        if (idleSeconds < 20) {
+            // Active: recent messages (0-20s)
             this.roomHeartbeat.classList.add('active');
-        } else if (idleSeconds < 90) {
-            // Normal: 30-90s idle
-        } else if (idleSeconds < 150) {
-            // Warning: 90-150s idle (1.5-2.5 min)
+        } else if (idleSeconds < 60) {
+            // Normal: 20-60s idle
+        } else if (idleSeconds < 100) {
+            // Warning: 60-100s idle (1-1.67 min)
             this.roomHeartbeat.classList.add('warning');
         } else {
-            // Critical: 150+ seconds (2.5+ min), room is dying
+            // Critical: 100+ seconds (1.67+ min), room is dying
             this.roomHeartbeat.classList.add('critical');
             this.chat.classList.add('room-fading');
             
-            // Show fade warning once
-            if (!this.fadeWarningShown && idleSeconds >= 140) {
+            // Show fade warning once at 90s (30s before death)
+            if (!this.fadeWarningShown && idleSeconds >= 90) {
                 this.fadeWarningShown = true;
                 this.showFadeWarning();
             }

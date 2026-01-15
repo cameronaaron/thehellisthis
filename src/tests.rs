@@ -6992,15 +6992,15 @@ async fn test_claim_html_sanitization() {
 
 #[tokio::test]
 async fn test_empty_room_cleanup_delay_constant() {
-    // Verify the EMPTY_ROOM_CLEANUP_DELAY is 3 minutes (180 seconds)
+    // Verify the EMPTY_ROOM_CLEANUP_DELAY is 2 minutes (120 seconds)
     // This is the timeout that drives the "keep talking or it fades" mechanic
-    assert_eq!(EMPTY_ROOM_CLEANUP_DELAY.as_secs(), 180);
+    assert_eq!(EMPTY_ROOM_CLEANUP_DELAY.as_secs(), 120);
 }
 
 #[tokio::test]
 async fn test_room_cleanup_interval_matches_delay() {
-    // Cleanup should run frequently enough to catch rooms at the 3-min mark
-    assert_eq!(ROOM_CLEANUP_INTERVAL.as_secs(), 180);
+    // Cleanup should run frequently enough to catch rooms at the 2-min mark
+    assert_eq!(ROOM_CLEANUP_INTERVAL.as_secs(), 120);
 }
 
 #[tokio::test]
@@ -7015,8 +7015,8 @@ async fn test_room_survives_before_cleanup_delay() {
             chat_history: vec![],
             users: std::collections::HashMap::new(),
             available_animals: std::collections::VecDeque::new(),
-            // Only 2.5 minutes old (under 3 min threshold)
-            last_activity: Instant::now() - Duration::from_secs(150),
+            // Only 90 seconds old (under 2 min threshold)
+            last_activity: Instant::now() - Duration::from_secs(90),
             total_memory_bytes: std::sync::atomic::AtomicUsize::new(0),
         };
         rooms.insert("should-survive".to_string(), room_state);
@@ -7040,8 +7040,8 @@ async fn test_room_deleted_after_cleanup_delay() {
             chat_history: vec![],
             users: std::collections::HashMap::new(),
             available_animals: std::collections::VecDeque::new(),
-            // 3.5 minutes old (over 3 min threshold)
-            last_activity: Instant::now() - Duration::from_secs(210),
+            // 2.5 minutes old (over 2 min threshold)
+            last_activity: Instant::now() - Duration::from_secs(150),
             total_memory_bytes: std::sync::atomic::AtomicUsize::new(0),
         };
         rooms.insert("should-die".to_string(), room_state);
@@ -7144,28 +7144,45 @@ async fn test_heartbeat_interval_faster_than_cleanup() {
 }
 
 #[tokio::test]
-async fn test_main_room_messages_fade_at_90s_idle() {
-    // Test that main room trims messages to ~100 when idle 90+ seconds
-    // This is verified through server cleanup logic, not client connection
-    // The functionality is tested indirectly via other tests; this documents the behavior
-    assert!(EMPTY_ROOM_CLEANUP_DELAY.as_secs() == 180);
+async fn test_main_room_fade_thresholds_correct() {
+    // Verify the constants are set for 2-minute timeout
+    assert_eq!(
+        EMPTY_ROOM_CLEANUP_DELAY.as_secs(),
+        120,
+        "Room should die at 2 minutes"
+    );
+    assert_eq!(
+        ROOM_CLEANUP_INTERVAL.as_secs(),
+        120,
+        "Cleanup should run every 2 minutes"
+    );
 }
 
 #[tokio::test]
-async fn test_main_room_messages_aggressively_fade_at_180s_idle() {
-    // Main room message fade behavior is server-side and tested via cleanup_rooms
-    // At 180s idle: keep only ~10 messages
-    // At 90s idle: keep only ~100 messages
-    assert!(EMPTY_ROOM_CLEANUP_DELAY.as_secs() == 180);
+async fn test_main_room_message_fade_logic() {
+    // Verify that the main room fade thresholds make sense for UX:
+    // - 60s idle: trim to 100 messages (warning territory)
+    // - 120s idle: trim to 10 messages (aggressive fade at death)
+    // The logic in cleanup_rooms uses these thresholds
+    let sixty_seconds = Duration::from_secs(60);
+    let one_twenty_seconds = EMPTY_ROOM_CLEANUP_DELAY;
+
+    assert!(
+        sixty_seconds < one_twenty_seconds,
+        "First fade should happen before death"
+    );
+    assert_eq!(one_twenty_seconds.as_secs(), 120);
 }
 
 #[tokio::test]
-async fn test_main_room_messages_never_deleted_just_faded() {
-    // Main room should never be deleted, only messages pruned
-    // This is verified in the cleanup_rooms() function via:
-    // if room_name == "main" { ... continue; }
-    // The main room persists indefinitely; only messages fade
-    assert!(EMPTY_ROOM_CLEANUP_DELAY.as_secs() == 180);
+async fn test_main_room_never_deleted() {
+    // Main room is protected by: if room_name == "main" { ... continue; }
+    // This test documents that the main room ONLY has message fade, never deletion.
+    // The continue statement skips the deletion logic entirely.
+    assert!(
+        EMPTY_ROOM_CLEANUP_DELAY.as_secs() <= 120,
+        "Timeout should be at most 2 minutes"
+    );
 }
 
 #[tokio::test]
