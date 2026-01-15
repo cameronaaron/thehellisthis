@@ -49,7 +49,6 @@ src/
   tests.rs        — Integration tests (397 tests, all passing)
 index.html        — Client: plain JS, WebSocket, read receipts, typing indicators
 Procfile          — Heroku dyno command
-heroku.yml        — Heroku container build config
 .github/copilot-instructions.md  — Dev guidelines & deployment docs
 .github/workflows/ci.yml  — GitHub Actions (fmt/clippy/test/build)
 ```
@@ -117,8 +116,6 @@ Tests cover:
 ```bash
 git push heroku main
 ```
-
-Heroku automatically builds and runs via [heroku.yml](heroku.yml).
 
 ### Docker / Self-hosted
 

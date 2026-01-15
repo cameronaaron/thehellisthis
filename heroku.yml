@@ -1,5 +1,0 @@
-build:
-  languages:
-    - rust
-run:
-  web: ./target/release/infinite-chat
