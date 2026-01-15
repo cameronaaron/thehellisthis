@@ -2059,13 +2059,13 @@ async fn cleanup_rooms(state: &Arc<AppState>) {
             }
 
             let inactive_duration = now.duration_since(room.last_activity);
-            
+
             // Check for actively connected users
             let active_users = room
                 .users
                 .values()
                 .any(|u| matches!(u.connection_state, ConnectionState::Connected { .. }));
-            
+
             // Delete empty rooms (no connected users) after EMPTY_ROOM_CLEANUP_DELAY of inactivity
             if !active_users && inactive_duration >= EMPTY_ROOM_CLEANUP_DELAY {
                 rooms_to_remove.push(room_name.clone());
