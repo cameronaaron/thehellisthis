@@ -23,11 +23,12 @@ Open [http://localhost:3000/main](http://localhost:3000/main) to chat.
 - Persistent per-user cookies (UUID + animal name)
 - Room discovery via dynamic routing
 
-🛡️ **Reliability**
+🛡️ **Reliability** & 🎮 **Game Mechanics**
 - Built-in rate limiting (30 msgs/min per user)
 - Global memory cap (400 MB) with auto-pruning
 - IP-based connection pooling & bans
-- Automatic inactive user/room cleanup
+- Ephemeral rooms vanish after 10 min of inactivity (creates social pressure to keep chatting)
+- Main room message fade after 10 min idle (stay engaged or lose context)
 
 🔒 **Security**
 - HttpOnly, SameSite=Strict, Secure cookies
@@ -92,7 +93,9 @@ Edit [src/main.rs](src/main.rs) constants:
 | `HEARTBEAT_INTERVAL` | 5s | Keep-alive ping frequency |
 | `MAX_MESSAGE_LEN` | 8 KB | Max message size |
 | `MESSAGE_RATE_LIMIT` | 500ms | Min time between messages |
-
+| `EMPTY_ROOM_CLEANUP_DELAY` | 10min | Grace period before empty rooms vanish (game mechanic) |
+| `USER_IDLE_MESSAGE_TIMEOUT` | 10min | Disconnect inactive users (game mechanic) |
+| `USER_IDLE_MESSAGE_TIMEOUT` | 10min | Disconnect inactive users (game mechanic) |
 ## Testing
 
 ```bash

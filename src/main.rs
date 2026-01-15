@@ -47,7 +47,7 @@ const MAX_MESSAGES_PER_WINDOW: usize = 30;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(6);
 const ROOM_CLEANUP_INTERVAL: Duration = Duration::from_secs(60); // Check every 1 minute
-const EMPTY_ROOM_CLEANUP_DELAY: Duration = Duration::from_secs(60); // Delete empty rooms after 1 min
+const EMPTY_ROOM_CLEANUP_DELAY: Duration = Duration::from_secs(600); // Delete empty rooms after 10 min
 const MAX_TOTAL_ROOMS_MEMORY: usize = 400_000_000;
 const MAX_MESSAGES_PER_ROOM: usize = 500;
 const USER_IDLE_MESSAGE_TIMEOUT: Duration = Duration::from_secs(600); // Disconnect if no messages for 10 minutes
@@ -2058,12 +2058,9 @@ async fn cleanup_rooms(state: &Arc<AppState>) {
             if room_name == "main" {
                 // Main room also experiences message fade if idle
                 let inactive_duration = now.duration_since(room.last_activity);
-                let target_messages = if inactive_duration >= EMPTY_ROOM_CLEANUP_DELAY {
-                    // If main room has been idle 1+ minute, aggressively fade: keep only ~10 recent
-                    10
-                } else if inactive_duration >= Duration::from_secs(30) {
-                    // At 30s idle, trim down to ~100
-                    100
+                let target_messages = if inactive_duration >= Duration::from_secs(600) {
+                    // If main room has been idle 10+ minutes, fade: keep only ~50 recent
+                    50
                 } else {
                     // Normal: keep up to MAX
                     MAX_MESSAGES_PER_ROOM

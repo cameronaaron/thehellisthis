@@ -39,7 +39,7 @@ Client (index.html) → WS /ws/{room} → Axum Handler → RoomState (broadcast 
 - `MAX_MESSAGES_PER_WINDOW: 30` — per 60s per user
 - `HEARTBEAT_INTERVAL: 5s`, `HEARTBEAT_TIMEOUT: 6s`
 - `ROOM_CLEANUP_INTERVAL: 60s` — check for inactive rooms every minute
-- `EMPTY_ROOM_CLEANUP_DELAY: 60s` — delete empty rooms after 1 minute of inactivity
+- `EMPTY_ROOM_CLEANUP_DELAY: 600s` — delete empty rooms after 10 minutes of inactivity (game mechanic: pressure to stay social)
 - **When adding features, use existing helpers (`RateLimiter::can_send_message`, `MemoryTracker::can_add_message`) instead of custom checks**
 
 ## HTTP/WebSocket Routes
@@ -77,7 +77,7 @@ Client (index.html) → WS /ws/{room} → Axum Handler → RoomState (broadcast 
 ## Background Tasks
 - **Heartbeat sender**: Every 5s sends `OutgoingEvent::Heartbeat` to all clients
 - **Client pinger**: Every 5s sends ping frames, disconnects if no pong within 6s
-- **Cleanup**: Every 60s `cleanup_rooms` removes empty rooms (1 minute threshold), prunes old messages, disconnects stale users
+- **Cleanup**: Every 60s `cleanup_rooms` removes empty rooms (10 minute threshold), prunes old messages (main room at 10 min idle), disconnects stale users (10 min idle)
 - **Memory GC**: Every 60s via `MemoryTracker::cleanup_if_needed`
 - **Shutdown handler**: Ctrl-C triggers `graceful_shutdown` → broadcasts `OutgoingEvent::System(ServerShutdown)` to all rooms
 
@@ -201,7 +201,7 @@ All limits enforced in [src/main.rs](src/main.rs):
 ## Performance Tuning
 
 ### Memory Management
-- **Cleanup cycle**: Every 60s triggers `cleanup_rooms()` → removes empty rooms, prunes old messages
+- **Cleanup cycle**: Every 60s triggers `cleanup_rooms()` → removes empty rooms (10 min idle), prunes old messages (main room: 50 kept after 10 min idle, rest at 500)
 - **Global cap**: 400 MB hard limit; exceeding triggers aggressive pruning
 - **Per-room**: Max 500 messages; oldest auto-deleted when limit reached
 - **User cleanup**: Disconnected users removed from room state

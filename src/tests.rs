@@ -7198,7 +7198,7 @@ async fn test_claim_main_room_persistent() {
 async fn test_claim_custom_room_deleted_when_empty() {
     let app_state = Arc::new(AppState::new());
 
-    // Create custom room empty + 5min old
+    // Create custom room empty + 15min old
     {
         let mut rooms = app_state.rooms.write().await;
         let room_state = RoomState {
@@ -7206,7 +7206,7 @@ async fn test_claim_custom_room_deleted_when_empty() {
             chat_history: vec![],
             users: std::collections::HashMap::new(),
             available_animals: std::collections::VecDeque::new(),
-            last_activity: Instant::now() - Duration::from_secs(301),
+            last_activity: Instant::now() - Duration::from_secs(901),
             total_memory_bytes: std::sync::atomic::AtomicUsize::new(0),
         };
         rooms.insert("temp-room".to_string(), room_state);
@@ -7296,9 +7296,9 @@ async fn test_claim_html_sanitization() {
 
 #[tokio::test]
 async fn test_empty_room_cleanup_delay_constant() {
-    // Verify the EMPTY_ROOM_CLEANUP_DELAY is 1 minute (60 seconds)
+    // Verify the EMPTY_ROOM_CLEANUP_DELAY is 10 minutes (600 seconds)
     // This is the timeout that drives the "keep talking or it fades" mechanic
-    assert_eq!(EMPTY_ROOM_CLEANUP_DELAY.as_secs(), 60);
+    assert_eq!(EMPTY_ROOM_CLEANUP_DELAY.as_secs(), 600);
 }
 
 #[tokio::test]
@@ -7319,8 +7319,8 @@ async fn test_room_survives_before_cleanup_delay() {
             chat_history: vec![],
             users: std::collections::HashMap::new(),
             available_animals: std::collections::VecDeque::new(),
-            // Only 45 seconds old (under 1 min threshold)
-            last_activity: Instant::now() - Duration::from_secs(45),
+            // Only 450 seconds old (under 10 min threshold)
+            last_activity: Instant::now() - Duration::from_secs(450),
             total_memory_bytes: std::sync::atomic::AtomicUsize::new(0),
         };
         rooms.insert("should-survive".to_string(), room_state);
@@ -7344,8 +7344,8 @@ async fn test_room_deleted_after_cleanup_delay() {
             chat_history: vec![],
             users: std::collections::HashMap::new(),
             available_animals: std::collections::VecDeque::new(),
-            // 1.5 minutes old (over 1 min threshold)
-            last_activity: Instant::now() - Duration::from_secs(150),
+            // 15 minutes old (over 10 min threshold)
+            last_activity: Instant::now() - Duration::from_secs(900),
             total_memory_bytes: std::sync::atomic::AtomicUsize::new(0),
         };
         rooms.insert("should-die".to_string(), room_state);
@@ -7453,11 +7453,11 @@ async fn test_heartbeat_interval_faster_than_cleanup() {
 
 #[tokio::test]
 async fn test_main_room_fade_thresholds_correct() {
-    // Verify the constants are set for 2-minute timeout
+    // Verify the constants are set for 10-minute timeout
     assert_eq!(
         EMPTY_ROOM_CLEANUP_DELAY.as_secs(),
-        60,
-        "Room should die at 1 minute"
+        600,
+        "Room should die at 10 minutes"
     );
     assert_eq!(
         ROOM_CLEANUP_INTERVAL.as_secs(),
@@ -7469,17 +7469,11 @@ async fn test_main_room_fade_thresholds_correct() {
 #[tokio::test]
 async fn test_main_room_message_fade_logic() {
     // Verify that the main room fade thresholds make sense for UX:
-    // - 30s idle: trim to 100 messages (warning territory)
-    // - 60s idle: trim to 10 messages (aggressive fade at death)
-    // The logic in cleanup_rooms uses these thresholds
-    let sixty_seconds = EMPTY_ROOM_CLEANUP_DELAY;
-    let thirty_seconds = Duration::from_secs(30);
+    // - 10min idle: trim to 50 messages (gentle fade at death)
+    // The logic in cleanup_rooms uses this threshold
+    let ten_minutes = EMPTY_ROOM_CLEANUP_DELAY;
 
-    assert!(
-        thirty_seconds < sixty_seconds,
-        "First fade should happen before death"
-    );
-    assert_eq!(sixty_seconds.as_secs(), 60);
+    assert_eq!(ten_minutes.as_secs(), 600, "Main room fades after 10 minutes");
 }
 
 #[tokio::test]
@@ -7487,10 +7481,8 @@ async fn test_main_room_never_deleted() {
     // Main room is protected by: if room_name == "main" { ... continue; }
     // This test documents that the main room ONLY has message fade, never deletion.
     // The continue statement skips the deletion logic entirely.
-    assert!(
-        EMPTY_ROOM_CLEANUP_DELAY.as_secs() <= 60,
-        "Timeout should be at most 1 minute"
-    );
+    // The fade timeout should be 600 seconds (10 minutes)
+    assert_eq!(EMPTY_ROOM_CLEANUP_DELAY.as_secs(), 600);
 }
 
 #[tokio::test]
@@ -8134,22 +8126,22 @@ async fn test_frontend_timeout_text_matches_backend_constant() {
 
     let cleanup_seconds = EMPTY_ROOM_CLEANUP_DELAY.as_secs();
 
-    // Backend uses 60 seconds = 1 minute
+    // Backend uses 600 seconds = 10 minutes
     assert_eq!(
-        cleanup_seconds, 60,
+        cleanup_seconds, 600,
         "EMPTY_ROOM_CLEANUP_DELAY changed! Update frontend text to match."
     );
 
-    // Frontend must say "one minute" (not "two minutes", "30 seconds", etc.)
-    assert!(EMBEDDED_HTML.contains("go silent for one minute"),
-        "Frontend instructions don't match backend! Backend deletes at {}s but HTML doesn't say 'one minute'. \
-         Found text should say 'go silent for one minute'.",
+    // Frontend must say "ten minute" (not "one minute", "30 seconds", etc.)
+    assert!(EMBEDDED_HTML.contains("go silent for ten minute"),
+        "Frontend instructions don't match backend! Backend deletes at {}s but HTML doesn't say 'ten minute'. \
+         Found text should say 'go silent for ten minute'.",
         cleanup_seconds);
 
     // Must NOT contain the old incorrect text
     assert!(
-        !EMBEDDED_HTML.contains("go silent for two minute"),
-        "Frontend still contains outdated 'two minute' text!"
+        !EMBEDDED_HTML.contains("go silent for one minute"),
+        "Frontend still contains outdated 'one minute' text!"
     );
 }
 
