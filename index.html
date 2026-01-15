@@ -1932,7 +1932,7 @@ class ChatApp {
             this.chat.classList.add('room-fading');
             
             // Show fade warning once at 90s (30s before death)
-            if (!this.fadeWarningShown && idleSeconds >= 90) {
+            if (!this.fadeWarningShown && idleSeconds >= 45) {
                 this.fadeWarningShown = true;
                 this.showFadeWarning();
             }
