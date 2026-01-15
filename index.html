@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
-<meta name="description" content="A social experiment in organic interaction. Anonymous ephemeral chat—no sign-up, no persistence. Share a link, connect with strangers, vanish.">
+<meta name="description" content="A social experiment in organic interaction. Anonymous ephemeral chat—no sign-up, memory-only storage. Share a link, connect with strangers, chat freely.">
 <meta name="theme-color" content="#1a73e8" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#131314" media="(prefers-color-scheme: dark)">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -12,7 +12,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="format-detection" content="telephone=no">
 <meta property="og:title" content="thehellisthis - Anonymous Chat">
-<meta property="og:description" content="A social art experiment. Ephemeral chat spaces designed to foster genuine human connection. Anonymous, untracked, impermanent.">
+<meta property="og:description" content="A social art experiment. Ephemeral chat spaces designed to foster genuine human connection. Anonymous, memory-only storage, no database.">
 <meta property="og:type" content="website">
 <meta name="twitter:card" content="summary">
 <title>thehellisthis</title>
@@ -969,8 +969,9 @@ h1 {
         </h2>
         <p class="instructions">
             You've entered a space designed for genuine human connection—anonymous, ephemeral, and beautifully impermanent. 
-            No accounts, no history, no data collected. Just real conversations that exist only in this moment.
-            Share a room link to invite others. Use <em>*markdown*</em> for formatting. When you leave, it all disappears.
+            No accounts or registration required. Messages are stored only in server memory (up to 500 per room) and disappear when the server restarts. 
+            Your IP address is used temporarily for rate limiting and security, then discarded. 
+            Share a room link to invite others. Use <em>*markdown*</em> for formatting. Nothing is saved to disk—ever.
         </p>
         <div class="welcome-chips">
             <button class="welcome-chip" id="createRoomBtn">
