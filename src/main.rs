@@ -10,11 +10,10 @@ use axum::{
 };
 use axum_server::Server;
 use bytes::Bytes;
-use http::{header, HeaderMap, StatusCode};
-use tower_http::cors::{Any, CorsLayer};
 use comrak::{markdown_to_html, Options as ComrakOptions};
 use futures::{SinkExt, StreamExt};
 use http::request::Parts;
+use http::{header, HeaderMap, StatusCode};
 use lazy_static::lazy_static;
 use rand::prelude::SliceRandom;
 use regex::Regex;
@@ -31,6 +30,7 @@ use std::{
 use thiserror::Error;
 use tokio::sync::{broadcast, Mutex, RwLock};
 use tower_cookies::Cookie;
+use tower_http::cors::{Any, CorsLayer};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -255,7 +255,9 @@ enum ConnectionState {
         last_heartbeat: Instant,
         connection_id: String,
     },
-    Disconnected { since: Instant },
+    Disconnected {
+        since: Instant,
+    },
 }
 
 #[derive(Clone)]
@@ -310,9 +312,7 @@ impl IntoResponse for ChatError {
                 (StatusCode::TOO_MANY_REQUESTS, "Rate limit exceeded")
             }
             ChatError::InvalidMessage(_) => (StatusCode::BAD_REQUEST, "Invalid message"),
-            ChatError::ResourceLimit(_) => {
-                (StatusCode::SERVICE_UNAVAILABLE, "Server at capacity")
-            }
+            ChatError::ResourceLimit(_) => (StatusCode::SERVICE_UNAVAILABLE, "Server at capacity"),
             ChatError::ConnectionError(_) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "Connection error")
             }
@@ -508,50 +508,308 @@ struct AppState {
 fn create_room() -> RoomState {
     info!("Creating a new room with a large, diverse set of animal names...");
     let mut animals = vec![
-        "dog", "cat", "lion", "tiger", "elephant", "giraffe", "koala", "penguin", "panda",
-        "dolphin", "whale", "bear", "wolf", "zebra", "fox", "owl", "rabbit", "kangaroo",
-        "monkey", "snake", "parrot", "cheetah", "jaguar", "lynx", "otter", "seal",
-        "peacock", "sparrow", "crow", "hedgehog", "flamingo", "shark", "stingray",
-        "starfish", "octopus", "seahorse", "crab", "lobster", "squid", "antelope",
-        "badger", "bison", "buffalo", "camel", "chameleon", "crocodile", "eagle",
-        "ferret", "gecko", "gorilla", "heron", "hyena", "ibis", "iguana", "lemur",
-        "leopard", "manatee", "mole", "moose", "narwhal", "newt", "ostrich", "platypus",
-        "porcupine", "raven", "salamander", "sloth", "stork", "tapir", "toad", "turkey",
-        "vulture", "wallaby", "walrus", "wolverine", "yak", "hippo", "rhino", "anteater",
-        "armadillo", "beaver", "butterfly", "cormorant", "coyote", "dingo", "dragonfly",
-        "firefly", "grasshopper", "hamster", "honeyeater", "hummingbird", "kingfisher",
-        "ladybug", "llama", "meerkat", "moth", "ox", "puffin", "quail", "ringtail",
-        "swan", "tortoise", "turtle", "woodpecker", "wombat", "orangutan", "manta-ray",
-        "robin", "musk-ox", "kiwi", "harpy-eagle", "peafowl", "margay", "capybara",
-        "urchin", "bandicoot", "guinea-pig", "axolotl", "dugong", "fennec-fox", "pika",
-        "tamarin", "aardwolf", "colugo", "dhole", "galago", "alpaca", "anaconda",
-        "antlion", "auk", "aye-aye", "basilisk", "bee", "beetle", "bengal-cat",
-        "binturong", "bird-of-paradise", "bonobo", "booby", "bushbaby", "caracal",
-        "caracara", "cassowary", "centipede", "chinchilla", "chipmunk", "civet",
-        "clownfish", "coati", "cobra", "cockatiel", "cockatoo", "conure", "copperhead",
-        "cuttlefish", "damselfly", "deer", "devil-ray", "dodo", "donkey", "dove",
-        "dung-beetle", "emu", "ermine", "falcon", "fallow-deer", "fathead-minnow",
-        "flapjack-octopus", "flatfish", "flightless-cormorant", "flounder", "flying-fish",
-        "flying-lemur", "flying-squirrel", "frilled-lizard", "frog", "fruit-fly",
-        "fulmar", "gayal", "gavial", "gazelle", "gibbon", "glass-lizard", "glowworm",
-        "gnu", "goat", "goby", "godwit", "goldcrest", "goldfinch", "goldfish",
-        "goosander", "goose", "gopher", "goral", "goshawk", "gosling", "grackle",
-        "gray-whale", "grebe", "greyhound", "griffin", "grouse", "grouper", "guanaco",
-        "guillemot", "guinea-fowl", "gull", "guppy", "gurami", "gurnard", "gymnure",
-        "gypsy-moth", "gyri", "gyroscope", "habu", "haddock", "hadji", "hadron",
-        "hagborn", "hagfish", "haggadic", "haggis", "haggler", "hagiology",
-        "hagioscope", "haj", "hajj", "hajji", "hake", "hakim", "halal", "halbe",
-        "halbert", "halcyon", "hale", "half-back", "half-beak", "half-blood",
-        "half-cock", "half-crab", "half-cutter", "half-day", "half-deck", "half-penny",
-        "half-track", "halibut", "halid", "halide", "halidome", "halif",
-        "halimeda", "haliotis", "halite", "halitus", "halk", "hall", "hallabaloo",
-        "hallal", "hallan", "hallel", "hallelujah", "haller", "halley", "halliday",
-        "hallide", "hallier", "hallified", "halliford", "halliform", "halligan",
-        "hallikainen", "hallikon", "halliland", "hallilot", "hallily", "hallimeda",
-        "hallimond", "hallingers", "hallings", "hallingers", "hallion", "hallionic",
-        "halliotidae", "halliotis", "hallish", "hallis", "hallissey", "hallistor",
-        "halliwell", "hallawine", "halloween", "hallowmas", "hallows", "halloums",
-        "halls", "hallstatt", "hallux", "hallway", "hallways", "hallway", "hallwort",
+        "dog",
+        "cat",
+        "lion",
+        "tiger",
+        "elephant",
+        "giraffe",
+        "koala",
+        "penguin",
+        "panda",
+        "dolphin",
+        "whale",
+        "bear",
+        "wolf",
+        "zebra",
+        "fox",
+        "owl",
+        "rabbit",
+        "kangaroo",
+        "monkey",
+        "snake",
+        "parrot",
+        "cheetah",
+        "jaguar",
+        "lynx",
+        "otter",
+        "seal",
+        "peacock",
+        "sparrow",
+        "crow",
+        "hedgehog",
+        "flamingo",
+        "shark",
+        "stingray",
+        "starfish",
+        "octopus",
+        "seahorse",
+        "crab",
+        "lobster",
+        "squid",
+        "antelope",
+        "badger",
+        "bison",
+        "buffalo",
+        "camel",
+        "chameleon",
+        "crocodile",
+        "eagle",
+        "ferret",
+        "gecko",
+        "gorilla",
+        "heron",
+        "hyena",
+        "ibis",
+        "iguana",
+        "lemur",
+        "leopard",
+        "manatee",
+        "mole",
+        "moose",
+        "narwhal",
+        "newt",
+        "ostrich",
+        "platypus",
+        "porcupine",
+        "raven",
+        "salamander",
+        "sloth",
+        "stork",
+        "tapir",
+        "toad",
+        "turkey",
+        "vulture",
+        "wallaby",
+        "walrus",
+        "wolverine",
+        "yak",
+        "hippo",
+        "rhino",
+        "anteater",
+        "armadillo",
+        "beaver",
+        "butterfly",
+        "cormorant",
+        "coyote",
+        "dingo",
+        "dragonfly",
+        "firefly",
+        "grasshopper",
+        "hamster",
+        "honeyeater",
+        "hummingbird",
+        "kingfisher",
+        "ladybug",
+        "llama",
+        "meerkat",
+        "moth",
+        "ox",
+        "puffin",
+        "quail",
+        "ringtail",
+        "swan",
+        "tortoise",
+        "turtle",
+        "woodpecker",
+        "wombat",
+        "orangutan",
+        "manta-ray",
+        "robin",
+        "musk-ox",
+        "kiwi",
+        "harpy-eagle",
+        "peafowl",
+        "margay",
+        "capybara",
+        "urchin",
+        "bandicoot",
+        "guinea-pig",
+        "axolotl",
+        "dugong",
+        "fennec-fox",
+        "pika",
+        "tamarin",
+        "aardwolf",
+        "colugo",
+        "dhole",
+        "galago",
+        "alpaca",
+        "anaconda",
+        "antlion",
+        "auk",
+        "aye-aye",
+        "basilisk",
+        "bee",
+        "beetle",
+        "bengal-cat",
+        "binturong",
+        "bird-of-paradise",
+        "bonobo",
+        "booby",
+        "bushbaby",
+        "caracal",
+        "caracara",
+        "cassowary",
+        "centipede",
+        "chinchilla",
+        "chipmunk",
+        "civet",
+        "clownfish",
+        "coati",
+        "cobra",
+        "cockatiel",
+        "cockatoo",
+        "conure",
+        "copperhead",
+        "cuttlefish",
+        "damselfly",
+        "deer",
+        "devil-ray",
+        "dodo",
+        "donkey",
+        "dove",
+        "dung-beetle",
+        "emu",
+        "ermine",
+        "falcon",
+        "fallow-deer",
+        "fathead-minnow",
+        "flapjack-octopus",
+        "flatfish",
+        "flightless-cormorant",
+        "flounder",
+        "flying-fish",
+        "flying-lemur",
+        "flying-squirrel",
+        "frilled-lizard",
+        "frog",
+        "fruit-fly",
+        "fulmar",
+        "gayal",
+        "gavial",
+        "gazelle",
+        "gibbon",
+        "glass-lizard",
+        "glowworm",
+        "gnu",
+        "goat",
+        "goby",
+        "godwit",
+        "goldcrest",
+        "goldfinch",
+        "goldfish",
+        "goosander",
+        "goose",
+        "gopher",
+        "goral",
+        "goshawk",
+        "gosling",
+        "grackle",
+        "gray-whale",
+        "grebe",
+        "greyhound",
+        "griffin",
+        "grouse",
+        "grouper",
+        "guanaco",
+        "guillemot",
+        "guinea-fowl",
+        "gull",
+        "guppy",
+        "gurami",
+        "gurnard",
+        "gymnure",
+        "gypsy-moth",
+        "gyri",
+        "gyroscope",
+        "habu",
+        "haddock",
+        "hadji",
+        "hadron",
+        "hagborn",
+        "hagfish",
+        "haggadic",
+        "haggis",
+        "haggler",
+        "hagiology",
+        "hagioscope",
+        "haj",
+        "hajj",
+        "hajji",
+        "hake",
+        "hakim",
+        "halal",
+        "halbe",
+        "halbert",
+        "halcyon",
+        "hale",
+        "half-back",
+        "half-beak",
+        "half-blood",
+        "half-cock",
+        "half-crab",
+        "half-cutter",
+        "half-day",
+        "half-deck",
+        "half-penny",
+        "half-track",
+        "halibut",
+        "halid",
+        "halide",
+        "halidome",
+        "halif",
+        "halimeda",
+        "haliotis",
+        "halite",
+        "halitus",
+        "halk",
+        "hall",
+        "hallabaloo",
+        "hallal",
+        "hallan",
+        "hallel",
+        "hallelujah",
+        "haller",
+        "halley",
+        "halliday",
+        "hallide",
+        "hallier",
+        "hallified",
+        "halliford",
+        "halliform",
+        "halligan",
+        "hallikainen",
+        "hallikon",
+        "halliland",
+        "hallilot",
+        "hallily",
+        "hallimeda",
+        "hallimond",
+        "hallingers",
+        "hallings",
+        "hallingers",
+        "hallion",
+        "hallionic",
+        "halliotidae",
+        "halliotis",
+        "hallish",
+        "hallis",
+        "hallissey",
+        "hallistor",
+        "halliwell",
+        "hallawine",
+        "halloween",
+        "hallowmas",
+        "hallows",
+        "halloums",
+        "halls",
+        "hallstatt",
+        "hallux",
+        "hallway",
+        "hallways",
+        "hallway",
+        "hallwort",
     ];
     animals.shuffle(&mut rand::thread_rng());
     let (tx, _) = broadcast::channel::<OutgoingEvent>(1000);
@@ -918,7 +1176,10 @@ fn validate_input(text: &str, max_len: usize) -> Result<(), &'static str> {
 }
 
 /// Extract client IP from headers or connection info
-fn extract_client_ip(headers: &HeaderMap, conn_info: Option<&ConnectInfo<SocketAddr>>) -> Option<String> {
+fn extract_client_ip(
+    headers: &HeaderMap,
+    conn_info: Option<&ConnectInfo<SocketAddr>>,
+) -> Option<String> {
     // Try X-Forwarded-For first (for reverse proxies like Fly.io, nginx)
     if let Some(forwarded) = headers.get("x-forwarded-for") {
         if let Ok(forwarded_str) = forwarded.to_str() {
@@ -957,7 +1218,7 @@ async fn ws_handler(
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
     let ip = extract_client_ip(&headers, Some(&conn_info));
-    
+
     match ws_handler_inner(state, ip, cookie, room, ws).await {
         Ok(response) => response.into_response(),
         Err(e) => e.into_response(),
@@ -972,15 +1233,15 @@ async fn ws_handler_inner(
     room: String,
     ws: WebSocketUpgrade,
 ) -> Result<Response, ChatError> {
-    info!("WebSocket upgrade request for room: {} from IP: {:?}", room, ip);
+    info!(
+        "WebSocket upgrade request for room: {} from IP: {:?}",
+        room, ip
+    );
 
     if let Some(ip) = &ip {
         state.security_manager.check_ip(ip).await?;
         if !state.connection_pool.can_accept(ip).await {
-            let _ = state
-                .security_manager
-                .record_suspicious_activity(ip)
-                .await;
+            let _ = state.security_manager.record_suspicious_activity(ip).await;
             return Err(ChatError::RateLimitError(
                 "Too many connections from your IP".to_string(),
             ));
@@ -989,7 +1250,9 @@ async fn ws_handler_inner(
     }
 
     if !state.resource_monitor.can_accept_connection() {
-        return Err(ChatError::ResourceLimit("Server is at capacity".to_string()));
+        return Err(ChatError::ResourceLimit(
+            "Server is at capacity".to_string(),
+        ));
     }
 
     if let Err(e) = validate_input(&room, MAX_ROOM_NAME_LEN) {
@@ -1234,10 +1497,10 @@ async fn handle_websocket(
             );
             // NOTE: UserJoined broadcast is sent AFTER subscribe to ensure user receives it
         }
-        
+
         let receiver = room_state.sender.subscribe();
         room_state.broadcast_user_count();
-        
+
         // NOW broadcast this user's join event (after they're subscribed)
         let _ = room_state.sender.send(OutgoingEvent::System {
             event: SystemEvent::UserJoined {
@@ -1246,10 +1509,7 @@ async fn handle_websocket(
             },
         });
 
-        (
-            receiver,
-            room_state.chat_history.clone(),
-        )
+        (receiver, room_state.chat_history.clone())
     };
 
     let ws_tx = Arc::new(Mutex::new(ws_tx));
@@ -1272,7 +1532,14 @@ async fn handle_websocket(
                         "Client disconnected during history send for user_id {}",
                         user_id
                     );
-                    cleanup_user(&state, &room, &user_id, &connection_id, client_ip.as_deref()).await;
+                    cleanup_user(
+                        &state,
+                        &room,
+                        &user_id,
+                        &connection_id,
+                        client_ip.as_deref(),
+                    )
+                    .await;
                     return;
                 }
             }
@@ -1338,7 +1605,11 @@ async fn handle_websocket(
                     Message::Text(text) => {
                         let text_str = text.as_str();
                         if text_str.len() > MAX_PAYLOAD_SIZE {
-                            warn!("Payload too large from user_id {}: {}", user_id, text_str.len());
+                            warn!(
+                                "Payload too large from user_id {}: {}",
+                                user_id,
+                                text_str.len()
+                            );
                             continue;
                         }
                         debug!("Received text from user_id {}: {}", user_id, text_str);
@@ -1460,17 +1731,16 @@ async fn handle_websocket(
                                         ClientEvent::Typing { is_typing } => {
                                             let now = Instant::now();
                                             if let Some(last) = user.last_typing_event {
-                                                if now.duration_since(last) < TYPING_EVENT_MIN_INTERVAL {
+                                                if now.duration_since(last)
+                                                    < TYPING_EVENT_MIN_INTERVAL
+                                                {
                                                     continue;
                                                 }
                                             }
                                             user.last_typing_event = Some(now);
                                             let (uid, animal) = {
                                                 user.is_typing = is_typing;
-                                                (
-                                                    user.user_id.clone(),
-                                                    user.animal_name.clone(),
-                                                )
+                                                (user.user_id.clone(), user.animal_name.clone())
                                             };
 
                                             room_state.broadcast_system_event(
@@ -1484,7 +1754,9 @@ async fn handle_websocket(
                                         ClientEvent::ReadReceipt { message_id } => {
                                             let now = Instant::now();
                                             if let Some(last) = user.last_read_receipt_event {
-                                                if now.duration_since(last) < READ_RECEIPT_MIN_INTERVAL {
+                                                if now.duration_since(last)
+                                                    < READ_RECEIPT_MIN_INTERVAL
+                                                {
                                                     continue;
                                                 }
                                             }
@@ -1492,10 +1764,7 @@ async fn handle_websocket(
                                             if let Ok(msg_id) = Uuid::parse_str(&message_id) {
                                                 let (uid, animal) = {
                                                     user.last_read_message = Some(msg_id);
-                                                    (
-                                                        user.user_id.clone(),
-                                                        user.animal_name.clone(),
-                                                    )
+                                                    (user.user_id.clone(), user.animal_name.clone())
                                                 };
 
                                                 room_state.broadcast_system_event(
@@ -1641,7 +1910,14 @@ async fn handle_websocket(
         "All tasks ended for user_id {} in room {}. Cleaning up.",
         user_id, room
     );
-    cleanup_user(&state, &room, &user_id, &connection_id, client_ip.as_deref()).await;
+    cleanup_user(
+        &state,
+        &room,
+        &user_id,
+        &connection_id,
+        client_ip.as_deref(),
+    )
+    .await;
 }
 
 async fn cleanup_user(
@@ -1710,7 +1986,7 @@ async fn cleanup_rooms(state: &Arc<AppState>) {
     // Phase 1: Identify stale disconnected users and rooms to remove (minimal lock time)
     {
         let mut rooms = state.rooms.write().await;
-        
+
         for (room_name, room) in rooms.iter_mut() {
             // Clean up stale disconnected users from all rooms
             let stale_users: Vec<String> = room
@@ -1725,12 +2001,15 @@ async fn cleanup_rooms(state: &Arc<AppState>) {
                     None
                 })
                 .collect();
-            
+
             for uid in stale_users {
                 if let Some(user) = room.users.remove(&uid) {
                     // Return animal name to pool
                     room.available_animals.push_back(user.animal_name);
-                    info!("Removed stale disconnected user {} from room {}", uid, room_name);
+                    info!(
+                        "Removed stale disconnected user {} from room {}",
+                        uid, room_name
+                    );
                 }
             }
 
@@ -1765,9 +2044,10 @@ async fn cleanup_rooms(state: &Arc<AppState>) {
             }
 
             let inactive_duration = now.duration_since(room.last_activity);
-            let active_users = room.users.values().any(|u| {
-                matches!(u.connection_state, ConnectionState::Connected { .. })
-            });
+            let active_users = room
+                .users
+                .values()
+                .any(|u| matches!(u.connection_state, ConnectionState::Connected { .. }));
             if inactive_duration >= Duration::from_secs(7200) && !active_users {
                 rooms_to_remove.push(room_name.clone());
             }
@@ -1866,7 +2146,10 @@ struct HealthResponse {
 async fn health_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let rooms = state.rooms.read().await;
     let room_count = rooms.len();
-    let connections = state.resource_monitor.total_connections.load(Ordering::Relaxed);
+    let connections = state
+        .resource_monitor
+        .total_connections
+        .load(Ordering::Relaxed);
     let memory = state.memory_tracker.total_bytes.load(Ordering::Relaxed);
     drop(rooms);
 
@@ -1887,7 +2170,10 @@ async fn metrics_handler(State(state): State<Arc<AppState>>) -> impl IntoRespons
     let total_messages: usize = rooms.values().map(|r| r.chat_history.len()).sum();
     drop(rooms);
 
-    let connections = state.resource_monitor.total_connections.load(Ordering::Relaxed);
+    let connections = state
+        .resource_monitor
+        .total_connections
+        .load(Ordering::Relaxed);
     let memory = state.memory_tracker.total_bytes.load(Ordering::Relaxed);
     let peak_memory = state.memory_tracker.peak_bytes.load(Ordering::Relaxed);
     let active_pool = state.connection_pool.active.load(Ordering::Relaxed);
@@ -2013,7 +2299,9 @@ fn validate_message(text: &str) -> Result<String, ChatError> {
     }
     let clean_text = ammonia::clean(trimmed);
     if clean_text.trim().is_empty() {
-        return Err(ChatError::InvalidMessage("Message cannot be empty after sanitization".into()));
+        return Err(ChatError::InvalidMessage(
+            "Message cannot be empty after sanitization".into(),
+        ));
     }
     if clean_text.len() > MAX_MESSAGE_LEN {
         return Err(ChatError::InvalidMessage(
