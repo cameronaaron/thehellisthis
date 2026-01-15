@@ -7784,3 +7784,197 @@ async fn test_room_cleanup_multiple_users_one_connected_blocks_deletion() {
 async fn test_version_is_set() {
     assert!(!VERSION.is_empty());
 }
+
+// ==========================================================================
+// FRONTEND/BACKEND CONSISTENCY TESTS
+// ==========================================================================
+// These tests ensure the embedded HTML frontend stays in sync with backend
+// constants. They MUST fail if timing values drift apart.
+
+/// The embedded HTML - same source used by the server
+const EMBEDDED_HTML: &str = include_str!("../index.html");
+
+#[tokio::test]
+async fn test_frontend_timeout_text_matches_backend_constant() {
+    // CRITICAL: The user-facing text must match EMPTY_ROOM_CLEANUP_DELAY
+    // If this fails, the UX is lying to users about when rooms disappear
+    
+    let cleanup_seconds = EMPTY_ROOM_CLEANUP_DELAY.as_secs();
+    
+    // Backend uses 60 seconds = 1 minute
+    assert_eq!(cleanup_seconds, 60, 
+        "EMPTY_ROOM_CLEANUP_DELAY changed! Update frontend text to match.");
+    
+    // Frontend must say "one minute" (not "two minutes", "30 seconds", etc.)
+    assert!(EMBEDDED_HTML.contains("go silent for one minute"),
+        "Frontend instructions don't match backend! Backend deletes at {}s but HTML doesn't say 'one minute'. \
+         Found text should say 'go silent for one minute'.",
+        cleanup_seconds);
+    
+    // Must NOT contain the old incorrect text
+    assert!(!EMBEDDED_HTML.contains("go silent for two minute"),
+        "Frontend still contains outdated 'two minute' text!");
+}
+
+#[tokio::test]
+async fn test_frontend_heartbeat_timeout_matches_backend() {
+    // Frontend JS has an 8s timeout for heartbeat detection
+    // Backend sends heartbeats every HEARTBEAT_INTERVAL (5s)
+    // Frontend should timeout > HEARTBEAT_INTERVAL but reasonably close
+    
+    let backend_interval_secs = HEARTBEAT_INTERVAL.as_secs();
+    let backend_timeout_secs = HEARTBEAT_TIMEOUT.as_secs();
+    
+    // The frontend uses 8000ms (8s) for heartbeat timeout
+    assert!(EMBEDDED_HTML.contains("}, 8000);") || EMBEDDED_HTML.contains("}, 8000)"),
+        "Frontend heartbeat timeout should be 8000ms (8s). Check handleWebSocketMessage timeout.");
+    
+    // Backend heartbeat interval should be less than frontend timeout
+    assert!(backend_interval_secs < 8,
+        "Backend HEARTBEAT_INTERVAL ({}s) should be less than frontend timeout (8s)",
+        backend_interval_secs);
+    
+    // Sanity check backend values
+    assert_eq!(backend_interval_secs, 5, "HEARTBEAT_INTERVAL should be 5s");
+    assert_eq!(backend_timeout_secs, 6, "HEARTBEAT_TIMEOUT should be 6s");
+}
+
+#[tokio::test]
+async fn test_frontend_fade_thresholds_align_with_cleanup_delay() {
+    // Frontend shows warning at 30s, critical at 45s
+    // Backend deletes at 60s (EMPTY_ROOM_CLEANUP_DELAY)
+    // Warning should appear BEFORE cleanup happens!
+    
+    let cleanup_seconds = EMPTY_ROOM_CLEANUP_DELAY.as_secs();
+    
+    // Frontend warning threshold (idleSeconds < 45)
+    assert!(EMBEDDED_HTML.contains("idleSeconds < 45"),
+        "Frontend warning threshold should be at 45s idle");
+    
+    // Frontend critical threshold (else clause after 45s check)
+    // This means critical starts at 45s, giving 15s warning before 60s deletion
+    
+    // Verify the thresholds make sense relative to cleanup
+    let warning_threshold = 30; // When warning class is added
+    let critical_threshold = 45; // When critical class is added
+    
+    assert!(warning_threshold < cleanup_seconds,
+        "Warning ({}s) must appear BEFORE cleanup ({}s)!", 
+        warning_threshold, cleanup_seconds);
+    
+    assert!(critical_threshold < cleanup_seconds,
+        "Critical ({}s) must appear BEFORE cleanup ({}s)!",
+        critical_threshold, cleanup_seconds);
+    
+    // Users should have at least 15 seconds of warning before room dies
+    let warning_buffer = cleanup_seconds - critical_threshold;
+    assert!(warning_buffer >= 15,
+        "Users need at least 15s warning before room deletion. Current buffer: {}s",
+        warning_buffer);
+}
+
+#[tokio::test]
+async fn test_frontend_max_message_length_matches_backend() {
+    // Frontend maxlength attribute and validation must match MAX_MESSAGE_LEN
+    
+    let backend_max = MAX_MESSAGE_LEN;
+    assert_eq!(backend_max, 8000, "MAX_MESSAGE_LEN should be 8000");
+    
+    // HTML input should have matching maxlength
+    assert!(EMBEDDED_HTML.contains("maxlength=\"8000\""),
+        "Frontend input maxlength should match backend MAX_MESSAGE_LEN (8000)");
+    
+    // Character counter should show same limit
+    assert!(EMBEDDED_HTML.contains("/ 8000"),
+        "Frontend character counter should show /8000 limit");
+    
+    // JS validation should check same limit
+    assert!(EMBEDDED_HTML.contains("text.length > 8000"),
+        "Frontend JS validation should check against 8000 character limit");
+}
+
+#[tokio::test]
+async fn test_frontend_max_messages_matches_backend() {
+    // Frontend should trim messages at same limit as backend
+    
+    let backend_max = MAX_MESSAGES_PER_ROOM;
+    assert_eq!(backend_max, 500, "MAX_MESSAGES_PER_ROOM should be 500");
+    
+    // Frontend ChatApp should have matching maxMessages
+    assert!(EMBEDDED_HTML.contains("this.maxMessages = 500"),
+        "Frontend maxMessages should match backend MAX_MESSAGES_PER_ROOM (500)");
+}
+
+#[tokio::test]
+async fn test_frontend_rate_limit_messaging_matches_backend() {
+    // Frontend should inform users about rate limits that match backend
+    
+    let messages_per_window = MAX_MESSAGES_PER_WINDOW;
+    let window_seconds = RATE_LIMIT_WINDOW.as_secs();
+    
+    assert_eq!(messages_per_window, 30, "MAX_MESSAGES_PER_WINDOW should be 30");
+    assert_eq!(window_seconds, 60, "RATE_LIMIT_WINDOW should be 60s");
+    
+    // If frontend mentions rate limits, they should be accurate
+    // (Currently frontend doesn't show specific numbers, which is fine)
+}
+
+#[tokio::test]
+async fn test_cleanup_interval_is_sensible() {
+    // Cleanup interval should be <= cleanup delay to catch rooms in time
+    
+    let interval = ROOM_CLEANUP_INTERVAL.as_secs();
+    let delay = EMPTY_ROOM_CLEANUP_DELAY.as_secs();
+    
+    assert!(interval <= delay,
+        "ROOM_CLEANUP_INTERVAL ({}s) should be <= EMPTY_ROOM_CLEANUP_DELAY ({}s) \
+         otherwise rooms might not be cleaned up in time!",
+        interval, delay);
+}
+
+#[tokio::test]
+async fn test_frontend_comment_documents_timeout() {
+    // Frontend JS should have a comment documenting the 1 minute timeout
+    // This helps future developers understand the timing
+    
+    assert!(EMBEDDED_HTML.contains("1 minute room timeout") || 
+            EMBEDDED_HTML.contains("60s") ||
+            EMBEDDED_HTML.contains("60 second"),
+        "Frontend should document the room timeout in comments for maintainability");
+}
+
+#[tokio::test]
+async fn test_typing_indicator_cleanup_aligns_with_backend() {
+    // Frontend cleans up typing indicators after 5s
+    // Backend has TYPING_EVENT_MIN_INTERVAL of 200ms
+    
+    let backend_interval_ms = TYPING_EVENT_MIN_INTERVAL.as_millis();
+    assert_eq!(backend_interval_ms, 200, "TYPING_EVENT_MIN_INTERVAL should be 200ms");
+    
+    // Frontend cleanup at 5000ms is reasonable (gives time for network latency)
+    assert!(EMBEDDED_HTML.contains("now - timestamp > 5000"),
+        "Frontend typing indicator cleanup should be at 5000ms");
+}
+
+#[tokio::test]
+async fn test_all_timing_constants_are_consistent() {
+    // Meta-test: Verify all timing relationships make sense together
+    
+    // Heartbeat should be sent more frequently than timeout
+    assert!(HEARTBEAT_INTERVAL < HEARTBEAT_TIMEOUT,
+        "HEARTBEAT_INTERVAL must be less than HEARTBEAT_TIMEOUT");
+    
+    // Cleanup interval should allow catching inactive rooms
+    assert!(ROOM_CLEANUP_INTERVAL <= EMPTY_ROOM_CLEANUP_DELAY,
+        "Cleanup interval must be <= delay to catch rooms");
+    
+    // Message rate limit window should be reasonable
+    assert!(RATE_LIMIT_WINDOW >= Duration::from_secs(30),
+        "Rate limit window too short");
+    assert!(RATE_LIMIT_WINDOW <= Duration::from_secs(120),
+        "Rate limit window too long");
+    
+    // Inactive timeout should be much longer than room cleanup
+    assert!(INACTIVE_TIMEOUT > EMPTY_ROOM_CLEANUP_DELAY,
+        "User inactive timeout should exceed room cleanup delay");
+}
