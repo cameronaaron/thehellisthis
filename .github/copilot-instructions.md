@@ -5,7 +5,7 @@ Dual-platform real-time WebSocket chat: native Rust server (Axum 0.7) + Cloudfla
 
 ### Core Components
 - **[src/main.rs](src/main.rs)** (2010 lines): Axum server, WS handlers, room state, rate limiting, memory tracking, IP bans. Contains all server logic.
-- **[src/tests.rs](src/tests.rs)**: 21 integration tests covering room validation, rate limits, memory tracking, security. Run with `cargo test`.
+- **[src/tests.rs](src/tests.rs)**: 387 integration tests covering room validation, rate limits, memory tracking, security. Run with `cargo test`.
 - **[index.html](index.html)**: Zero-dependency client. WebSocket connects to `ws(s)://host/ws/{room}`, renders Markdown, handles typing indicators, read receipts. Keep plain JS—no build step.
 - **[cloudflare/src/index.ts](cloudflare/src/index.ts)**: Durable Object proxy. Routes all traffic to Rust container at port 3000. Single `main` instance handles all rooms (rooms managed by Rust internally).
 
@@ -38,7 +38,8 @@ Client (index.html) → WS /ws/{room} → Axum Handler → RoomState (broadcast 
 - `MESSAGE_RATE_LIMIT: 500ms` — min time between messages
 - `MAX_MESSAGES_PER_WINDOW: 30` — per 60s per user
 - `HEARTBEAT_INTERVAL: 5s`, `HEARTBEAT_TIMEOUT: 6s`
-- `ROOM_CLEANUP_INTERVAL: 3600s` — prune inactive rooms
+- `ROOM_CLEANUP_INTERVAL: 60s` — check for inactive rooms every minute
+- `EMPTY_ROOM_CLEANUP_DELAY: 60s` — delete empty rooms after 1 minute of inactivity
 - **When adding features, use existing helpers (`RateLimiter::can_send_message`, `MemoryTracker::can_add_message`) instead of custom checks**
 
 ## HTTP/WebSocket Routes
@@ -76,7 +77,7 @@ Client (index.html) → WS /ws/{room} → Axum Handler → RoomState (broadcast 
 ## Background Tasks
 - **Heartbeat sender**: Every 5s sends `OutgoingEvent::Heartbeat` to all clients
 - **Client pinger**: Every 5s sends ping frames, disconnects if no pong within 6s
-- **Cleanup**: Hourly `cleanup_rooms` removes inactive rooms (2hr threshold), prunes old messages (30d), disconnects stale users
+- **Cleanup**: Every 60s `cleanup_rooms` removes empty rooms (1 minute threshold), prunes old messages, disconnects stale users
 - **Memory GC**: Every 60s via `MemoryTracker::cleanup_if_needed`
 - **Shutdown handler**: Ctrl-C triggers `graceful_shutdown` → broadcasts `OutgoingEvent::System(ServerShutdown)` to all rooms
 
@@ -86,7 +87,7 @@ Client (index.html) → WS /ws/{room} → Axum Handler → RoomState (broadcast 
 ```bash
 cargo run                # Debug build, PORT=3000
 cargo build --release    # Optimized binary (~7.5 MB)
-cargo test               # Run all 21 tests
+cargo test               # Run all 387 tests
 cargo fmt --all          # Format code
 cargo clippy --all-targets --all-features -- -D warnings  # Lint
 ```
@@ -98,7 +99,7 @@ cargo clippy --all-targets --all-features -- -D warnings  # Lint
 
 ### Cloudflare-Specific
 - **Worker file**: [cloudflare/src/index.ts](cloudflare/src/index.ts) — proxies to container on port 3000
-- **Config**: [cloudflare/wrangler.jsonc](cloudflare/wrangler.jsonc) — `max_instances: 5`, `sleepAfter: 30m`
+- **Config**: [cloudflare/wrangler.jsonc](cloudflare/wrangler.jsonc) — `max_instances: 5`
 - **Commands**: `npm run dev` (local), `npm run deploy` (production), `npx wrangler tail` (logs)
 - **Container env**: `PORT=3000`, `RUST_LOG=info` set in [index.ts](cloudflare/src/index.ts)
 
