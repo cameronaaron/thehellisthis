@@ -9,9 +9,6 @@ export class InfiniteChatContainer extends Container {
   // Port the Rust server listens on
   defaultPort = 3000;
   
-  // Keep container active for 30 minutes without requests
-  sleepAfter = '30m';
-  
   // Environment variables for the container
   envVars = {
     PORT: '3000',
