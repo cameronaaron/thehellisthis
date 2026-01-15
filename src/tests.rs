@@ -872,3 +872,79 @@ async fn test_oversized_message_rejection() {
     let result = validate_message(&huge_msg);
     assert!(result.is_err());
 }
+
+// ========== RESOURCE MONITOR & POOL HOUSEKEEPING ==========
+
+#[tokio::test]
+async fn test_resource_monitor_capacity() {
+    let monitor = ResourceMonitor::new();
+
+    assert!(monitor.can_accept_connection());
+
+    monitor
+        .total_connections
+        .store(MAX_CONCURRENT_USERS, Ordering::SeqCst);
+    assert!(!monitor.can_accept_connection());
+
+    monitor.total_connections.store(0, Ordering::SeqCst);
+    monitor
+        .total_memory
+        .store(MAX_TOTAL_ROOMS_MEMORY, Ordering::SeqCst);
+    assert!(!monitor.can_accept_connection());
+}
+
+#[tokio::test]
+async fn test_connection_pool_cleanup_stale() {
+    let pool = ConnectionPool::new();
+    {
+        let mut counters = pool.ip_counters.write().await;
+        counters.insert(
+            "10.10.10.10".to_string(),
+            (AtomicUsize::new(1), Instant::now() - Duration::from_secs(7200)),
+        );
+    }
+
+    pool.cleanup_stale().await;
+    let counters = pool.ip_counters.read().await;
+    assert!(!counters.contains_key("10.10.10.10"));
+}
+
+#[tokio::test]
+async fn test_rate_limiter_join_window_reset() {
+    let mut rate_limiter = RateLimiter::new();
+    for _ in 0..MAX_ROOM_JOIN_ATTEMPTS {
+        assert!(rate_limiter.can_join_room());
+    }
+    assert!(!rate_limiter.can_join_room());
+
+    rate_limiter.window_start = Instant::now() - RATE_LIMIT_WINDOW - Duration::from_secs(1);
+    rate_limiter.join_attempts = 0;
+    assert!(rate_limiter.can_join_room());
+}
+
+#[tokio::test]
+async fn test_memory_tracker_peak_bytes() {
+    let tracker = MemoryTracker::new();
+
+    assert!(tracker.add_bytes(1024));
+    assert!(tracker.add_bytes(2048));
+
+    let peak = tracker.peak_bytes.load(Ordering::Relaxed);
+    assert!(peak >= 3072);
+}
+
+#[tokio::test]
+async fn test_cleanup_rooms_keeps_active() {
+    let app_state = Arc::new(AppState::new());
+
+    {
+        let mut rooms = app_state.rooms.write().await;
+        let mut room = create_room();
+        room.last_activity = Instant::now();
+        rooms.insert("active_room".to_string(), room);
+    }
+
+    cleanup_rooms(&app_state).await;
+    let rooms = app_state.rooms.read().await;
+    assert!(rooms.contains_key("active_room"));
+}
