@@ -9,11 +9,17 @@ use axum::{
 };
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::net::SocketAddr;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tokio::net::TcpListener;
 use tokio::sync::Barrier;
 use tokio::time::timeout;
 use tower::util::ServiceExt;
 use futures::future::join_all;
+use futures::{SinkExt, StreamExt};
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::Message as WsMessage;
+use serde_json::Value as JsonValue;
 
 #[tokio::test]
 async fn test_root_redirect() {
@@ -1090,6 +1096,265 @@ async fn test_security_manager_ban_expires() {
 
     let result = security_manager.check_ip("10.0.0.99").await;
     assert!(result.is_ok());
+}
+
+// ========== WEBSOCKET INTEGRATION TESTS ==========
+
+async fn start_ws_server() -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    let app_state = Arc::new(AppState::new());
+    let app = Router::new()
+        .route("/ws/{room}", get(ws_handler))
+        .with_state(app_state);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let server = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>());
+    let handle = tokio::spawn(async move {
+        let _ = server.await;
+    });
+
+    (addr, handle)
+}
+
+async fn recv_json_event(ws: &mut tokio_tungstenite::WebSocketStream<
+    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+>) -> JsonValue {
+    loop {
+        let msg = timeout(Duration::from_secs(5), ws.next())
+            .await
+            .expect("timed out waiting for ws event")
+            .expect("ws stream ended")
+            .expect("ws recv failed");
+
+        match msg {
+            WsMessage::Text(text) => {
+                if let Ok(val) = serde_json::from_str::<JsonValue>(&text) {
+                    return val;
+                }
+            }
+            WsMessage::Binary(_)
+            | WsMessage::Ping(_)
+            | WsMessage::Pong(_)
+            | WsMessage::Frame(_) => continue,
+            WsMessage::Close(_) => panic!("ws closed unexpectedly"),
+        }
+    }
+}
+
+fn extract_system_event<'a>(event: &'a JsonValue, key: &str) -> Option<&'a JsonValue> {
+    if let Some(t) = event.get("type").and_then(|v| v.as_str()) {
+        if t == key {
+            return Some(event);
+        }
+    }
+    event.get(key)
+}
+
+#[tokio::test]
+async fn test_ws_reconnect_token_sent() {
+    let (addr, handle) = start_ws_server().await;
+    let url = format!("ws://{}/ws/testroom", addr);
+
+    let (mut ws, _) = connect_async(url).await.expect("connect failed");
+
+    let mut found = false;
+    for _ in 0..5 {
+        let val = recv_json_event(&mut ws).await;
+        if val.get("type") == Some(&JsonValue::String("ReconnectToken".to_string())) {
+            let token = val
+                .get("token")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            assert!(!token.is_empty());
+            found = true;
+            break;
+        }
+    }
+
+    assert!(found, "ReconnectToken event not received");
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_ws_user_join_event_sent() {
+    let (addr, handle) = start_ws_server().await;
+    let url = format!("ws://{}/ws/joinroom", addr);
+
+    let (mut ws, _) = connect_async(url).await.expect("connect failed");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let mut found = false;
+    for _ in 0..10 {
+        let val = recv_json_event(&mut ws).await;
+        if val.get("type") == Some(&JsonValue::String("System".to_string())) {
+            if let Some(event) = val.get("event") {
+                if let Some(payload) = extract_system_event(event, "UserJoined") {
+                    let user_id = payload.get("user_id").and_then(|v| v.as_str()).unwrap_or("");
+                    let animal = payload
+                        .get("animal_name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    assert!(!user_id.is_empty());
+                    assert!(!animal.is_empty());
+                    found = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    assert!(found, "UserJoined event not received");
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_ws_user_count_event_sent() {
+    let (addr, handle) = start_ws_server().await;
+    let url = format!("ws://{}/ws/countroom", addr);
+
+    let (mut ws, _) = connect_async(url).await.expect("connect failed");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let mut found = false;
+    for _ in 0..10 {
+        let val = recv_json_event(&mut ws).await;
+        if val.get("type") == Some(&JsonValue::String("UserCount".to_string())) {
+            let count = val.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
+            assert!(count >= 1);
+            found = true;
+            break;
+        }
+    }
+
+    assert!(found, "UserCount event not received");
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_ws_message_broadcast_to_other_client() {
+    let (addr, handle) = start_ws_server().await;
+    let url = format!("ws://{}/ws/broadcastroom", addr);
+
+    let (mut ws1, _) = connect_async(url.clone()).await.expect("connect failed");
+    let (mut ws2, _) = connect_async(url).await.expect("connect failed");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Drain a few initial events so subsequent recv is message-focused
+    for _ in 0..4 {
+        let _ = recv_json_event(&mut ws1).await;
+        let _ = recv_json_event(&mut ws2).await;
+    }
+
+    let payload = serde_json::json!({
+        "type": "Message",
+        "text": "Hello <script>alert(1)</script> world"
+    })
+    .to_string();
+    ws1.send(WsMessage::Text(payload)).await.unwrap();
+
+    let mut found = false;
+    for _ in 0..10 {
+        let val = recv_json_event(&mut ws2).await;
+        if val.get("type") == Some(&JsonValue::String("Message".to_string())) {
+            let text = val
+                .get("message")
+                .and_then(|m| m.get("text"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            assert!(text.contains("Hello"));
+            assert!(!text.contains("<script>"));
+            found = true;
+            break;
+        }
+    }
+
+    assert!(found, "Broadcast message not received");
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_ws_typing_event_broadcast() {
+    let (addr, handle) = start_ws_server().await;
+    let url = format!("ws://{}/ws/typingroom", addr);
+
+    let (mut ws1, _) = connect_async(url.clone()).await.expect("connect failed");
+    let (mut ws2, _) = connect_async(url).await.expect("connect failed");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    for _ in 0..3 {
+        let _ = recv_json_event(&mut ws1).await;
+        let _ = recv_json_event(&mut ws2).await;
+    }
+
+    let payload = serde_json::json!({
+        "type": "Typing",
+        "is_typing": true
+    })
+    .to_string();
+    ws1.send(WsMessage::Text(payload)).await.unwrap();
+
+    let mut found = false;
+    for _ in 0..10 {
+        let val = recv_json_event(&mut ws2).await;
+        if val.get("type") == Some(&JsonValue::String("System".to_string())) {
+            if let Some(event) = val.get("event") {
+                if let Some(payload) = extract_system_event(event, "Typing") {
+                    let is_typing = payload.get("is_typing").and_then(|v| v.as_bool());
+                    assert_eq!(is_typing, Some(true));
+                    found = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    assert!(found, "Typing event not received");
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_ws_read_receipt_event_broadcast() {
+    let (addr, handle) = start_ws_server().await;
+    let url = format!("ws://{}/ws/readreceiptroom", addr);
+
+    let (mut ws1, _) = connect_async(url.clone()).await.expect("connect failed");
+    let (mut ws2, _) = connect_async(url).await.expect("connect failed");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    for _ in 0..3 {
+        let _ = recv_json_event(&mut ws1).await;
+        let _ = recv_json_event(&mut ws2).await;
+    }
+
+    let msg_id = uuid::Uuid::new_v4().to_string();
+    let payload = serde_json::json!({
+        "type": "ReadReceipt",
+        "message_id": msg_id
+    })
+    .to_string();
+    ws1.send(WsMessage::Text(payload)).await.unwrap();
+
+    let mut found = false;
+    for _ in 0..10 {
+        let val = recv_json_event(&mut ws2).await;
+        if val.get("type") == Some(&JsonValue::String("System".to_string())) {
+            if let Some(event) = val.get("event") {
+                if let Some(payload) = extract_system_event(event, "ReadReceipt") {
+                    let message_id = payload
+                        .get("message_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    assert!(!message_id.is_empty());
+                    found = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    assert!(found, "ReadReceipt event not received");
+    handle.abort();
 }
 
 // ========== RESOURCE MONITOR & POOL HOUSEKEEPING ==========

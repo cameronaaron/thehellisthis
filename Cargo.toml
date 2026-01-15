@@ -52,3 +52,5 @@ thiserror = "2.0.17"
 
 [dev-dependencies]
 tokio = { version = "1.49.0", features = ["full"] }
+tokio-tungstenite = "0.24.0"
+url = "2.5.4"
