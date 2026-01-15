@@ -1,328 +1,545 @@
-<!-- index.html -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<meta name="description" content="A real-time anonymous chat experience. Share a URL, join a room, chat with strangers.">
-<meta name="theme-color" content="#1e9cff">
-<title>thehellisthis.com - Chat</title>
-<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
-<link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+<meta name="description" content="Anonymous, ephemeral chat rooms. No sign-up required. Share a link, start chatting instantly.">
+<meta name="theme-color" content="#1a73e8" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#131314" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="thehellisthis">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="format-detection" content="telephone=no">
+<meta property="og:title" content="thehellisthis - Anonymous Chat">
+<meta property="og:description" content="Join anonymous chat rooms instantly. No sign-up, no tracking, just conversation.">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary">
+<title>thehellisthis</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect fill='%231a73e8' rx='20' width='100' height='100'/%3E%3Cpath fill='%23fff' d='M30 35h40c2.8 0 5 2.2 5 5v20c0 2.8-2.2 5-5 5H55l-10 10v-10H30c-2.8 0-5-2.2-5-5V40c0-2.8 2.2-5 5-5z'/%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect fill='%231a73e8' rx='20' width='100' height='100'/%3E%3Cpath fill='%23fff' d='M30 35h40c2.8 0 5 2.2 5 5v20c0 2.8-2.2 5-5 5H55l-10 10v-10H30c-2.8 0-5-2.2-5-5V40c0-2.8 2.2-5 5-5z'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;600&family=Roboto:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/icon?family=Material+Icons+Round" rel="stylesheet">
 <style>
 :root {
-    --primary-hue: 200;
-    --mdc-theme-primary: hsl(var(--primary-hue), 70%, 45%);
-    --mdc-theme-primary-light: hsl(var(--primary-hue), 70%, 60%);
-    --mdc-theme-surface: rgba(30,30,30,0.9);
-    --mdc-theme-background: linear-gradient(135deg, hsl(var(--primary-hue), 40%, 10%) 0%, #121212 100%);
-    --mdc-theme-on-surface: #ffffff;
-    --mdc-theme-on-primary: #ffffff;
-    --read-receipt-color: #4caf50;
-    --typing-indicator-color: #FFD54F;
-    --error-color: #f44336;
-    --warning-color: #ff9800;
-    --success-color: #4caf50;
+    --primary: #1a73e8;
+    --primary-hover: #1557b0;
+    --primary-pressed: #174ea6;
+    --primary-container: #e8f0fe;
+    --on-primary: #ffffff;
+    --on-primary-container: #1a73e8;
+    --secondary: #5f6368;
+    --secondary-container: #e8eaed;
+    --surface: #ffffff;
+    --surface-dim: #f8f9fa;
+    --surface-container: #f1f3f4;
+    --surface-container-high: #e8eaed;
+    --surface-container-highest: #dadce0;
+    --on-surface: #202124;
+    --on-surface-variant: #5f6368;
+    --outline: #dadce0;
+    --outline-variant: #e8eaed;
+    --success: #1e8e3e;
+    --success-container: #e6f4ea;
+    --on-success: #ffffff;
+    --warning: #f9ab00;
+    --warning-container: #fef7e0;
+    --error: #d93025;
+    --error-container: #fce8e6;
+    --on-error: #ffffff;
+    --shadow-1: 0 1px 2px 0 rgba(60,64,67,0.3), 0 1px 3px 1px rgba(60,64,67,0.15);
+    --shadow-2: 0 1px 2px 0 rgba(60,64,67,0.3), 0 2px 6px 2px rgba(60,64,67,0.15);
+    --shadow-3: 0 1px 3px 0 rgba(60,64,67,0.3), 0 4px 8px 3px rgba(60,64,67,0.15);
+    --radius-xs: 4px;
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 16px;
+    --radius-xl: 20px;
+    --radius-xxl: 28px;
+    --radius-full: 9999px;
+    --transition-fast: 100ms cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-standard: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-emphasis: 300ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --primary: #8ab4f8;
+        --primary-hover: #aecbfa;
+        --primary-pressed: #c9ddfb;
+        --primary-container: #394457;
+        --on-primary: #062e6f;
+        --on-primary-container: #c2e7ff;
+        --secondary: #9aa0a6;
+        --secondary-container: #3c4043;
+        --surface: #202124;
+        --surface-dim: #131314;
+        --surface-container: #292a2d;
+        --surface-container-high: #35363a;
+        --surface-container-highest: #3c4043;
+        --on-surface: #e8eaed;
+        --on-surface-variant: #9aa0a6;
+        --outline: #5f6368;
+        --outline-variant: #3c4043;
+        --success: #81c995;
+        --success-container: #1b4d30;
+        --on-success: #003a1e;
+        --warning: #fdd663;
+        --warning-container: #594000;
+        --error: #f28b82;
+        --error-container: #5c2022;
+        --on-error: #601410;
+        --shadow-1: 0 1px 2px 0 rgba(0,0,0,0.3), 0 1px 3px 1px rgba(0,0,0,0.15);
+        --shadow-2: 0 1px 2px 0 rgba(0,0,0,0.3), 0 2px 6px 2px rgba(0,0,0,0.15);
+        --shadow-3: 0 1px 3px 0 rgba(0,0,0,0.3), 0 4px 8px 3px rgba(0,0,0,0.15);
+    }
 }
 
 * {
     box-sizing: border-box;
-}
-
-body {
-    font-family: 'Roboto', sans-serif;
     margin: 0;
     padding: 0;
-    background: var(--mdc-theme-background);
-    color: var(--mdc-theme-on-surface);
-    display: flex;
-    flex-direction: column;
-    height: 100vh;
+}
+
+*:focus {
+    outline: none;
+}
+
+*:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+}
+
+html, body {
+    height: 100%;
     overflow: hidden;
 }
 
-.app-bar, .header-bar, .input-container {
-    background: var(--mdc-theme-surface);
-    box-shadow: 0 2px 4px rgba(0,0,0,.5);
-    padding: 1rem 1.5rem;
-    color: var(--mdc-theme-on-surface);
+body {
+    font-family: 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-size: 14px;
+    background: var(--surface-dim);
+    color: var(--on-surface);
+    display: flex;
+    flex-direction: column;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
 }
 
 .app-bar {
+    background: var(--surface);
+    padding: 0 16px;
     display: flex;
-    justify-content: space-between;
     align-items: center;
-    flex-wrap: wrap;
-    gap: 1rem;
+    gap: 16px;
+    box-shadow: var(--shadow-1);
+    z-index: 100;
+    height: 64px;
+    flex-shrink: 0;
 }
 
 .brand {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: 12px;
+    text-decoration: none;
+    color: inherit;
+    cursor: pointer;
 }
 
-.brand .material-icons {
-    font-size: 24px;
-    color: var(--mdc-theme-primary-light);
-    transition: transform 0.3s ease;
+.brand:hover .logo-icon {
+    transform: scale(1.05);
 }
 
-.brand:hover .material-icons {
-    transform: rotate(10deg) scale(1.1);
+.logo-icon {
+    width: 40px;
+    height: 40px;
+    background: var(--primary);
+    border-radius: var(--radius-md);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--on-primary);
+    transition: transform var(--transition-standard);
+}
+
+.logo-icon .material-icons-round {
+    font-size: 22px;
 }
 
 h1 {
-    margin: 0;
-    font-size: 1.25rem;
+    font-family: 'Google Sans', sans-serif;
+    font-size: 20px;
     font-weight: 500;
+    color: var(--on-surface);
+    letter-spacing: -0.25px;
 }
 
 .room-info {
-    font-size: 1rem;
-    opacity: 0.8;
     display: flex;
     align-items: center;
-    gap: 1rem;
-    flex-wrap: wrap;
+    gap: 8px;
+    margin-left: auto;
 }
 
-.online-indicator {
-    width: 10px;
-    height: 10px;
-    background: var(--error-color);
+.room-badge {
+    background: var(--primary-container);
+    color: var(--on-primary-container);
+    padding: 6px 14px;
+    border-radius: var(--radius-full);
+    font-size: 13px;
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.room-badge::before {
+    content: '#';
+    opacity: 0.7;
+}
+
+.status-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    border-radius: var(--radius-full);
+    font-size: 12px;
+    font-weight: 500;
+    background: var(--surface-container);
+    color: var(--on-surface-variant);
+    transition: all var(--transition-fast);
+}
+
+.status-chip.connected {
+    background: var(--success-container);
+    color: var(--success);
+}
+
+.status-chip.disconnected {
+    background: var(--error-container);
+    color: var(--error);
+}
+
+.status-chip.connecting {
+    background: var(--warning-container);
+    color: var(--warning);
+}
+
+.status-dot {
+    width: 8px;
+    height: 8px;
     border-radius: 50%;
-    transition: background 0.2s;
-    box-shadow: 0 0 10px currentColor;
+    background: currentColor;
+    flex-shrink: 0;
 }
 
-.online-indicator.connected {
-    background: var(--success-color);
-    animation: pulse 2s infinite;
+.status-chip.connected .status-dot {
+    animation: pulse 2s infinite ease-in-out;
+}
+
+.status-chip.connecting .status-dot {
+    animation: blink 1s infinite;
 }
 
 @keyframes pulse {
-    0% { transform: scale(1); opacity: 1; }
-    50% { transform: scale(1.2); opacity: 0.7; }
-    100% { transform: scale(1); opacity: 1; }
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.6; transform: scale(0.9); }
+}
+
+@keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
 }
 
 #userCount {
-    margin-left: 1rem;
-    font-size: 0.9rem;
-    opacity: 0.8;
+    font-size: 13px;
+    color: var(--on-surface-variant);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 10px;
+    background: var(--surface-container);
+    border-radius: var(--radius-full);
 }
 
-.header-bar {
-    border-bottom: 1px solid rgba(255,255,255,0.1);
-    max-height: 200px;
-    overflow-y: auto;
-}
-
-.instructions {
-    font-size: 0.875rem;
-    opacity: 0.85;
-    line-height: 1.6;
-    margin: 0;
+#userCount .material-icons-round {
+    font-size: 16px;
 }
 
 .nav-link {
     text-decoration: none;
-    color: var(--mdc-theme-primary-light);
+    color: var(--primary);
     font-weight: 500;
-    cursor: pointer;
-    transition: color 0.2s;
+    font-size: 14px;
+    padding: 8px 16px;
+    border-radius: var(--radius-full);
+    transition: background var(--transition-fast);
+    white-space: nowrap;
 }
 
 .nav-link:hover {
-    color: var(--mdc-theme-primary);
-    text-decoration: underline;
-}
-
-.nav-link:focus-visible {
-    outline: 2px solid var(--mdc-theme-primary);
-    outline-offset: 2px;
+    background: var(--primary-container);
 }
 
 #chat {
     flex: 1;
-    padding: 1rem;
+    padding: 16px 16px 8px;
     overflow-y: auto;
+    overflow-x: hidden;
     display: flex;
     flex-direction: column;
-    gap: 1rem;
+    gap: 4px;
     scroll-behavior: smooth;
     -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
 }
 
-#chat:focus-visible {
-    outline: none;
+#chat:empty {
+    justify-content: center;
+    align-items: center;
+}
+
+#chat:empty::before {
+    content: 'forum';
+    font-family: 'Material Icons Round';
+    font-size: 64px;
+    color: var(--outline);
+    margin-bottom: 16px;
+}
+
+#chat:empty::after {
+    content: 'No messages yet — be the first to say hello!';
+    text-align: center;
+    color: var(--on-surface-variant);
+    font-size: 15px;
 }
 
 .message {
-    max-width: 80%;
-    padding: 0.75rem 1rem;
-    border-radius: 1rem;
+    max-width: min(75%, 520px);
+    padding: 10px 14px;
+    border-radius: var(--radius-lg);
+    font-size: 14px;
+    line-height: 1.5;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    animation: messageSlide 0.25s var(--transition-emphasis);
     position: relative;
-    line-height: 1.4;
-    font-size: 0.95rem;
-    background: var(--mdc-theme-surface);
-    color: var(--mdc-theme-on-surface);
-    word-break: break-word;
-    animation: fadeIn 0.3s ease;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
-    transition: all 0.2s ease;
 }
 
-.message:hover {
-    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+@keyframes messageSlide {
+    from { 
+        opacity: 0; 
+        transform: translateY(12px) scale(0.98); 
+    }
+    to { 
+        opacity: 1; 
+        transform: translateY(0) scale(1); 
+    }
 }
 
 .message.sent {
-    background: var(--mdc-theme-primary);
-    color: var(--mdc-theme-on-primary);
+    background: var(--primary);
+    color: var(--on-primary);
     align-self: flex-end;
-    margin-right: 0;
+    border-bottom-right-radius: var(--radius-xs);
+    margin-left: 48px;
 }
 
 .message.received {
+    background: var(--surface-container);
+    color: var(--on-surface);
     align-self: flex-start;
+    border-bottom-left-radius: var(--radius-xs);
+    margin-right: 48px;
+}
+
+.message + .message.sent:not(.received + .sent),
+.message + .message.received:not(.sent + .received) {
+    margin-top: 2px;
+}
+
+.message.sent + .message.received,
+.message.received + .message.sent {
+    margin-top: 12px;
 }
 
 .message .header {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    margin-bottom: 0.25rem;
-    font-size: 0.875rem;
+    gap: 8px;
+    margin-bottom: 4px;
+}
+
+.message .header strong {
+    font-size: 12px;
     font-weight: 500;
-    max-width: 90%;
-    overflow: hidden;
+    letter-spacing: 0.1px;
+}
+
+.message.sent .header {
+    justify-content: flex-end;
 }
 
 .message .avatar {
     width: 24px;
     height: 24px;
     border-radius: 50%;
-    background: hsl(var(--primary-hue), 50%, 40%);
+    background: var(--primary);
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 12px;
-    text-transform: uppercase;
-    color: var(--mdc-theme-on-primary);
+    font-size: 11px;
+    color: var(--on-primary);
+    font-weight: 600;
     flex-shrink: 0;
-    font-weight: bold;
+    text-transform: uppercase;
+}
+
+.message.sent .avatar {
+    background: rgba(255,255,255,0.25);
+    order: 2;
 }
 
 .message .message-content {
-    max-height: 400px;
-    overflow-y: auto;
-    word-wrap: break-word;
-    overflow-wrap: break-word;
+    word-break: break-word;
+    hyphens: auto;
+}
+
+.message .message-content p {
+    margin: 0;
+}
+
+.message .message-content p + p {
+    margin-top: 8px;
 }
 
 .message .message-content a {
     color: inherit;
     text-decoration: underline;
-    word-break: break-all;
+    text-underline-offset: 2px;
+}
+
+.message.received .message-content a {
+    color: var(--primary);
 }
 
 .message .message-content code {
-    background: rgba(0,0,0,0.2);
-    padding: 0.2rem 0.4rem;
-    border-radius: 0.25rem;
-    font-family: 'Courier New', monospace;
-    font-size: 0.9em;
-    word-break: break-all;
+    background: rgba(0,0,0,0.08);
+    padding: 2px 6px;
+    border-radius: var(--radius-xs);
+    font-family: 'Roboto Mono', monospace;
+    font-size: 0.875em;
+}
+
+.message.sent .message-content code {
+    background: rgba(255,255,255,0.2);
 }
 
 .message .message-content pre {
-    background: rgba(0,0,0,0.2);
-    padding: 0.5rem;
-    border-radius: 0.25rem;
+    background: rgba(0,0,0,0.08);
+    padding: 12px;
+    border-radius: var(--radius-sm);
     overflow-x: auto;
+    margin: 8px 0;
+    font-size: 13px;
+}
+
+.message.sent .message-content pre {
+    background: rgba(255,255,255,0.15);
 }
 
 .message .timestamp {
-    font-size: 0.75rem;
+    font-size: 11px;
     opacity: 0.7;
-    margin-top: 0.25rem;
+    margin-top: 4px;
     text-align: right;
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 0.3rem;
-}
-
-.read-receipt {
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
-    background: var(--read-receipt-color);
-    display: inline-block;
+    font-variant-numeric: tabular-nums;
 }
 
 .system-message {
     text-align: center;
-    padding: 0.75rem;
-    margin: 0.5rem 0;
-    color: rgba(255,255,255,0.7);
-    font-style: italic;
-    font-size: 0.9rem;
-    border-radius: 0.5rem;
-    background: rgba(255,255,255,0.05);
+    padding: 8px 16px;
+    margin: 12px auto;
+    font-size: 13px;
+    color: var(--on-surface-variant);
+    background: var(--surface-container);
+    border-radius: var(--radius-full);
+    max-width: fit-content;
+    animation: systemFade 0.3s ease;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+@keyframes systemFade {
+    from { opacity: 0; transform: scale(0.95); }
+    to { opacity: 1; transform: scale(1); }
 }
 
 .system-message.error {
-    color: var(--error-color);
-    background: rgba(244, 67, 54, 0.1);
+    background: var(--error-container);
+    color: var(--error);
 }
 
 .system-message.warning {
-    color: var(--warning-color);
-    background: rgba(255, 152, 0, 0.1);
+    background: var(--warning-container);
+    color: var(--warning);
 }
 
 .system-message.success {
-    color: var(--success-color);
-    background: rgba(76, 175, 80, 0.1);
+    background: var(--success-container);
+    color: var(--success);
 }
 
 .input-container {
+    background: var(--surface);
+    padding: 12px 16px;
+    padding-bottom: max(12px, env(safe-area-inset-bottom));
     display: flex;
-    gap: 1rem;
     align-items: flex-end;
-    position: sticky;
-    bottom: 0;
-    border-top: 1px solid rgba(255,255,255,0.1);
+    gap: 12px;
+    border-top: 1px solid var(--outline-variant);
+    flex-shrink: 0;
 }
 
 .input-wrapper {
     flex: 1;
+    position: relative;
     display: flex;
     flex-direction: column;
-    gap: 0.25rem;
 }
 
 #messageInput {
-    flex: 1;
-    padding: 0.75rem 1rem;
-    border-radius: 1.5rem;
-    border: 2px solid rgba(255,255,255,0.1);
-    background: rgba(255,255,255,0.05);
-    color: var(--mdc-theme-on-surface);
-    font-size: 1rem;
+    width: 100%;
+    padding: 12px 16px;
+    border: 2px solid transparent;
+    border-radius: var(--radius-xxl);
+    background: var(--surface-container);
+    color: var(--on-surface);
+    font-size: 15px;
     font-family: inherit;
+    line-height: 1.4;
     resize: none;
-    max-height: 120px;
-    transition: border-color 0.2s;
+    transition: all var(--transition-fast);
+}
+
+#messageInput:hover {
+    background: var(--surface-container-high);
 }
 
 #messageInput:focus {
-    outline: none;
-    border-color: var(--mdc-theme-primary);
-    background: rgba(255,255,255,0.1);
+    border-color: var(--primary);
+    background: var(--surface);
+    box-shadow: 0 0 0 2px var(--primary-container);
+}
+
+#messageInput::placeholder {
+    color: var(--on-surface-variant);
 }
 
 #messageInput:disabled {
@@ -331,248 +548,355 @@ h1 {
 }
 
 .input-info {
-    font-size: 0.75rem;
-    opacity: 0.6;
+    font-size: 11px;
+    color: var(--on-surface-variant);
     text-align: right;
+    margin-top: 4px;
+    padding-right: 4px;
+    opacity: 0;
+    transition: opacity var(--transition-fast);
+}
+
+.input-wrapper:focus-within .input-info {
+    opacity: 1;
 }
 
 .send-button {
-    background: var(--mdc-theme-primary);
+    width: 48px;
+    height: 48px;
+    min-width: 48px;
+    border-radius: var(--radius-full);
     border: none;
-    width: 40px;
-    height: 40px;
-    border-radius: 50%;
-    color: white;
+    background: var(--primary);
+    color: var(--on-primary);
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: all 0.2s;
-    flex-shrink: 0;
+    transition: all var(--transition-fast);
+    box-shadow: var(--shadow-1);
+    -webkit-tap-highlight-color: transparent;
+}
+
+.send-button .material-icons-round {
+    font-size: 22px;
+    transition: transform var(--transition-fast);
 }
 
 .send-button:hover:not(:disabled) {
-    background: var(--mdc-theme-primary-light);
-    box-shadow: 0 0 15px var(--mdc-theme-primary);
+    background: var(--primary-hover);
+    box-shadow: var(--shadow-2);
 }
 
 .send-button:active:not(:disabled) {
-    transform: scale(0.95);
+    background: var(--primary-pressed);
+    transform: scale(0.92);
+    box-shadow: var(--shadow-1);
 }
 
-.send-button:focus-visible {
-    outline: 2px solid var(--mdc-theme-primary-light);
-    outline-offset: 2px;
+.send-button:active:not(:disabled) .material-icons-round {
+    transform: translateX(2px);
 }
 
 .send-button:disabled {
-    opacity: 0.5;
+    background: var(--surface-container-high);
+    color: var(--on-surface-variant);
+    box-shadow: none;
     cursor: not-allowed;
 }
 
-@media (max-width: 600px) {
+/* Responsive Design */
+@media (max-width: 768px) {
     .app-bar {
-        flex-wrap: wrap;
-        gap: 0.5rem;
-        padding: 0.75rem;
+        padding: 0 12px;
+        height: 56px;
+    }
+    
+    .logo-icon {
+        width: 36px;
+        height: 36px;
+    }
+    
+    .logo-icon .material-icons-round {
+        font-size: 20px;
+    }
+    
+    h1 {
+        font-size: 18px;
     }
     
     .room-info {
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 0.25rem;
-        width: 100%;
+        gap: 6px;
     }
     
-    .header-bar {
-        padding: 0.75rem;
-        max-height: 150px;
+    .nav-link {
+        display: none;
     }
     
-    .instructions {
-        font-size: 0.8rem;
+    .status-chip span:not(.status-dot) {
+        display: none;
     }
     
-    .message {
-        max-width: 90%;
-    }
-    
-    .input-container {
-        padding: 0.75rem;
-    }
-    
-    #messageInput {
-        font-size: 16px;
+    .status-chip {
+        padding: 8px;
     }
 }
 
-@keyframes fadeIn {
-    from { 
-        opacity: 0; 
-        transform: translateY(10px); 
+@media (max-width: 600px) {
+    .message {
+        max-width: 88%;
+        margin-left: 0 !important;
+        margin-right: 0 !important;
     }
-    to { 
-        opacity: 1; 
-        transform: translateY(0); 
+    
+    .input-container {
+        padding: 10px 12px;
+    }
+    
+    #messageInput {
+        font-size: 16px; /* Prevents iOS zoom */
+        padding: 10px 14px;
+    }
+    
+    .send-button {
+        width: 44px;
+        height: 44px;
+        min-width: 44px;
+    }
+    
+    #userCount {
+        display: none;
     }
 }
 
 .typing-indicator {
     padding: 8px 16px;
-    font-size: 0.85rem;
-    color: var(--typing-indicator-color);
-    font-style: italic;
-    border-radius: 4px;
-    opacity: 0.8;
-    animation: typingPulse 1.5s ease infinite;
-    align-self: flex-start;
-}
-
-@keyframes typingPulse {
-    0% { opacity: 0.4; }
-    50% { opacity: 0.8; }
-    100% { opacity: 0.4; }
-}
-
-.typing-indicator.hidden {
+    font-size: 13px;
+    color: var(--on-surface-variant);
     display: none;
-    animation: none;
-}
-
-.modal {
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    background: rgba(0, 0, 0, 0.5);
-    display: flex;
     align-items: center;
-    justify-content: center;
-    z-index: 1000;
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.2s;
+    gap: 10px;
+    background: var(--surface-dim);
 }
 
-.modal.active {
-    opacity: 1;
-    pointer-events: all;
+.typing-dots {
+    display: flex;
+    gap: 3px;
+    align-items: center;
 }
 
-.modal-content {
-    background: var(--mdc-theme-surface);
-    padding: 2rem;
-    border-radius: 1rem;
-    max-width: 90%;
-    max-height: 80vh;
-    overflow-y: auto;
-    box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+.typing-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--on-surface-variant);
+    animation: typingBounce 1.4s infinite ease-in-out;
 }
 
-.modal-close {
-    background: none;
-    border: none;
-    color: var(--mdc-theme-on-surface);
-    font-size: 1.5rem;
+.typing-dot:nth-child(1) { animation-delay: 0s; }
+.typing-dot:nth-child(2) { animation-delay: 0.16s; }
+.typing-dot:nth-child(3) { animation-delay: 0.32s; }
+
+@keyframes typingBounce {
+    0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
+    30% { transform: translateY(-4px); opacity: 1; }
+}
+
+.header-bar {
+    background: var(--primary-container);
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--outline-variant);
+    animation: slideDown 0.3s ease-out;
+}
+
+@keyframes slideDown {
+    from { opacity: 0; transform: translateY(-8px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.welcome-content {
+    max-width: 800px;
+}
+
+.instructions {
+    font-size: 14px;
+    color: var(--on-primary-container);
+    line-height: 1.6;
+}
+
+.instructions strong {
+    font-weight: 600;
+}
+
+.instructions em {
+    font-style: italic;
+}
+
+.welcome-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 14px;
+}
+
+.welcome-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 16px;
+    border-radius: var(--radius-full);
+    background: var(--surface);
+    color: var(--on-surface);
+    font-size: 13px;
+    font-weight: 500;
     cursor: pointer;
-    position: absolute;
-    top: 1rem;
-    right: 1rem;
+    border: none;
+    box-shadow: var(--shadow-1);
+    transition: all var(--transition-fast);
+    -webkit-tap-highlight-color: transparent;
 }
 
-.modal-close:focus-visible {
-    outline: 2px solid var(--mdc-theme-primary);
+.welcome-chip:hover {
+    box-shadow: var(--shadow-2);
+    transform: translateY(-1px);
 }
 
-.connection-status {
-    position: fixed;
-    bottom: 1rem;
-    right: 1rem;
-    padding: 0.5rem 1rem;
-    border-radius: 0.5rem;
-    font-size: 0.85rem;
-    background: rgba(0, 0, 0, 0.7);
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    z-index: 999;
+.welcome-chip:active {
+    transform: translateY(0);
+    box-shadow: var(--shadow-1);
 }
 
-.connection-status.disconnected {
-    background: rgba(244, 67, 54, 0.2);
-    color: var(--error-color);
+.welcome-chip .material-icons-round {
+    font-size: 18px;
+    color: var(--primary);
 }
 
-.connection-status.connecting {
-    background: rgba(255, 152, 0, 0.2);
-    color: var(--warning-color);
-}
-
-.connection-status.connected {
-    background: rgba(76, 175, 80, 0.2);
-    color: var(--success-color);
-}
-
-.status-dot {
+::-webkit-scrollbar {
     width: 8px;
     height: 8px;
-    border-radius: 50%;
-    display: inline-block;
 }
 
-.unread-badge {
-    position: absolute;
-    top: 0;
-    right: 0;
-    background: var(--error-color);
-    color: white;
-    border-radius: 50%;
-    width: 20px;
-    height: 20px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 0.75rem;
-    font-weight: bold;
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--outline);
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--on-surface-variant);
+}
+
+/* Firefox scrollbar */
+* {
+    scrollbar-width: thin;
+    scrollbar-color: var(--outline) transparent;
+}
+
+/* Selection styling */
+::selection {
+    background: var(--primary-container);
+    color: var(--on-primary-container);
+}
+
+/* Reduce motion for accessibility */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
+}
+
+/* Print styles */
+@media print {
+    .app-bar,
+    .input-container,
+    .header-bar,
+    .typing-indicator {
+        display: none !important;
+    }
+    
+    #chat {
+        overflow: visible;
+        height: auto;
+    }
+}
+
+/* High contrast mode support */
+@media (prefers-contrast: high) {
+    :root {
+        --outline: #000000;
+        --outline-variant: #000000;
+    }
+    
+    .message.received {
+        border: 1px solid var(--outline);
+    }
 }
 </style>
 </head>
 <body>
-<div class="app-bar">
-    <div class="brand">
-        <span class="material-icons">auto_awesome</span>
-        <h1>thehellisthis.com</h1>
-    </div>
-    <div class="room-info">
-        <span id="roomName">Loading...</span>
-        <a class="nav-link" href="#" id="exploreLink">Explore Another Room</a>
-    </div>
-    <span class="online-indicator" title="Connection Status" aria-label="Connection status indicator"></span>
-    <span id="userCount">Users: 0</span>
-</div>
 
-<div class="header-bar">
-    <p class="instructions">
-        Hey there, this is <strong>thehellisthis.com</strong>, crafted by <strong>Cameron Aaron</strong>.<br><br>
-        <strong>How it works</strong>:<br>
-        1. Share a URL and anyone who joins that exact path enters the same chat room. No sign-ups, no hassle.<br>
-        2. Type messages in the box below and hit enter or the send button.<br>
-        3. Format your text using Markdown: *italics*, **bold**, [links](https://thehellisthis.com), whatever you like.<br>
-        4. The site assigns you a random animal name. Stay anonymous, let your personality shine.<br><br>
-        <strong>Pro Tips</strong>:<br>
-        • Be respectful, curious, and open-minded.<br>
-        • If you leave, your messages vanish into the ether. It's all about the moment.<br>
-        • Experiment with different room names (like "/mellow-forest") for unique vibes.<br><br>
-        This is a social art experiment. Relax, have fun, and connect with cool strangers.
-    </p>
+<header class="app-bar">
+    <a class="brand" href="/" title="Go to main room">
+        <div class="logo-icon">
+            <span class="material-icons-round">forum</span>
+        </div>
+        <h1>thehellisthis</h1>
+    </a>
+    <div class="room-info">
+        <span class="room-badge" id="roomName">main</span>
+        <a class="nav-link" href="#" id="exploreLink">
+            <span class="material-icons-round" style="font-size:18px;vertical-align:middle;margin-right:4px">explore</span>
+            Explore
+        </a>
+        <span id="userCount">
+            <span class="material-icons-round">group</span>
+            <span id="userCountNum">0</span>
+        </span>
+        <div class="status-chip connected" id="statusChip">
+            <span class="status-dot"></span>
+            <span id="statusText">Connected</span>
+        </div>
+    </div>
+</header>
+
+<div class="header-bar" id="welcomeBanner">
+    <div class="welcome-content">
+        <p class="instructions">
+            <strong>Welcome!</strong> Anonymous, ephemeral chat rooms. Share a link to invite others.
+            Messages support <em>*markdown*</em> formatting. Everything disappears when you leave.
+        </p>
+        <div class="welcome-chips">
+            <button class="welcome-chip" id="createRoomBtn">
+                <span class="material-icons-round">add_circle</span>
+                New Room
+            </button>
+            <button class="welcome-chip" id="dismissBanner">
+                <span class="material-icons-round">close</span>
+                Dismiss
+            </button>
+        </div>
+    </div>
 </div>
 
 <div id="chat" role="log" aria-live="polite" aria-label="Chat messages" tabindex="0"></div>
 
-<div id="typingIndicator" class="typing-indicator hidden" role="status" aria-live="polite" aria-label="Typing indicator"></div>
+<div id="typingIndicator" class="typing-indicator" role="status" aria-live="polite">
+    <div class="typing-dots">
+        <span class="typing-dot"></span>
+        <span class="typing-dot"></span>
+        <span class="typing-dot"></span>
+    </div>
+    <span id="typingText">Someone is typing...</span>
+</div>
 
-<div class="input-container">
+<footer class="input-container">
     <div class="input-wrapper">
         <input 
             id="messageInput" 
@@ -582,27 +906,16 @@ h1 {
             autocomplete="off" 
             maxlength="8000"
             spellcheck="true"
+            enterkeyhint="send"
         />
         <div class="input-info">
             <span id="charCount">0</span> / 8000
         </div>
     </div>
-    <button 
-        class="send-button" 
-        aria-label="Send message" 
-        type="button"
-        id="sendBtn"
-    >
-        <span class="material-icons" aria-hidden="true">send</span>
+    <button class="send-button" id="sendBtn" aria-label="Send message" type="button">
+        <span class="material-icons-round">send</span>
     </button>
-</div>
-
-<div class="connection-status connected" id="connectionStatus">
-    <span class="status-dot"></span>
-    <span id="statusText">Connected</span>
-</div>
-
-<audio id="messageSound" preload="auto"></audio>
+</footer>
 
 <script>
 // Production-grade frontend for real-time chat
@@ -634,13 +947,15 @@ class ChatApp {
         this.chat = document.getElementById('chat');
         this.input = document.getElementById('messageInput');
         this.sendButton = document.getElementById('sendBtn');
-        this.userCountEl = document.getElementById('userCount');
-        this.onlineIndicator = document.querySelector('.online-indicator');
+        this.userCountNumEl = document.getElementById('userCountNum');
+        this.statusChip = document.getElementById('statusChip');
         this.typingIndicator = document.getElementById('typingIndicator');
-        this.connectionStatus = document.getElementById('connectionStatus');
+        this.typingText = document.getElementById('typingText');
         this.statusText = document.getElementById('statusText');
         this.charCount = document.getElementById('charCount');
         this.roomNameEl = document.getElementById('roomName');
+        this.welcomeBanner = document.getElementById('welcomeBanner');
+        this.createRoomBtn = document.getElementById('createRoomBtn');
         
         this.init();
     }
@@ -676,13 +991,44 @@ class ChatApp {
         // Explore room link
         document.getElementById('exploreLink').addEventListener('click', (e) => {
             e.preventDefault();
-            const rooms = ['mellow-forest', 'midnight-owl', 'coffee-talks', 'tech-minds'];
+            const rooms = ['mellow-forest', 'midnight-owl', 'coffee-talks', 'tech-minds', 'random-thoughts', 'chill-zone', 'late-night', 'creative-corner'];
             const room = rooms[Math.floor(Math.random() * rooms.length)];
             window.location.href = `/${room}`;
         });
         
+        // Create room button
+        this.createRoomBtn.addEventListener('click', () => {
+            this.showCreateRoomDialog();
+        });
+        
+        // Dismiss banner
+        const dismissBtn = document.getElementById('dismissBanner');
+        if (dismissBtn) {
+            dismissBtn.addEventListener('click', () => {
+                this.welcomeBanner.style.display = 'none';
+                localStorage.setItem('bannerDismissed', 'true');
+            });
+        }
+        
+        // Check if banner was previously dismissed
+        if (localStorage.getItem('bannerDismissed') === 'true') {
+            this.welcomeBanner.style.display = 'none';
+        }
+        
         // Focus input on page load
         this.input.focus();
+    }
+    
+    showCreateRoomDialog() {
+        const roomName = prompt('Enter a room name (3-50 characters):\\n\\nAllowed: letters, numbers, hyphens, underscores\\nExample: my-cool-room');
+        if (roomName) {
+            const trimmed = roomName.trim().toLowerCase();
+            if (/^[a-zA-Z0-9][a-zA-Z0-9-_]{1,48}[a-zA-Z0-9]$/.test(trimmed)) {
+                window.location.href = `/${trimmed}`;
+            } else {
+                this.showError('Invalid room name. Use 3-50 characters: letters, numbers, hyphens, underscores.');
+            }
+        }
     }
     
     initAudioContext() {
@@ -700,7 +1046,7 @@ class ChatApp {
     }
     
     updateRoomName() {
-        this.roomNameEl.textContent = `Room: ${this.roomName}`;
+        this.roomNameEl.textContent = this.roomName;
     }
     
     connect() {
@@ -723,6 +1069,9 @@ class ChatApp {
     handleWebSocketOpen() {
         console.log('WebSocket connected');
         this.connected = true;
+        if (this.reconnectAttempts > 0) {
+            this.addSystemMessage('Reconnected successfully', 'success');
+        }
         this.reconnectAttempts = 0;
         this.updateConnectionStatus('connected');
         this.sendButton.disabled = false;
@@ -734,13 +1083,13 @@ class ChatApp {
         console.log('WebSocket disconnected');
         this.connected = false;
         this.updateConnectionStatus('disconnected');
-        this.cleanup();
+        this.sendButton.disabled = true;
+        this.input.disabled = true;
         this.tryReconnect();
     }
     
     handleWebSocketError(error) {
         console.error('WebSocket error:', error);
-        this.showError('Connection error. Attempting to reconnect...');
     }
     
     handleWebSocketMessage(event) {
@@ -755,18 +1104,31 @@ class ChatApp {
     
     tryReconnect() {
         if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-            this.showError(`Failed to reconnect after ${this.maxReconnectAttempts} attempts`);
+            this.showError('Unable to connect. Please refresh the page.');
             return;
         }
         
         const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
         this.updateConnectionStatus('connecting');
-        this.statusText.textContent = `Reconnecting in ${Math.ceil(delay / 1000)}s...`;
+        
+        // Update status text with countdown
+        let remaining = Math.ceil(delay / 1000);
+        this.statusText.textContent = `Reconnecting in ${remaining}s`;
+        
+        const countdownInterval = setInterval(() => {
+            remaining--;
+            if (remaining > 0 && !this.connected) {
+                this.statusText.textContent = `Reconnecting in ${remaining}s`;
+            } else {
+                clearInterval(countdownInterval);
+            }
+        }, 1000);
         
         setTimeout(() => {
-            // Check if we're still disconnected AND not already reconnecting
+            clearInterval(countdownInterval);
             if (!this.connected && (!this.ws || this.ws.readyState !== WebSocket.CONNECTING)) {
                 this.reconnectAttempts++;
+                this.statusText.textContent = 'Connecting...';
                 this.connect();
             }
         }, delay);
@@ -892,20 +1254,23 @@ class ChatApp {
             if (!this.myUserId) {
                 this.myUserId = event.UserJoined.user_id;
                 this.myAnimalName = event.UserJoined.animal_name;
+                // Welcome message for the user themselves
+                this.addSystemMessage(`You joined as ${this.escapeHtml(event.UserJoined.animal_name)} 🎉`, 'success');
+            } else {
+                this.addSystemMessage(`${this.escapeHtml(event.UserJoined.animal_name)} joined`, 'success');
             }
-            this.addSystemMessage(`${this.escapeHtml(event.UserJoined.animal_name)} appears in this strange realm`, 'success');
             this.messageCount++;
         } else if (event.UserLeft) {
             this.typingUsers.delete(event.UserLeft.animal_name);
             this.updateTypingIndicator();
-            this.addSystemMessage(`${this.escapeHtml(event.UserLeft.animal_name)} vanishes into the ether`);
+            this.addSystemMessage(`${this.escapeHtml(event.UserLeft.animal_name)} left`);
             this.messageCount++;
         } else if (event.Typing) {
             this.handleTypingIndicator(event.Typing.animal_name, event.Typing.is_typing);
         } else if (event.ReadReceipt) {
             this.updateReadReceipt(event.ReadReceipt.animal_name, event.ReadReceipt.message_id);
         } else if (event.ServerShutdown) {
-            this.addSystemMessage(`Server shutting down: ${event.ServerShutdown.reason}`, 'warning');
+            this.addSystemMessage(`Server is restarting: ${event.ServerShutdown.reason}`, 'warning');
             this.messageCount++;
         }
         
@@ -960,7 +1325,7 @@ class ChatApp {
         const names = Array.from(this.typingUsers.keys());
         
         if (names.length === 0) {
-            this.typingIndicator.classList.add('hidden');
+            this.typingIndicator.style.display = 'none';
         } else {
             let text;
             if (names.length === 1) {
@@ -971,8 +1336,8 @@ class ChatApp {
                 text = `${names.length} people are typing...`;
             }
             
-            this.typingIndicator.textContent = text;
-            this.typingIndicator.classList.remove('hidden');
+            this.typingText.textContent = text;
+            this.typingIndicator.style.display = 'flex';
         }
     }
     
@@ -1094,24 +1459,21 @@ class ChatApp {
     }
     
     updateUserCount(count) {
-        this.userCountEl.textContent = `Users: ${count}`;
+        this.userCountNumEl.textContent = count;
     }
     
     updateConnectionStatus(status) {
-        this.connectionStatus.className = `connection-status ${status}`;
+        this.statusChip.className = `status-chip ${status}`;
         
         switch (status) {
             case 'connected':
                 this.statusText.textContent = 'Connected';
-                this.onlineIndicator.classList.add('connected');
                 break;
             case 'disconnected':
                 this.statusText.textContent = 'Disconnected';
-                this.onlineIndicator.classList.remove('connected');
                 break;
             case 'connecting':
                 this.statusText.textContent = 'Connecting...';
-                this.onlineIndicator.classList.remove('connected');
                 break;
         }
     }
