@@ -289,6 +289,149 @@ h1 {
     50% { opacity: 0.6; transform: scale(0.9); }
 }
 
+/* Room Heartbeat Indicator */
+.room-heartbeat {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    border-radius: var(--radius-full);
+    font-size: 13px;
+    font-weight: 500;
+    font-family: 'Google Sans', sans-serif;
+    background: var(--surface-container-high);
+    color: var(--on-surface-variant);
+    transition: all var(--transition-medium);
+}
+
+.room-heartbeat .heart-icon {
+    font-size: 18px;
+    color: var(--error);
+    animation: heartbeat 1s infinite;
+}
+
+.room-heartbeat.active {
+    background: var(--tertiary-container);
+    color: var(--tertiary);
+}
+
+.room-heartbeat.active .heart-icon {
+    animation: heartbeat-fast 0.4s infinite;
+}
+
+.room-heartbeat.warning {
+    background: var(--warning-container);
+    color: var(--warning);
+}
+
+.room-heartbeat.warning .heart-icon {
+    animation: heartbeat-slow 2s infinite;
+}
+
+.room-heartbeat.critical {
+    background: var(--error-container);
+    color: var(--error);
+    animation: room-fade-pulse 1s infinite;
+}
+
+.room-heartbeat.critical .heart-icon {
+    animation: heartbeat-dying 3s infinite;
+}
+
+@keyframes heartbeat {
+    0%, 100% { transform: scale(1); }
+    15% { transform: scale(1.15); }
+    30% { transform: scale(1); }
+    45% { transform: scale(1.1); }
+    60% { transform: scale(1); }
+}
+
+@keyframes heartbeat-fast {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.25); }
+}
+
+@keyframes heartbeat-slow {
+    0%, 100% { transform: scale(1); opacity: 0.7; }
+    50% { transform: scale(1.1); opacity: 1; }
+}
+
+@keyframes heartbeat-dying {
+    0%, 100% { transform: scale(1); opacity: 0.4; }
+    50% { transform: scale(1.05); opacity: 0.7; }
+}
+
+@keyframes room-fade-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+}
+
+/* Room lifespan counter */
+.room-lifespan {
+    font-size: 12px;
+    opacity: 0.8;
+}
+
+/* Fading messages when room is dying */
+.room-fading .message {
+    transition: opacity 0.5s;
+}
+
+.room-fading .message:nth-last-child(n+10) {
+    opacity: 0.3;
+}
+
+.room-fading .message:nth-last-child(n+7):nth-last-child(-n+9) {
+    opacity: 0.5;
+}
+
+.room-fading .message:nth-last-child(n+4):nth-last-child(-n+6) {
+    opacity: 0.7;
+}
+
+/* Message combo burst effect */
+.message.combo {
+    animation: messageSlide 0.3s var(--transition-medium), combo-burst 0.5s ease-out;
+}
+
+@keyframes combo-burst {
+    0% { box-shadow: 0 0 0 0 var(--primary); }
+    50% { box-shadow: 0 0 0 8px transparent; }
+    100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+.message.sent.combo {
+    animation: messageSlide 0.3s var(--transition-medium), combo-burst-sent 0.5s ease-out;
+}
+
+@keyframes combo-burst-sent {
+    0% { box-shadow: 0 0 0 0 var(--primary); }
+    50% { box-shadow: 0 0 20px 4px var(--primary); }
+    100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+/* Room fade warning toast */
+.fade-warning {
+    position: fixed;
+    top: 80px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--warning-container);
+    color: var(--warning);
+    padding: 12px 24px;
+    border-radius: var(--radius-full);
+    font-weight: 500;
+    font-family: 'Google Sans', sans-serif;
+    box-shadow: var(--shadow-3);
+    z-index: 1000;
+    animation: fade-warning-in 0.3s ease-out;
+}
+
+@keyframes fade-warning-in {
+    from { opacity: 0; transform: translateX(-50%) translateY(-20px); }
+    to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
 @keyframes blink {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.3; }
@@ -958,6 +1101,10 @@ h1 {
             <span class="status-dot"></span>
             <span id="statusText">Connected</span>
         </div>
+        <div class="room-heartbeat active" id="roomHeartbeat">
+            <span class="material-icons-round heart-icon">favorite</span>
+            <span class="room-lifespan" id="roomLifespan">0m alive</span>
+        </div>
     </div>
 </header>
 
@@ -1045,6 +1192,14 @@ class ChatApp {
         this.scrollTimeoutId = null;
         this.autoScrollTimeoutId = null;
         
+        // Room heartbeat tracking
+        this.roomStartTime = Date.now();
+        this.lastActivityTime = Date.now();
+        this.lastMessageTime = 0;
+        this.recentMessageCount = 0;
+        this.heartbeatIntervalId = null;
+        this.fadeWarningShown = false;
+        
         // DOM elements
         this.chat = document.getElementById('chat');
         this.input = document.getElementById('messageInput');
@@ -1058,6 +1213,8 @@ class ChatApp {
         this.roomNameEl = document.getElementById('roomName');
         this.welcomeBanner = document.getElementById('welcomeBanner');
         this.createRoomBtn = document.getElementById('createRoomBtn');
+        this.roomHeartbeat = document.getElementById('roomHeartbeat');
+        this.roomLifespan = document.getElementById('roomLifespan');
         
         this.init();
     }
@@ -1070,6 +1227,9 @@ class ChatApp {
         
         // Periodic cleanup of stale typing indicators (store ID for cleanup)
         this.cleanupIntervalId = setInterval(() => this.cleanupTypingIndicators(), 1000);
+        
+        // Start heartbeat monitor
+        this.heartbeatIntervalId = setInterval(() => this.updateHeartbeat(), 1000);
         
         // Monitor scroll position to control auto-scroll
         this.chat.addEventListener('scroll', (e) => {
@@ -1196,6 +1356,10 @@ class ChatApp {
     handleWebSocketOpen() {
         console.log('WebSocket connected');
         this.connected = true;
+        // Reset activity tracking on connect
+        this.lastActivityTime = Date.now();
+        this.roomStartTime = Date.now();
+        this.fadeWarningShown = false;
         if (this.reconnectAttempts > 0) {
             this.addSystemMessage('Reconnected successfully', 'success');
         }
@@ -1288,6 +1452,20 @@ class ChatApp {
             return;
         }
         
+        // Track activity for heartbeat
+        this.lastActivityTime = Date.now();
+        this.fadeWarningShown = false;
+        
+        // Combo detection: rapid messages within 3 seconds
+        const now = Date.now();
+        const isCombo = (now - this.lastMessageTime) < 3000;
+        this.lastMessageTime = now;
+        if (isCombo) {
+            this.recentMessageCount++;
+        } else {
+            this.recentMessageCount = 1;
+        }
+        
         // Get user_id from cookie for comparison (handles reconnect before UserJoined)
         let cookieUserId = this.myUserId;
         if (!cookieUserId) {
@@ -1312,7 +1490,7 @@ class ChatApp {
             this.myAnimalName = msg.animal_name;
         }
         
-        this.renderMessage(msg, isSent);
+        this.renderMessage(msg, isSent, isCombo && this.recentMessageCount >= 2);
         
         // Auto-scroll if user is at bottom
         if (this.shouldAutoScroll) {
@@ -1337,7 +1515,7 @@ class ChatApp {
         }
     }
     
-    renderMessage(msg, isSent) {
+    renderMessage(msg, isSent, isCombo = false) {
         // Prevent duplicate message renders
         if (this.chat.querySelector(`[data-message-id="${msg.message_id}"]`)) {
             return;
@@ -1346,7 +1524,7 @@ class ChatApp {
         const timestamp = this.formatTimestamp(this.parseTimestamp(msg.timestamp));
         
         const div = document.createElement('div');
-        div.className = `message ${isSent ? 'sent' : 'received'}`;
+        div.className = `message ${isSent ? 'sent' : 'received'}${isCombo ? ' combo' : ''}`;
         div.dataset.messageId = msg.message_id;
         div.dataset.userId = msg.user_id;
         div.setAttribute('role', 'article');
@@ -1711,10 +1889,68 @@ class ChatApp {
             clearTimeout(this.autoScrollTimeoutId);
             this.autoScrollTimeoutId = null;
         }
+        // Clear heartbeat interval
+        if (this.heartbeatIntervalId) {
+            clearInterval(this.heartbeatIntervalId);
+            this.heartbeatIntervalId = null;
+        }
         // Close WebSocket if open
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
             this.ws.close();
         }
+    }
+    
+    updateHeartbeat() {
+        const now = Date.now();
+        const idleSeconds = Math.floor((now - this.lastActivityTime) / 1000);
+        const aliveMinutes = Math.floor((now - this.roomStartTime) / 60000);
+        
+        // Update lifespan display
+        if (aliveMinutes < 60) {
+            this.roomLifespan.textContent = `${aliveMinutes}m alive`;
+        } else {
+            const hours = Math.floor(aliveMinutes / 60);
+            const mins = aliveMinutes % 60;
+            this.roomLifespan.textContent = `${hours}h ${mins}m alive`;
+        }
+        
+        // Update heartbeat state based on activity
+        this.roomHeartbeat.classList.remove('active', 'warning', 'critical');
+        this.chat.classList.remove('room-fading');
+        
+        if (idleSeconds < 60) {
+            // Active: recent messages
+            this.roomHeartbeat.classList.add('active');
+        } else if (idleSeconds < 180) {
+            // Normal: no special state, just default heartbeat
+        } else if (idleSeconds < 240) {
+            // Warning: 3-4 min idle
+            this.roomHeartbeat.classList.add('warning');
+        } else {
+            // Critical: 4+ min idle, room is dying
+            this.roomHeartbeat.classList.add('critical');
+            this.chat.classList.add('room-fading');
+            
+            // Show fade warning once
+            if (!this.fadeWarningShown && idleSeconds >= 240) {
+                this.fadeWarningShown = true;
+                this.showFadeWarning();
+            }
+        }
+    }
+    
+    showFadeWarning() {
+        const existing = document.querySelector('.fade-warning');
+        if (existing) existing.remove();
+        
+        const warning = document.createElement('div');
+        warning.className = 'fade-warning';
+        warning.innerHTML = '<span class="material-icons-round" style="vertical-align:middle;margin-right:8px">hourglass_bottom</span>Room fading soon... say something!';
+        document.body.appendChild(warning);
+        
+        setTimeout(() => {
+            if (warning.parentNode) warning.remove();
+        }, 5000);
     }
 }
 
