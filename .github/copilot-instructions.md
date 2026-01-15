@@ -87,21 +87,50 @@ Client (index.html) → WS /ws/{room} → Axum Handler → RoomState (broadcast 
 ```bash
 cargo run                # Debug build, PORT=3000
 cargo build --release    # Optimized binary (~7.5 MB)
-cargo test               # Run all 387 tests
+cargo test               # Run all 397 tests
 cargo fmt --all          # Format code
 cargo clippy --all-targets --all-features -- -D warnings  # Lint
 ```
 
-### Deployment
-- **Heroku**: `git push heroku main` (uses [heroku.yml](heroku.yml) Docker build, runs `infinite-chat` binary from [Procfile](Procfile))
-- **Cloudflare**: `cd cloudflare && npm install && npm run deploy` (builds [Dockerfile.cloudflare](Dockerfile.cloudflare), deploys Worker+Container)
-- **Binary name**: `infinite-chat` (from Cargo.toml). If changing, update [Procfile](Procfile) and [heroku.yml](heroku.yml).
+### Pre-Deployment Checklist
+- Code passes `cargo fmt --all -- --check`
+- Code passes `cargo clippy --all-targets --all-features -- -D warnings`
+- All tests pass: `cargo test --all-features`
+- Release build succeeds: `cargo build --release`
+- Binary size is ~7.5 MB
+- GitHub Actions CI/CD configured
 
-### Cloudflare-Specific
-- **Worker file**: [cloudflare/src/index.ts](cloudflare/src/index.ts) — proxies to container on port 3000
-- **Config**: [cloudflare/wrangler.jsonc](cloudflare/wrangler.jsonc) — `max_instances: 5`
-- **Commands**: `npm run dev` (local), `npm run deploy` (production), `npx wrangler tail` (logs)
-- **Container env**: `PORT=3000`, `RUST_LOG=info` set in [index.ts](cloudflare/src/index.ts)
+### Deployment Targets
+
+**Heroku** (simple, classic PaaS)
+```bash
+git push heroku main
+```
+Uses [heroku.yml](heroku.yml) Docker build, runs `infinite-chat` binary from [Procfile](Procfile). Binary name must match Cargo.toml `[package] name`. If changing, update both [Procfile](Procfile) and [heroku.yml](heroku.yml).
+
+**Cloudflare Containers** (edge, WebSocket-native, scales to zero)
+```bash
+cd cloudflare && npm install && npm run deploy
+```
+Architecture:
+- **Worker**: [cloudflare/src/index.ts](cloudflare/src/index.ts) proxies all traffic to container at port 3000
+- **Config**: [cloudflare/wrangler.jsonc](cloudflare/wrangler.jsonc) — sets `max_instances: 5`
+- **Container**: [Dockerfile.cloudflare](Dockerfile.cloudflare) builds Rust server image
+- **Environment**: Worker passes `PORT=3000` and `RUST_LOG=info` to container
+- **Dev mode**: `npm run dev` (builds locally & proxies through Worker)
+- **Production**: `npm run deploy` (builds, pushes to registry, deploys Worker+Container)
+- **Logs**: `npx wrangler tail` streams real-time logs from production
+
+**Cloudflare Advantages**:
+- 300+ edge locations worldwide
+- Native WebSocket support
+- Scales to zero (pay only for usage)
+- Cold starts ~2-5 seconds
+- No minimum instances required
+
+### Environment Variables
+- `PORT` — Server port (default: `3000`)
+- `RUST_LOG` — Tracing level (optional, e.g., `info`, `debug`)
 
 ## Extension Patterns
 
@@ -127,6 +156,96 @@ cargo clippy --all-targets --all-features -- -D warnings  # Lint
 - **[DEPLOYMENT.md](DEPLOYMENT.md)**: Pre-deploy checklist, env vars, resource limits, monitoring setup, performance tuning
 - **[CLOUDFLARE_DEPLOYMENT.md](CLOUDFLARE_DEPLOYMENT.md)**: Cloudflare-specific setup, scaling behavior, cold start times, cost comparison
 - **[README.md](README.md)**: Quick start, features, API reference, architecture diagram
+
+## Resource Limits & Scaling
+
+All limits enforced in [src/main.rs](src/main.rs):
+- **Max rooms**: 100 active concurrent
+- **Messages per room**: 500 (oldest auto-pruned)
+- **Global memory**: 400 MB cap (enforced by `MemoryTracker`)
+- **Connections per IP**: 3 (prevents abuse)
+- **Message length**: 8,000 bytes max (after sanitization)
+- **Rate limit**: 30 messages per 60s per user, min 500ms between messages
+- **Heartbeat**: 5s interval, 6s timeout before disconnect
+- **Cleanup**: Every 60s for stale connections, every 60s for rooms (1-minute inactivity threshold)
+
+## Monitoring & Observability
+
+**Logs**: Structured via `tracing` crate to stdout
+- Macros: `info!`, `warn!`, `error!`, `debug!`
+- All major events logged (connections, disconnects, rate limit hits, IP bans, memory events)
+
+**Metrics**: `metrics` crate is integrated but not wired (optional enhancement)
+- To enable Prometheus export:
+  ```rust
+  let prometheus_builder = metrics_exporter_prometheus::PrometheusBuilder::new();
+  prometheus_builder.install_recorder().unwrap();
+  ```
+
+**Health Checks**: No built-in endpoint—use WebSocket connectivity tests or ping container on `PORT`
+
+**Security Monitoring**:
+- Auto-ban IPs after 10 suspicious activities (checked in `SecurityManager`)
+- Connection pooling tracks concurrent connections per IP
+- Message validation rejects oversized/invalid messages with error events
+
+## Production Security Posture
+
+- **Message Sanitization**: User text → Markdown (Comrak) → HTML → Ammonia sanitization → safe HTML in broadcast
+- **Cookie Security**: `user_id` + `animal_name` cookies are HttpOnly, SameSite=Strict, Secure
+- **IP Bans**: Automatic after 10 violations; checked before accepting new connections
+- **Input Validation**: Room names (regex + length), message sizes (8 KB), character sets
+- **Connection Pooling**: Per-IP rate limiting (max 3 concurrent connections)
+- **No Persistence**: Ephemeral design prevents data leakage on compromise
+
+## Performance Tuning
+
+### Memory Management
+- **Cleanup cycle**: Every 60s triggers `cleanup_rooms()` → removes empty rooms, prunes old messages
+- **Global cap**: 400 MB hard limit; exceeding triggers aggressive pruning
+- **Per-room**: Max 500 messages; oldest auto-deleted when limit reached
+- **User cleanup**: Disconnected users removed from room state
+
+### WebSocket Efficiency
+- **Broadcast capacity**: 1000 messages buffered per room (sender channel)
+- **Heartbeat**: 5s interval + 6s timeout prevents zombie connections
+- **Message parsing**: JSON validation + sanitization on hot path
+- **Connection state**: RwLock minimizes contention; locks dropped after snapshot
+
+## Known Constraints
+
+- **Ephemeral**: All rooms/messages lost on restart (no database)
+- **Single-server**: No clustering or horizontal scaling
+- **Max 100 concurrent rooms**, **500 messages/room**, **~400 concurrent users** (memory-bound)
+- **Cold start**: Cloudflare container cold starts ~2-5 seconds
+
+## Optional Future Enhancements
+
+1. Add PostgreSQL for persistence + room recovery on restart
+2. Implement cluster support (Redis pub/sub for room coordination)
+3. Add WebSocket compression (permessage-deflate)
+4. Wire Prometheus metrics exporter + Grafana dashboards
+5. Deploy to Kubernetes with health checks & auto-scaling
+6. Add room moderation: pin/unpin messages, user mutes
+7. Implement rich media (image previews, link embeds)
+
+## Deployment Troubleshooting
+
+### Heroku Issues
+- Binary size > 500 MB? Causes slug compilation timeout. Use `cargo build --release` locally, commit binary.
+- Port binding fails? Verify `PORT` env var is read in [src/main.rs](src/main.rs) — default is 3000.
+- Dyno memory limit? 512 MB dyos can run single room with ~50 users. Use larger dyos for scale.
+
+### Cloudflare Issues
+- Container doesn't start? Verify `docker build -f Dockerfile.cloudflare .` succeeds locally.
+- WebSocket connection fails? Check Worker is proxying upgrade requests ([cloudflare/src/index.ts](cloudflare/src/index.ts)).
+- Cold starts slow? Rust binary takes ~500ms to initialize. Keep at least 1 instance warm with periodic health checks.
+- Deploy fails? Run `npm run deploy` from `cloudflare/` directory; ensure `wrangler login` is authenticated.
+
+### General
+- High memory usage? Reduce `MAX_TOTAL_ROOMS_MEMORY` in [src/main.rs](src/main.rs) — currently 400 MB.
+- Rate limit too strict? Adjust `MESSAGE_RATE_LIMIT` and `MAX_MESSAGES_PER_WINDOW` constants.
+- Tests fail post-deploy? Rebuild binary: `cargo build --release`. Some tests embed [index.html](index.html) and validate timing.
 
 ## Tone & UX
 - **Branding**: "Social art experiment" framing in [index.html](index.html). Keep copy consistent with collaborative/playful tone.
