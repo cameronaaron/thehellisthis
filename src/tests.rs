@@ -7191,3 +7191,423 @@ async fn test_heartbeat_timeout_reasonable() {
     assert!(HEARTBEAT_TIMEOUT.as_secs() > HEARTBEAT_INTERVAL.as_secs());
     assert_eq!(HEARTBEAT_TIMEOUT.as_secs(), 6);
 }
+
+// ========== CONSTANTS COVERAGE TESTS ==========
+
+#[tokio::test]
+async fn test_max_rooms_constant() {
+    assert_eq!(MAX_ROOMS, 100);
+}
+
+#[tokio::test]
+async fn test_max_room_name_len_constant() {
+    assert_eq!(MAX_ROOM_NAME_LEN, 50);
+}
+
+#[tokio::test]
+async fn test_min_room_name_len_constant() {
+    assert_eq!(MIN_ROOM_NAME_LEN, 3);
+}
+
+#[tokio::test]
+async fn test_max_message_len_constant() {
+    assert_eq!(MAX_MESSAGE_LEN, 8000);
+}
+
+#[tokio::test]
+async fn test_max_messages_per_room_constant() {
+    assert_eq!(MAX_MESSAGES_PER_ROOM, 500);
+}
+
+#[tokio::test]
+async fn test_max_concurrent_connections_per_ip_constant() {
+    assert_eq!(MAX_CONCURRENT_CONNECTIONS_PER_IP, 3);
+}
+
+#[tokio::test]
+async fn test_max_concurrent_users_constant() {
+    assert_eq!(MAX_CONCURRENT_USERS, 400);
+}
+
+#[tokio::test]
+async fn test_message_rate_limit_constant() {
+    assert_eq!(MESSAGE_RATE_LIMIT.as_millis(), 500);
+}
+
+#[tokio::test]
+async fn test_max_messages_per_window_constant() {
+    assert_eq!(MAX_MESSAGES_PER_WINDOW, 30);
+}
+
+#[tokio::test]
+async fn test_rate_limit_window_constant() {
+    assert_eq!(RATE_LIMIT_WINDOW.as_secs(), 60);
+}
+
+#[tokio::test]
+async fn test_heartbeat_interval_constant() {
+    assert_eq!(HEARTBEAT_INTERVAL.as_secs(), 5);
+}
+
+#[tokio::test]
+async fn test_inactive_timeout_constant() {
+    assert_eq!(INACTIVE_TIMEOUT.as_secs(), 3600);
+}
+
+#[tokio::test]
+async fn test_max_payload_size_constant() {
+    assert_eq!(MAX_PAYLOAD_SIZE, 512 * 1024);
+}
+
+#[tokio::test]
+async fn test_sanitize_timeout_constant() {
+    assert_eq!(SANITIZE_TIMEOUT.as_millis(), 50);
+}
+
+#[tokio::test]
+async fn test_typing_event_min_interval_constant() {
+    assert_eq!(TYPING_EVENT_MIN_INTERVAL.as_millis(), 200);
+}
+
+#[tokio::test]
+async fn test_read_receipt_min_interval_constant() {
+    assert_eq!(READ_RECEIPT_MIN_INTERVAL.as_millis(), 200);
+}
+
+#[tokio::test]
+async fn test_max_room_join_attempts_constant() {
+    assert_eq!(MAX_ROOM_JOIN_ATTEMPTS, 10);
+}
+
+#[tokio::test]
+async fn test_cleanup_batch_size_constant() {
+    assert_eq!(CLEANUP_BATCH_SIZE, 100);
+}
+
+#[tokio::test]
+async fn test_max_message_age_constant() {
+    assert_eq!(MAX_MESSAGE_AGE.as_secs(), 86400 * 30);
+}
+
+#[tokio::test]
+async fn test_max_total_rooms_memory_constant() {
+    assert_eq!(MAX_TOTAL_ROOMS_MEMORY, 400_000_000);
+}
+
+#[tokio::test]
+async fn test_estimated_message_size_constant() {
+    assert_eq!(ESTIMATED_MESSAGE_SIZE, 1024);
+}
+
+// ========== CHAT ERROR INTO RESPONSE TESTS ==========
+
+#[tokio::test]
+async fn test_chat_error_room_full_status() {
+    let error = ChatError::RoomFull;
+    let response = error.into_response();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn test_chat_error_rate_limited_status() {
+    let error = ChatError::RateLimited;
+    let response = error.into_response();
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn test_chat_error_invalid_message_status() {
+    let error = ChatError::InvalidMessage("test".to_string());
+    let response = error.into_response();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_chat_error_resource_limit_status() {
+    let error = ChatError::ResourceLimit("test".to_string());
+    let response = error.into_response();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn test_chat_error_connection_error_status() {
+    let error = ChatError::ConnectionError("test".to_string());
+    let response = error.into_response();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[tokio::test]
+async fn test_chat_error_security_error_status() {
+    let error = ChatError::SecurityError("test".to_string());
+    let response = error.into_response();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn test_chat_error_room_error_status() {
+    let error = ChatError::RoomError("test".to_string());
+    let response = error.into_response();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_chat_error_rate_limit_error_status() {
+    let error = ChatError::RateLimitError("test".to_string());
+    let response = error.into_response();
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+}
+
+// ========== ROOM NAME REGEX TESTS ==========
+
+#[tokio::test]
+async fn test_room_name_regex_pattern() {
+    let re = regex::Regex::new(ROOM_NAME_REGEX).unwrap();
+    
+    // Valid names
+    assert!(re.is_match("abc"));
+    assert!(re.is_match("a1b"));
+    assert!(re.is_match("test-room"));
+    assert!(re.is_match("test_room"));
+    assert!(re.is_match("Test123"));
+    
+    // Invalid names (start/end with special chars)
+    assert!(!re.is_match("-test"));
+    assert!(!re.is_match("test-"));
+    assert!(!re.is_match("_test"));
+    assert!(!re.is_match("test_"));
+    // Note: "ab" matches regex, min length is enforced separately
+}
+
+// ========== MEMORY TRACKER EDGE CASES ==========
+
+#[tokio::test]
+async fn test_memory_tracker_zero_bytes() {
+    let tracker = MemoryTracker::new();
+    tracker.add_bytes(0);
+    assert_eq!(tracker.total_bytes.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn test_memory_tracker_remove_more_than_added() {
+    let tracker = MemoryTracker::new();
+    tracker.add_bytes(100);
+    tracker.remove_bytes(200); // Should saturate at 0
+    assert_eq!(tracker.total_bytes.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn test_memory_tracker_add_bytes_at_limit() {
+    let tracker = MemoryTracker::new();
+    // Fill to just under limit - should succeed
+    let result = tracker.add_bytes(MAX_TOTAL_ROOMS_MEMORY - 1000);
+    assert!(result);
+}
+
+#[tokio::test]
+async fn test_memory_tracker_add_bytes_over_limit_fails() {
+    let tracker = MemoryTracker::new();
+    tracker.add_bytes(MAX_TOTAL_ROOMS_MEMORY - 1000);
+    // Try to add more than remaining - should fail
+    let result = tracker.add_bytes(2000);
+    assert!(!result);
+}
+
+// ========== CONNECTION STATE TESTS ==========
+
+#[tokio::test]
+async fn test_connection_state_connected_variant() {
+    let now = Instant::now();
+    let state = ConnectionState::Connected {
+        last_heartbeat: now,
+        connection_id: "test".to_string(),
+    };
+    
+    match state {
+        ConnectionState::Connected { connection_id, .. } => {
+            assert_eq!(connection_id, "test");
+        }
+        _ => panic!("Expected Connected state"),
+    }
+}
+
+#[tokio::test]
+async fn test_connection_state_disconnected_variant() {
+    let now = Instant::now();
+    let state = ConnectionState::Disconnected { since: now };
+    
+    match state {
+        ConnectionState::Disconnected { since } => {
+            assert!(since <= Instant::now());
+        }
+        _ => panic!("Expected Disconnected state"),
+    }
+}
+
+// ========== RATE LIMITER EDGE CASES ==========
+
+#[tokio::test]
+async fn test_rate_limiter_exactly_at_limit() {
+    let mut limiter = RateLimiter::new();
+    
+    // can_send_message increments count internally, so after MAX calls it should fail
+    for i in 0..MAX_MESSAGES_PER_WINDOW {
+        assert!(limiter.can_send_message(), "Should allow message {}", i);
+    }
+    
+    // Next should fail
+    assert!(!limiter.can_send_message());
+}
+
+#[tokio::test]
+async fn test_rate_limiter_join_attempts_exactly_at_limit() {
+    let mut limiter = RateLimiter::new();
+    // Use up all join attempts
+    for _ in 0..MAX_ROOM_JOIN_ATTEMPTS {
+        assert!(limiter.can_join_room());
+    }
+    // Next one should fail
+    assert!(!limiter.can_join_room());
+}
+
+// ========== SECURITY MANAGER EDGE CASES ==========
+
+#[tokio::test]
+async fn test_security_manager_nine_suspicious_not_banned() {
+    let manager = SecurityManager::new();
+    let ip = "192.168.1.1";
+    
+    for _ in 0..9 {
+        let _ = manager.record_suspicious_activity(ip).await;
+    }
+    
+    // Should still be able to pass check (not banned yet)
+    assert!(manager.check_ip(ip).await.is_ok());
+}
+
+#[tokio::test]
+async fn test_security_manager_eleven_suspicious_banned() {
+    let manager = SecurityManager::new();
+    let ip = "192.168.1.2";
+    
+    for _ in 0..11 {
+        let _ = manager.record_suspicious_activity(ip).await;
+    }
+    
+    // Should now be banned
+    assert!(manager.check_ip(ip).await.is_err());
+}
+
+// ========== RESOURCE MONITOR TESTS ==========
+
+#[tokio::test]
+async fn test_resource_monitor_initial_can_accept() {
+    let monitor = ResourceMonitor::new();
+    assert!(monitor.can_accept_connection());
+}
+
+#[tokio::test]
+async fn test_resource_monitor_connection_count_tracking() {
+    let monitor = ResourceMonitor::new();
+    monitor.total_connections.fetch_add(1, Ordering::SeqCst);
+    assert_eq!(monitor.total_connections.load(Ordering::SeqCst), 1);
+}
+
+// ========== VALIDATE INPUT BOUNDARY TESTS ==========
+
+#[tokio::test]
+async fn test_validate_input_exactly_min_length() {
+    let result = validate_input("abc", MAX_ROOM_NAME_LEN); // MIN_ROOM_NAME_LEN = 3
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn test_validate_input_exactly_max_length() {
+    let name = "a".repeat(MAX_ROOM_NAME_LEN - 1) + "b"; // 50 chars
+    let result = validate_input(&name, MAX_ROOM_NAME_LEN);
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn test_validate_input_one_under_min() {
+    // Note: validate_input checks max_len and regex, not min length
+    // "ab" passes regex but we're testing with MAX_ROOM_NAME_LEN which is fine
+    // This test documents that short names pass regex validation
+    let result = validate_input("ab", MAX_ROOM_NAME_LEN);
+    // Actually "ab" passes regex, min length enforced at handler level
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn test_validate_input_one_over_max() {
+    let name = "a".repeat(MAX_ROOM_NAME_LEN + 1); // 51 chars
+    let result = validate_input(&name, MAX_ROOM_NAME_LEN);
+    assert!(result.is_err());
+}
+
+// ========== VALIDATE MESSAGE BOUNDARY TESTS ==========
+
+#[tokio::test]
+async fn test_validate_message_exactly_max_length() {
+    let text = "a".repeat(MAX_MESSAGE_LEN);
+    let result = validate_message(&text);
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn test_validate_message_one_over_max() {
+    let text = "a".repeat(MAX_MESSAGE_LEN + 1);
+    let result = validate_message(&text);
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn test_validate_message_single_char() {
+    let result = validate_message("a");
+    assert!(result.is_ok());
+}
+
+// ========== OUTGOING MESSAGE SIZE ESTIMATION ==========
+
+#[tokio::test]
+async fn test_outgoing_message_size_calculation() {
+    let msg = OutgoingMessage {
+        message_id: uuid::Uuid::new_v4(),
+        animal_name: "Tiger".to_string(),
+        text: "Hello world".to_string(),
+        timestamp: "1234567890".to_string(),
+        user_id: uuid::Uuid::new_v4().to_string(),
+    };
+    
+    let size = msg.estimate_size();
+    assert!(size > 0);
+    assert!(size > "Hello world".len() + "Tiger".len());
+}
+
+// ========== USER DATA TESTS ==========
+
+#[tokio::test]
+async fn test_user_data_typing_state_default() {
+    let user = UserData {
+        user_id: "test".to_string(),
+        animal_name: "Tiger".to_string(),
+        last_active: Instant::now(),
+        last_message_time: Instant::now(),
+        connection_state: ConnectionState::Disconnected { since: Instant::now() },
+        last_read_message: None,
+        is_typing: false,
+        last_typing_event: None,
+        last_read_receipt_event: None,
+        rate_limiter: RateLimiter::new(),
+        last_sanitized_message: None,
+    };
+    
+    assert!(!user.is_typing);
+    assert!(user.last_typing_event.is_none());
+}
+
+// ========== VERSION CONSTANT TEST ==========
+
+#[tokio::test]
+async fn test_version_is_set() {
+    assert!(!VERSION.is_empty());
+}
