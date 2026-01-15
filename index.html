@@ -372,6 +372,235 @@ h1 {
     opacity: 0.8;
 }
 
+/* Mute button */
+.mute-btn {
+    width: 40px;
+    height: 40px;
+    border-radius: var(--radius-full);
+    border: none;
+    background: var(--surface-container-high);
+    color: var(--on-surface-variant);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all var(--transition-short);
+    -webkit-tap-highlight-color: transparent;
+}
+
+.mute-btn:hover {
+    background: var(--surface-container-highest);
+    color: var(--on-surface);
+}
+
+.mute-btn:active {
+    transform: scale(0.94);
+}
+
+.mute-btn.muted {
+    background: var(--error-container);
+    color: var(--error);
+}
+
+.mute-btn .material-icons-round {
+    font-size: 20px;
+}
+
+/* Reply feature styles */
+.message {
+    position: relative;
+}
+
+.message .reply-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 28px;
+    height: 28px;
+    border-radius: var(--radius-full);
+    border: none;
+    background: var(--surface-container-highest);
+    color: var(--on-surface-variant);
+    cursor: pointer;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    transition: all var(--transition-short);
+    opacity: 0;
+    z-index: 10;
+}
+
+.message:hover .reply-btn {
+    display: flex;
+    opacity: 1;
+}
+
+.message .reply-btn:hover {
+    background: var(--primary-container);
+    color: var(--on-primary-container);
+}
+
+.message .reply-btn .material-icons-round {
+    font-size: 16px;
+}
+
+.message.sent .reply-btn {
+    right: auto;
+    left: 8px;
+    background: rgba(255,255,255,0.2);
+    color: var(--on-primary);
+}
+
+.message.sent .reply-btn:hover {
+    background: rgba(255,255,255,0.35);
+}
+
+/* Reply preview bar above input */
+.reply-preview {
+    display: none;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    background: var(--surface-container-high);
+    border-left: 3px solid var(--primary);
+    margin: 0 16px;
+    margin-bottom: -4px;
+    border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+    animation: slideUp 0.2s ease-out;
+}
+
+@keyframes slideUp {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.reply-preview.active {
+    display: flex;
+}
+
+.reply-preview-icon {
+    color: var(--primary);
+    flex-shrink: 0;
+}
+
+.reply-preview-icon .material-icons-round {
+    font-size: 20px;
+}
+
+.reply-preview-content {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+}
+
+.reply-preview-author {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--primary);
+    margin-bottom: 2px;
+}
+
+.reply-preview-text {
+    font-size: 13px;
+    color: var(--on-surface-variant);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.reply-preview-close {
+    width: 28px;
+    height: 28px;
+    border-radius: var(--radius-full);
+    border: none;
+    background: transparent;
+    color: var(--on-surface-variant);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all var(--transition-short);
+    flex-shrink: 0;
+}
+
+.reply-preview-close:hover {
+    background: var(--surface-container-highest);
+    color: var(--error);
+}
+
+.reply-preview-close .material-icons-round {
+    font-size: 18px;
+}
+
+/* Replied-to message display in message bubble */
+.message .replied-to {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 8px 10px;
+    margin-bottom: 8px;
+    background: rgba(0,0,0,0.06);
+    border-radius: var(--radius-sm);
+    border-left: 2px solid var(--primary);
+    cursor: pointer;
+    transition: background var(--transition-short);
+}
+
+.message .replied-to:hover {
+    background: rgba(0,0,0,0.1);
+}
+
+.message.sent .replied-to {
+    background: rgba(255,255,255,0.15);
+    border-left-color: rgba(255,255,255,0.6);
+}
+
+.message.sent .replied-to:hover {
+    background: rgba(255,255,255,0.22);
+}
+
+.replied-to-icon {
+    flex-shrink: 0;
+    opacity: 0.7;
+}
+
+.replied-to-icon .material-icons-round {
+    font-size: 14px;
+}
+
+.replied-to-content {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+}
+
+.replied-to-author {
+    font-size: 11px;
+    font-weight: 500;
+    opacity: 0.8;
+    margin-bottom: 2px;
+}
+
+.replied-to-text {
+    font-size: 12px;
+    opacity: 0.75;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+}
+
+/* Highlight animation when scrolling to replied message */
+.message.highlight {
+    animation: highlightPulse 1.5s ease-out;
+}
+
+@keyframes highlightPulse {
+    0%, 100% { box-shadow: none; }
+    25% { box-shadow: 0 0 0 3px var(--primary); }
+    75% { box-shadow: 0 0 0 3px var(--primary); }
+}
+
 /* Fading messages when room is dying - cascading gradient fade */
 .room-fading .message {
     transition: opacity 0.5s ease-in-out;
@@ -1129,6 +1358,9 @@ h1 {
             <span class="material-icons-round heart-icon">favorite</span>
             <span class="room-lifespan" id="roomLifespan">0m alive</span>
         </div>
+        <button class="mute-btn" id="muteBtn" aria-label="Toggle notification sounds" title="Mute notifications">
+            <span class="material-icons-round">volume_up</span>
+        </button>
     </div>
 </header>
 
@@ -1167,6 +1399,19 @@ h1 {
         <span class="typing-dot"></span>
     </div>
     <span id="typingText">Someone is typing...</span>
+</div>
+
+<div id="replyPreview" class="reply-preview">
+    <div class="reply-preview-icon">
+        <span class="material-icons-round">reply</span>
+    </div>
+    <div class="reply-preview-content">
+        <div class="reply-preview-author" id="replyPreviewAuthor">Replying to</div>
+        <div class="reply-preview-text" id="replyPreviewText">Message text...</div>
+    </div>
+    <button class="reply-preview-close" id="replyPreviewClose" aria-label="Cancel reply">
+        <span class="material-icons-round">close</span>
+    </button>
 </div>
 
 <footer class="input-container">
@@ -1228,6 +1473,12 @@ class ChatApp {
         this.lastHeartbeatTime = Date.now();
         this.heartbeatTimeoutId = null;
         
+        // Sound mute state (persisted in localStorage)
+        this.isMuted = localStorage.getItem('chatMuted') === 'true';
+        
+        // Reply state
+        this.replyingTo = null; // { messageId, authorName, text }
+        
         // DOM elements
         this.chat = document.getElementById('chat');
         this.input = document.getElementById('messageInput');
@@ -1243,6 +1494,11 @@ class ChatApp {
         this.createRoomBtn = document.getElementById('createRoomBtn');
         this.roomHeartbeat = document.getElementById('roomHeartbeat');
         this.roomLifespan = document.getElementById('roomLifespan');
+        this.muteBtn = document.getElementById('muteBtn');
+        this.replyPreview = document.getElementById('replyPreview');
+        this.replyPreviewAuthor = document.getElementById('replyPreviewAuthor');
+        this.replyPreviewText = document.getElementById('replyPreviewText');
+        this.replyPreviewClose = document.getElementById('replyPreviewClose');
         
         this.init();
     }
@@ -1313,8 +1569,70 @@ class ChatApp {
             this.welcomeBanner.style.display = 'none';
         }
         
+        // Mute button
+        this.muteBtn.addEventListener('click', () => this.toggleMute());
+        this.updateMuteButton();
+        
+        // Reply preview close
+        this.replyPreviewClose.addEventListener('click', () => this.cancelReply());
+        
         // Focus input on page load
         this.input.focus();
+    }
+    
+    toggleMute() {
+        this.isMuted = !this.isMuted;
+        localStorage.setItem('chatMuted', this.isMuted);
+        this.updateMuteButton();
+        
+        // Show feedback
+        if (this.isMuted) {
+            this.addSystemMessage('Notifications muted 🔇', 'info');
+        } else {
+            this.addSystemMessage('Notifications unmuted 🔊', 'info');
+            // Play a test beep
+            this.playNotificationSound(true);
+        }
+    }
+    
+    updateMuteButton() {
+        const icon = this.muteBtn.querySelector('.material-icons-round');
+        if (this.isMuted) {
+            this.muteBtn.classList.add('muted');
+            this.muteBtn.title = 'Unmute notifications';
+            this.muteBtn.setAttribute('aria-label', 'Unmute notification sounds');
+            icon.textContent = 'volume_off';
+        } else {
+            this.muteBtn.classList.remove('muted');
+            this.muteBtn.title = 'Mute notifications';
+            this.muteBtn.setAttribute('aria-label', 'Mute notification sounds');
+            icon.textContent = 'volume_up';
+        }
+    }
+    
+    startReply(messageId, authorName, text) {
+        // Strip HTML tags for preview
+        const plainText = text.replace(/<[^>]*>/g, '').trim();
+        this.replyingTo = { messageId, authorName, text: plainText };
+        
+        this.replyPreviewAuthor.textContent = `Replying to ${this.escapeHtml(authorName)}`;
+        this.replyPreviewText.textContent = plainText.length > 100 ? plainText.slice(0, 100) + '...' : plainText;
+        this.replyPreview.classList.add('active');
+        this.input.focus();
+    }
+    
+    cancelReply() {
+        this.replyingTo = null;
+        this.replyPreview.classList.remove('active');
+    }
+    
+    scrollToMessage(messageId) {
+        const targetMsg = this.chat.querySelector(`[data-message-id="${messageId}"]`);
+        if (targetMsg) {
+            targetMsg.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            targetMsg.classList.add('highlight');
+            setTimeout(() => targetMsg.classList.remove('highlight'), 1500);
+        }
     }
     
     showCreateRoomDialog() {
@@ -1574,6 +1892,34 @@ class ChatApp {
         div.setAttribute('role', 'article');
         div.setAttribute('aria-label', `Message from ${msg.animal_name} at ${timestamp}`);
         
+        // Reply button
+        const replyBtn = document.createElement('button');
+        replyBtn.className = 'reply-btn';
+        replyBtn.setAttribute('aria-label', 'Reply to this message');
+        replyBtn.innerHTML = '<span class="material-icons-round">reply</span>';
+        replyBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.startReply(msg.message_id, msg.animal_name, msg.text);
+        });
+        div.appendChild(replyBtn);
+        
+        // If this message is a reply, show the replied-to content
+        if (msg.reply_to) {
+            const repliedTo = document.createElement('div');
+            repliedTo.className = 'replied-to';
+            repliedTo.innerHTML = `
+                <div class="replied-to-icon"><span class="material-icons-round">reply</span></div>
+                <div class="replied-to-content">
+                    <div class="replied-to-author">${this.escapeHtml(msg.reply_to.author_name || 'Unknown')}</div>
+                    <div class="replied-to-text">${this.escapeHtml(msg.reply_to.preview_text || '')}</div>
+                </div>
+            `;
+            repliedTo.addEventListener('click', () => {
+                this.scrollToMessage(msg.reply_to.message_id);
+            });
+            div.appendChild(repliedTo);
+        }
+        
         const avatar = document.createElement('div');
         avatar.className = 'avatar';
         avatar.setAttribute('aria-hidden', 'true');
@@ -1771,10 +2117,22 @@ class ChatApp {
         }
         
         try {
-            this.ws.send(JSON.stringify({ type: 'Message', text }));
+            const messagePayload = { type: 'Message', text };
+            
+            // Include reply info if replying
+            if (this.replyingTo) {
+                messagePayload.reply_to = {
+                    message_id: this.replyingTo.messageId,
+                    author_name: this.replyingTo.authorName,
+                    preview_text: this.replyingTo.text.slice(0, 100)
+                };
+            }
+            
+            this.ws.send(JSON.stringify(messagePayload));
             this.input.value = '';
             this.charCount.textContent = '0';
             this.isCurrentlyTyping = false;
+            this.cancelReply(); // Clear reply state after sending
             if (this.typingTimeout) clearTimeout(this.typingTimeout);
             this.sendTypingIndicator(false);
             this.input.focus();
@@ -1864,8 +2222,9 @@ class ChatApp {
         this.addSystemMessage(message, 'error');
     }
     
-    playNotificationSound() {
+    playNotificationSound(force = false) {
         if (!this.audioContext) return;
+        if (this.isMuted && !force) return;
         
         try {
             // Resume context if suspended (mobile requirement)

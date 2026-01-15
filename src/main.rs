@@ -194,6 +194,14 @@ where
     }
 }
 
+/// Information about the message being replied to
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct ReplyInfo {
+    message_id: String,
+    author_name: String,
+    preview_text: String,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct OutgoingMessage {
     message_id: Uuid,
@@ -201,16 +209,22 @@ struct OutgoingMessage {
     animal_name: String,
     text: String,
     timestamp: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reply_to: Option<ReplyInfo>,
 }
 
 // Add message size estimation method
 impl OutgoingMessage {
     fn estimate_size(&self) -> usize {
+        let reply_size = self.reply_to.as_ref().map_or(0, |r| {
+            r.message_id.len() + r.author_name.len() + r.preview_text.len()
+        });
         self.user_id.len()
             + self.animal_name.len()
             + self.text.len()
             + self.timestamp.len()
             + std::mem::size_of::<Uuid>()
+            + reply_size
             + ESTIMATED_MESSAGE_SIZE
     }
 }
@@ -1436,7 +1450,11 @@ async fn ws_handler_inner(
 #[serde(tag = "type")]
 enum ClientEvent {
     #[serde(rename = "Message")]
-    Message { text: String },
+    Message {
+        text: String,
+        #[serde(default)]
+        reply_to: Option<ReplyInfo>,
+    },
     #[serde(rename = "Typing")]
     Typing { is_typing: bool },
     #[serde(rename = "ReadReceipt")]
@@ -1649,7 +1667,7 @@ async fn handle_websocket(
                                     }
 
                                     match evt {
-                                        ClientEvent::Message { text } => {
+                                        ClientEvent::Message { text, reply_to } => {
                                             let now = Instant::now();
                                             if let Some((last_text, last_time)) =
                                                 &user.last_sanitized_message
@@ -1712,6 +1730,7 @@ async fn handle_websocket(
                                                         animal_name: animal_name.clone(),
                                                         text: clean_text,
                                                         timestamp,
+                                                        reply_to,
                                                     };
 
                                                     user.last_message_time = Instant::now();
