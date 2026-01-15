@@ -5377,3 +5377,280 @@ async fn test_prune_old_messages_partial() {
     // Should have only the 5 new messages
     assert_eq!(room_state.chat_history.len(), 5);
 }
+#[tokio::test]
+async fn test_user_cookie_extraction() {
+    use axum::http::header::COOKIE;
+
+    let app_state = Arc::new(AppState::new());
+    let app = Router::new()
+        .route("/test", get(|cookie: OptionalUserCookie| async move {
+            match cookie.0 {
+                Some(user) => format!("user_id={}, animal_name={}", user.user_id, user.animal_name),
+                None => "no_cookie".to_string(),
+            }
+        }))
+        .with_state(app_state);
+
+    // Test with valid cookies
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/test")
+                .header(COOKIE, "user_id=test-user-123; animal_name=Lion")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&body),
+        "user_id=test-user-123, animal_name=Lion"
+    );
+
+    // Test with no cookies
+    let response = app
+        .clone()
+        .oneshot(Request::builder().uri("/test").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(String::from_utf8_lossy(&body), "no_cookie");
+
+    // Test with only user_id cookie (missing animal_name)
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/test")
+                .header(COOKIE, "user_id=test-user-123")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(String::from_utf8_lossy(&body), "no_cookie");
+}
+
+#[tokio::test]
+async fn test_cookie_creation_format() {
+    let (uid_cookie, name_cookie) = create_user_cookies("test-user-456", "Tiger");
+    
+    assert!(uid_cookie.contains("user_id=test-user-456"));
+    assert!(uid_cookie.contains("Path=/"));
+    assert!(uid_cookie.contains("SameSite=Strict"));
+    assert!(uid_cookie.contains("HttpOnly"));
+    assert!(uid_cookie.contains("Secure"));
+    
+    assert!(name_cookie.contains("animal_name=Tiger"));
+    assert!(name_cookie.contains("Path=/"));
+    assert!(name_cookie.contains("SameSite=Strict"));
+    assert!(name_cookie.contains("HttpOnly"));
+    assert!(name_cookie.contains("Secure"));
+}
+
+#[tokio::test]
+async fn test_reconnect_with_chat_history() {
+    let (addr, handle) = start_ws_server().await;
+    let ws_url = format!("ws://{}/ws/test-room", addr);
+
+    // First connection - send a message
+    let (mut ws_stream, _) = connect_async(&ws_url).await.unwrap();
+
+    // Wait for user joined and collect user info
+    let mut user_id = String::new();
+    for _ in 0..10 {
+        let val = recv_json_event(&mut ws_stream).await;
+        if val.get("type") == Some(&JsonValue::String("System".to_string())) {
+            if let Some(event) = val.get("event") {
+                if let Some(payload) = extract_system_event(event, "UserJoined") {
+                    user_id = payload.get("user_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    if !user_id.is_empty() {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    
+    assert!(!user_id.is_empty(), "Should have received a user_id");
+
+    // Drain other events
+    for _ in 0..3 {
+        let _ = timeout(Duration::from_millis(200), recv_json_event(&mut ws_stream)).await;
+    }
+
+    // Send a message
+    let test_msg = r#"{"type":"Message","text":"First message before reconnect"}"#;
+    ws_stream.send(WsMessage::Text(test_msg.to_string())).await.unwrap();
+
+    // Wait for message echo
+    let echo = recv_json_event(&mut ws_stream).await;
+    assert_eq!(echo["type"], "Message");
+    let message_id = echo["message"]["message_id"].as_str().unwrap_or("");
+    assert!(!message_id.is_empty(), "Should have received a message_id");
+
+    // Disconnect
+    drop(ws_stream);
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Reconnect (simulating browser with cookies)
+    let (mut ws_stream2, _) = connect_async(&ws_url).await.unwrap();
+
+    // Should receive chat history including our previous message
+    let mut found_history = false;
+    let mut found_join = false;
+
+    for _ in 0..15 {
+        if let Ok(data) = timeout(Duration::from_secs(2), recv_json_event(&mut ws_stream2)).await {
+            if data["type"] == "Message" {
+                let recv_msg_id = data["message"]["message_id"].as_str().unwrap_or("");
+                if recv_msg_id == message_id {
+                    found_history = true;
+                    // Verify the message has the correct user_id for client-side detection
+                    let recv_user_id = data["message"]["user_id"].as_str().unwrap_or("");
+                    assert_eq!(recv_user_id, user_id, "Message user_id should match");
+                }
+            }
+            
+            if data["type"] == "System" {
+                found_join = true;
+            }
+        }
+    }
+
+    assert!(found_history, "Should receive chat history on reconnect");
+    assert!(found_join, "Should receive UserJoined event");
+    
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_message_alignment_with_multiple_users() {
+    let (addr, handle) = start_ws_server().await;
+    let ws_url = format!("ws://{}/ws/alignment-test", addr);
+
+    // Connect user 1
+    let (mut ws1, _) = connect_async(&ws_url).await.unwrap();
+
+    // Get user 1's identity
+    let mut user1_id = String::new();
+    for _ in 0..10 {
+        let val = recv_json_event(&mut ws1).await;
+        if val.get("type") == Some(&JsonValue::String("System".to_string())) {
+            if let Some(event) = val.get("event") {
+                if let Some(payload) = extract_system_event(event, "UserJoined") {
+                    user1_id = payload.get("user_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    if !user1_id.is_empty() {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    
+    assert!(!user1_id.is_empty(), "User 1 should have a user_id");
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Connect user 2
+    let (mut ws2, _) = connect_async(&ws_url).await.unwrap();
+
+    // Get user 2's identity
+    let mut user2_id = String::new();
+    for _ in 0..10 {
+        let val = recv_json_event(&mut ws2).await;
+        if val.get("type") == Some(&JsonValue::String("System".to_string())) {
+            if let Some(event) = val.get("event") {
+                if let Some(payload) = extract_system_event(event, "UserJoined") {
+                    user2_id = payload.get("user_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    if !user2_id.is_empty() {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    
+    assert!(!user2_id.is_empty(), "User 2 should have a user_id");
+    assert_ne!(user1_id, user2_id, "Users should have different user_ids");
+
+    // Drain events
+    for _ in 0..5 {
+        let _ = timeout(Duration::from_millis(200), recv_json_event(&mut ws1)).await;
+        let _ = timeout(Duration::from_millis(200), recv_json_event(&mut ws2)).await;
+    }
+
+    // User 1 sends message
+    let msg1 = r#"{"type":"Message","text":"From user 1"}"#;
+    ws1.send(WsMessage::Text(msg1.to_string())).await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // User 2 sends message
+    let msg2 = r#"{"type":"Message","text":"From user 2"}"#;
+    ws2.send(WsMessage::Text(msg2.to_string())).await.unwrap();
+
+    // Both users should receive both messages with correct user_ids
+    let mut messages_received = 0;
+    for _ in 0..4 {
+        if let Ok(data) = timeout(Duration::from_secs(2), recv_json_event(&mut ws1)).await {
+            if data["type"] == "Message" {
+                let received_user_id = data["message"]["user_id"].as_str().unwrap_or("");
+                assert!(
+                    !received_user_id.is_empty() && (received_user_id == user1_id || received_user_id == user2_id),
+                    "Message should have valid user_id, got: {}", received_user_id
+                );
+                messages_received += 1;
+            }
+        }
+    }
+    
+    assert!(messages_received >= 2, "Should have received at least 2 messages");
+    
+    handle.abort();
+}
+
+
+
+
+#[tokio::test]
+async fn test_user_count_updates_on_join() {
+    let (addr, handle) = start_ws_server().await;
+    let ws_url = format!("ws://{}/ws/count-test", addr);
+
+    // Connect first user
+    let (mut ws1, _) = connect_async(&ws_url).await.unwrap();
+
+    // Drain initial events
+    for _ in 0..5 {
+        let _ = timeout(Duration::from_millis(200), recv_json_event(&mut ws1)).await;
+    }
+
+    // Connect second user
+    let (mut _ws2, _) = connect_async(&ws_url).await.unwrap();
+
+    // User 1 should receive user count update
+    let mut found_count = false;
+    for _ in 0..10 {
+        if let Ok(data) = timeout(Duration::from_secs(2), recv_json_event(&mut ws1)).await {
+            if data["type"] == "UserCount" {
+                let count = data["count"].as_u64().unwrap();
+                if count == 2 {
+                    found_count = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    assert!(found_count, "Should receive updated user count when new user joins");
+    
+    handle.abort();
+}
