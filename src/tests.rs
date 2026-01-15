@@ -7605,6 +7605,179 @@ async fn test_user_data_typing_state_default() {
     assert!(user.last_typing_event.is_none());
 }
 
+// ========== BUGFIX TESTS: Room Cleanup & Connection Issues ==========
+
+#[tokio::test]
+async fn test_room_cleanup_deletes_empty_rooms_after_delay() {
+    // Bug fix: Rooms with NO active users should be deleted after EMPTY_ROOM_CLEANUP_DELAY
+    let app_state = Arc::new(AppState::new());
+    
+    {
+        let mut rooms = app_state.rooms.write().await;
+        let mut room = create_room();
+        // Set last_activity to exactly at cleanup threshold (60s)
+        room.last_activity = Instant::now() - EMPTY_ROOM_CLEANUP_DELAY;
+        room.users.clear(); // NO users at all
+        rooms.insert("should-delete".to_string(), room);
+    }
+    
+    cleanup_rooms(&app_state).await;
+    
+    let rooms = app_state.rooms.read().await;
+    assert!(!rooms.contains_key("should-delete"), 
+            "Empty room at cleanup threshold should be deleted");
+}
+
+#[tokio::test]
+async fn test_room_cleanup_preserves_empty_room_before_delay() {
+    // Bug fix: Empty rooms BEFORE cleanup delay should be preserved
+    let app_state = Arc::new(AppState::new());
+    
+    {
+        let mut rooms = app_state.rooms.write().await;
+        let mut room = create_room();
+        // Set last_activity to 30s ago (half the cleanup delay)
+        room.last_activity = Instant::now() - Duration::from_secs(30);
+        room.users.clear();
+        rooms.insert("too-new".to_string(), room);
+    }
+    
+    cleanup_rooms(&app_state).await;
+    
+    let rooms = app_state.rooms.read().await;
+    assert!(rooms.contains_key("too-new"), 
+            "Empty room before cleanup delay should be preserved");
+}
+
+#[tokio::test]
+async fn test_room_cleanup_disconnected_users_dont_block_deletion() {
+    // Bug fix: Stale DISCONNECTED users should not prevent room deletion
+    let app_state = Arc::new(AppState::new());
+    
+    {
+        let mut rooms = app_state.rooms.write().await;
+        let mut room = create_room();
+        room.last_activity = Instant::now() - EMPTY_ROOM_CLEANUP_DELAY;
+        
+        // Add a disconnected user (not connected anymore)
+        room.users.insert("ghost".to_string(), UserData {
+            user_id: "ghost".to_string(),
+            animal_name: "Phantom".to_string(),
+            last_active: Instant::now(),
+            last_message_time: Instant::now(),
+            connection_state: ConnectionState::Disconnected { 
+                since: Instant::now() - Duration::from_secs(10)
+            },
+            last_read_message: None,
+            is_typing: false,
+            last_typing_event: None,
+            last_read_receipt_event: None,
+            rate_limiter: RateLimiter::new(),
+            last_sanitized_message: None,
+        });
+        
+        rooms.insert("has-disconnected-user".to_string(), room);
+    }
+    
+    cleanup_rooms(&app_state).await;
+    
+    let rooms = app_state.rooms.read().await;
+    assert!(!rooms.contains_key("has-disconnected-user"), 
+            "Room with only disconnected users should be deleted after cleanup delay");
+}
+
+#[tokio::test]
+async fn test_room_cleanup_connected_users_prevent_deletion() {
+    // Bug fix: Rooms with CONNECTED users should NOT be deleted even after delay
+    let app_state = Arc::new(AppState::new());
+    let now = Instant::now();
+    
+    {
+        let mut rooms = app_state.rooms.write().await;
+        let mut room = create_room();
+        room.last_activity = Instant::now() - EMPTY_ROOM_CLEANUP_DELAY - Duration::from_secs(100);
+        
+        // Add an actively connected user
+        room.users.insert("active".to_string(), UserData {
+            user_id: "active".to_string(),
+            animal_name: "Eagle".to_string(),
+            last_active: now,
+            last_message_time: now,
+            connection_state: ConnectionState::Connected {
+                last_heartbeat: now,
+                connection_id: "conn123".to_string(),
+            },
+            last_read_message: None,
+            is_typing: false,
+            last_typing_event: None,
+            last_read_receipt_event: None,
+            rate_limiter: RateLimiter::new(),
+            last_sanitized_message: None,
+        });
+        
+        rooms.insert("has-active-user".to_string(), room);
+    }
+    
+    cleanup_rooms(&app_state).await;
+    
+    let rooms = app_state.rooms.read().await;
+    assert!(rooms.contains_key("has-active-user"), 
+            "Room with connected users should NOT be deleted even after long delay");
+}
+
+#[tokio::test]
+async fn test_room_cleanup_multiple_users_one_connected_blocks_deletion() {
+    // Bug fix: Even one connected user should prevent room deletion
+    let app_state = Arc::new(AppState::new());
+    let now = Instant::now();
+    
+    {
+        let mut rooms = app_state.rooms.write().await;
+        let mut room = create_room();
+        room.last_activity = Instant::now() - EMPTY_ROOM_CLEANUP_DELAY - Duration::from_secs(100);
+        
+        // Add multiple users: some disconnected, one connected
+        room.users.insert("disconnected1".to_string(), UserData {
+            user_id: "disconnected1".to_string(),
+            animal_name: "Bear".to_string(),
+            last_active: now,
+            last_message_time: now,
+            connection_state: ConnectionState::Disconnected { since: now },
+            last_read_message: None,
+            is_typing: false,
+            last_typing_event: None,
+            last_read_receipt_event: None,
+            rate_limiter: RateLimiter::new(),
+            last_sanitized_message: None,
+        });
+        
+        room.users.insert("connected".to_string(), UserData {
+            user_id: "connected".to_string(),
+            animal_name: "Hawk".to_string(),
+            last_active: now,
+            last_message_time: now,
+            connection_state: ConnectionState::Connected {
+                last_heartbeat: now,
+                connection_id: "conn456".to_string(),
+            },
+            last_read_message: None,
+            is_typing: false,
+            last_typing_event: None,
+            last_read_receipt_event: None,
+            rate_limiter: RateLimiter::new(),
+            last_sanitized_message: None,
+        });
+        
+        rooms.insert("mixed-users".to_string(), room);
+    }
+    
+    cleanup_rooms(&app_state).await;
+    
+    let rooms = app_state.rooms.read().await;
+    assert!(rooms.contains_key("mixed-users"), 
+            "Room with at least one connected user should be preserved");
+}
+
 // ========== VERSION CONSTANT TEST ==========
 
 #[tokio::test]
