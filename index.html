@@ -1161,7 +1161,22 @@ class ChatApp {
             return;
         }
         
-        // Detect our own identity
+        // Detect our own identity early from any message that has our user_id
+        // This handles chat history on reconnect before UserJoined event
+        if (msg.user_id && !this.myUserId) {
+            // Check if this message matches our cookie user_id
+            const cookies = document.cookie.split(';').map(c => c.trim());
+            const userIdCookie = cookies.find(c => c.startsWith('user_id='));
+            if (userIdCookie) {
+                const cookieUserId = userIdCookie.split('=')[1];
+                if (msg.user_id === cookieUserId) {
+                    this.myUserId = cookieUserId;
+                    this.myAnimalName = msg.animal_name;
+                }
+            }
+        }
+        
+        // Also set from any message if we already know our user_id
         if (this.myUserId && msg.user_id === this.myUserId && !this.myAnimalName) {
             this.myAnimalName = msg.animal_name;
         }
