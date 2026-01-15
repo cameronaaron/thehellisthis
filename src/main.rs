@@ -1075,12 +1075,12 @@ fn create_user_cookies(user_id: &str, name: &str) -> (String, String) {
     );
 
     let user_id_cookie = format!(
-        "user_id={}; Path=/; Max-Age={}; SameSite=Strict; HttpOnly; Secure",
+        "user_id={}; Path=/; Max-Age={}; SameSite=Strict; Secure",
         user_id,
         INACTIVE_TIMEOUT.as_secs()
     );
     let animal_name_cookie = format!(
-        "animal_name={}; Path=/; Max-Age={}; SameSite=Strict; HttpOnly; Secure",
+        "animal_name={}; Path=/; Max-Age={}; SameSite=Strict; Secure",
         name,
         INACTIVE_TIMEOUT.as_secs()
     );
