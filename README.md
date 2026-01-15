@@ -46,10 +46,11 @@ Open [http://localhost:3000/main](http://localhost:3000/main) to chat.
 ```
 src/
   main.rs         — Server: WS handlers, room state, rate limiting
-  tests.rs        — Integration tests (21 tests, all passing)
+  tests.rs        — Integration tests (397 tests, all passing)
 index.html        — Client: plain JS, WebSocket, read receipts, typing indicators
 Procfile          — Heroku dyno command
 heroku.yml        — Heroku container build config
+.github/copilot-instructions.md  — Dev guidelines & deployment docs
 .github/workflows/ci.yml  — GitHub Actions (fmt/clippy/test/build)
 ```
 
@@ -126,7 +127,7 @@ cargo build --release
 PORT=3000 ./target/release/infinite-chat
 ```
 
-See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed setup, monitoring, and performance tuning.
+See [.github/copilot-instructions.md](.github/copilot-instructions.md) for detailed setup, monitoring, and performance tuning.
 
 ## Architecture
 
@@ -180,4 +181,4 @@ MIT (or your choice)
 
 ## Support
 
-See [DEPLOYMENT.md](DEPLOYMENT.md) for ops & monitoring guidance.
+See [.github/copilot-instructions.md](.github/copilot-instructions.md) for ops & monitoring guidance.
