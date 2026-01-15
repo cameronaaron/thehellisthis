@@ -370,7 +370,10 @@ impl MemoryTracker {
     }
 
     fn remove_bytes(&self, bytes: usize) {
-        self.total_bytes.fetch_sub(bytes, Ordering::SeqCst);
+        // Use saturating_sub to prevent underflow
+        let current = self.total_bytes.load(Ordering::SeqCst);
+        let new_val = current.saturating_sub(bytes);
+        self.total_bytes.store(new_val, Ordering::SeqCst);
     }
 
     fn should_gc(&self) -> bool {
@@ -505,137 +508,50 @@ struct AppState {
 fn create_room() -> RoomState {
     info!("Creating a new room with a large, diverse set of animal names...");
     let mut animals = vec![
-        "dog",
-        "cat",
-        "lion",
-        "tiger",
-        "elephant",
-        "giraffe",
-        "koala",
-        "penguin",
-        "panda",
-        "dolphin",
-        "whale",
-        "bear",
-        "wolf",
-        "zebra",
-        "fox",
-        "owl",
-        "rabbit",
-        "kangaroo",
-        "monkey",
-        "snake",
-        "parrot",
-        "cheetah",
-        "jaguar",
-        "lynx",
-        "otter",
-        "seal",
-        "peacock",
-        "sparrow",
-        "crow",
-        "hedgehog",
-        "flamingo",
-        "shark",
-        "stingray",
-        "starfish",
-        "octopus",
-        "seahorse",
-        "crab",
-        "lobster",
-        "squid",
-        "antelope",
-        "badger",
-        "bison",
-        "buffalo",
-        "camel",
-        "chameleon",
-        "crocodile",
-        "eagle",
-        "ferret",
-        "gecko",
-        "gorilla",
-        "heron",
-        "hyena",
-        "ibis",
-        "iguana",
-        "lemur",
-        "leopard",
-        "manatee",
-        "mole",
-        "moose",
-        "narwhal",
-        "newt",
-        "ostrich",
-        "platypus",
-        "porcupine",
-        "raven",
-        "salamander",
-        "sloth",
-        "stork",
-        "tapir",
-        "toad",
-        "turkey",
-        "vulture",
-        "wallaby",
-        "walrus",
-        "wolverine",
-        "yak",
-        "hippo",
-        "rhino",
-        "anteater",
-        "armadillo",
-        "beaver",
-        "butterfly",
-        "cormorant",
-        "coyote",
-        "dingo",
-        "dragonfly",
-        "firefly",
-        "grasshopper",
-        "hamster",
-        "honeyeater",
-        "hummingbird",
-        "kingfisher",
-        "ladybug",
-        "llama",
-        "meerkat",
-        "moth",
-        "ox",
-        "puffin",
-        "quail",
-        "ringtail",
-        "swan",
-        "tortoise",
-        "turtle",
-        "woodpecker",
-        "wombat",
-        "orangutan",
-        "seal",
-        "manta-ray",
-        "crow",
-        "robin",
-        "grasshopper",
-        "musk-ox",
-        "kiwi",
-        "harpy-eagle",
-        "peafowl",
-        "margay",
-        "capybara",
-        "squid",
-        "urchin",
-        "bandicoot",
-        "guinea-pig",
-        "axolotl",
-        "dugong",
-        "fennec-fox",
-        "lynx",
-        "pika",
-        "tamarin",
-        "aardwolf",
-        "colugo",
-        "dhole",
-        "galago",
+        "dog", "cat", "lion", "tiger", "elephant", "giraffe", "koala", "penguin", "panda",
+        "dolphin", "whale", "bear", "wolf", "zebra", "fox", "owl", "rabbit", "kangaroo",
+        "monkey", "snake", "parrot", "cheetah", "jaguar", "lynx", "otter", "seal",
+        "peacock", "sparrow", "crow", "hedgehog", "flamingo", "shark", "stingray",
+        "starfish", "octopus", "seahorse", "crab", "lobster", "squid", "antelope",
+        "badger", "bison", "buffalo", "camel", "chameleon", "crocodile", "eagle",
+        "ferret", "gecko", "gorilla", "heron", "hyena", "ibis", "iguana", "lemur",
+        "leopard", "manatee", "mole", "moose", "narwhal", "newt", "ostrich", "platypus",
+        "porcupine", "raven", "salamander", "sloth", "stork", "tapir", "toad", "turkey",
+        "vulture", "wallaby", "walrus", "wolverine", "yak", "hippo", "rhino", "anteater",
+        "armadillo", "beaver", "butterfly", "cormorant", "coyote", "dingo", "dragonfly",
+        "firefly", "grasshopper", "hamster", "honeyeater", "hummingbird", "kingfisher",
+        "ladybug", "llama", "meerkat", "moth", "ox", "puffin", "quail", "ringtail",
+        "swan", "tortoise", "turtle", "woodpecker", "wombat", "orangutan", "manta-ray",
+        "robin", "musk-ox", "kiwi", "harpy-eagle", "peafowl", "margay", "capybara",
+        "urchin", "bandicoot", "guinea-pig", "axolotl", "dugong", "fennec-fox", "pika",
+        "tamarin", "aardwolf", "colugo", "dhole", "galago", "alpaca", "anaconda",
+        "antlion", "auk", "aye-aye", "basilisk", "bee", "beetle", "bengal-cat",
+        "binturong", "bird-of-paradise", "bonobo", "booby", "bushbaby", "caracal",
+        "caracara", "cassowary", "centipede", "chinchilla", "chipmunk", "civet",
+        "clownfish", "coati", "cobra", "cockatiel", "cockatoo", "conure", "copperhead",
+        "cuttlefish", "damselfly", "deer", "devil-ray", "dodo", "donkey", "dove",
+        "dung-beetle", "emu", "ermine", "falcon", "fallow-deer", "fathead-minnow",
+        "flapjack-octopus", "flatfish", "flightless-cormorant", "flounder", "flying-fish",
+        "flying-lemur", "flying-squirrel", "frilled-lizard", "frog", "fruit-fly",
+        "fulmar", "gayal", "gavial", "gazelle", "gibbon", "glass-lizard", "glowworm",
+        "gnu", "goat", "goby", "godwit", "goldcrest", "goldfinch", "goldfish",
+        "goosander", "goose", "gopher", "goral", "goshawk", "gosling", "grackle",
+        "gray-whale", "grebe", "greyhound", "griffin", "grouse", "grouper", "guanaco",
+        "guillemot", "guinea-fowl", "gull", "guppy", "gurami", "gurnard", "gymnure",
+        "gypsy-moth", "gyri", "gyroscope", "habu", "haddock", "hadji", "hadron",
+        "hagborn", "hagfish", "haggadic", "haggis", "haggler", "hagiology",
+        "hagioscope", "haj", "hajj", "hajji", "hake", "hakim", "halal", "halbe",
+        "halbert", "halcyon", "hale", "half-back", "half-beak", "half-blood",
+        "half-cock", "half-crab", "half-cutter", "half-day", "half-deck", "half-penny",
+        "half-track", "halibut", "halid", "halide", "halidome", "halif",
+        "halimeda", "haliotis", "halite", "halitus", "halk", "hall", "hallabaloo",
+        "hallal", "hallan", "hallel", "hallelujah", "haller", "halley", "halliday",
+        "hallide", "hallier", "hallified", "halliford", "halliform", "halligan",
+        "hallikainen", "hallikon", "halliland", "hallilot", "hallily", "hallimeda",
+        "hallimond", "hallingers", "hallings", "hallingers", "hallion", "hallionic",
+        "halliotidae", "halliotis", "hallish", "hallis", "hallissey", "hallistor",
+        "halliwell", "hallawine", "halloween", "hallowmas", "hallows", "halloums",
+        "halls", "hallstatt", "hallux", "hallway", "hallways", "hallway", "hallwort",
     ];
     animals.shuffle(&mut rand::thread_rng());
     let (tx, _) = broadcast::channel::<OutgoingEvent>(1000);
@@ -820,6 +736,7 @@ impl RoomState {
         }
     }
 
+    #[allow(dead_code)]
     fn is_user_allowed(&mut self, user_id: &str) -> bool {
         let connected_count = self
             .users
@@ -914,7 +831,7 @@ fn create_user_cookies(user_id: &str, name: &str) -> (String, String) {
 
 async fn root_redirect() -> Redirect {
     info!("Received request at '/', redirecting to '/main'");
-    Redirect::to("/main")
+    Redirect::permanent("/main")
 }
 
 /// Serves the main chat page at /main
@@ -2086,13 +2003,18 @@ async fn main() {
 }
 
 fn validate_message(text: &str) -> Result<String, ChatError> {
-    if text.is_empty() {
+    // Trim whitespace first
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
         return Err(ChatError::InvalidMessage("Message cannot be empty".into()));
     }
-    if text.len() > MAX_MESSAGE_LEN {
+    if trimmed.len() > MAX_MESSAGE_LEN {
         return Err(ChatError::InvalidMessage("Message too long".into()));
     }
-    let clean_text = ammonia::clean(text);
+    let clean_text = ammonia::clean(trimmed);
+    if clean_text.trim().is_empty() {
+        return Err(ChatError::InvalidMessage("Message cannot be empty after sanitization".into()));
+    }
     if clean_text.len() > MAX_MESSAGE_LEN {
         return Err(ChatError::InvalidMessage(
             "Sanitized message too long".into(),
