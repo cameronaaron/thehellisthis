@@ -1,9 +1,7 @@
-/target/debug/
-/target/release/deps/
-/target/release/build/
-/target/release/.fingerprint/
-/target/release/examples/
-/target/release/incremental/
+/target/
 .DS_Store
 .env
 *.pdb
+cloudflare/node_modules/
+cloudflare/.wrangler/
+tmp.txt

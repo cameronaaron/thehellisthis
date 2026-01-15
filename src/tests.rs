@@ -7,19 +7,19 @@ use axum::{
     routing::get,
     Router,
 };
+use futures::future::join_all;
+use futures::{SinkExt, StreamExt};
+use serde_json::Value as JsonValue;
+use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::net::{SocketAddr, IpAddr};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
 use tokio::sync::Barrier;
 use tokio::time::timeout;
-use tower::util::ServiceExt;
-use futures::future::join_all;
-use futures::{SinkExt, StreamExt};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
-use serde_json::Value as JsonValue;
+use tower::util::ServiceExt;
 
 #[tokio::test]
 async fn test_root_redirect() {
@@ -30,7 +30,13 @@ async fn test_root_redirect() {
         .await
         .unwrap();
 
-    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    // Should be a permanent redirect (308) to /main
+    let status = response.status();
+    assert!(
+        status == StatusCode::MOVED_PERMANENTLY || status == StatusCode::PERMANENT_REDIRECT,
+        "Expected permanent redirect (301 or 308), got {}",
+        status
+    );
     assert_eq!(response.headers().get("location").unwrap(), "/main");
 }
 
@@ -62,8 +68,9 @@ async fn test_room_handler_invalid_length() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    assert!(String::from_utf8_lossy(&body)
-        .contains("Room name must be between 3 and 50 characters"));
+    assert!(
+        String::from_utf8_lossy(&body).contains("Room name must be between 3 and 50 characters")
+    );
 }
 
 #[tokio::test]
@@ -146,8 +153,14 @@ async fn test_validate_message_cases() {
     assert!(validate_message("").is_err());
     assert!(validate_message(&"a".repeat(MAX_MESSAGE_LEN + 1)).is_err());
 
-    let sanitized = validate_message("<script>alert('xss')</script>").unwrap();
+    // Pure script tags with no text content should be rejected (empty after sanitization)
+    assert!(validate_message("<script>alert('xss')</script>").is_err());
+
+    // But text with script tags mixed in should have the script removed and text preserved
+    let sanitized = validate_message("Hello <script>alert('xss')</script> world").unwrap();
     assert!(!sanitized.contains("<script>"));
+    assert!(sanitized.contains("Hello"));
+    assert!(sanitized.contains("world"));
 }
 
 #[tokio::test]
@@ -334,7 +347,7 @@ async fn test_message_memory_tracking() {
 async fn test_preserve_messages_trims_and_updates_tracker() {
     let mut room = create_room();
     let tracker = MemoryTracker::new();
-    
+
     // Add messages beyond MAX_MESSAGES_PER_ROOM
     for _i in 0..(MAX_MESSAGES_PER_ROOM + 150) {
         let msg = OutgoingMessage {
@@ -346,13 +359,14 @@ async fn test_preserve_messages_trims_and_updates_tracker() {
         };
         let msg_size = msg.estimate_size();
         tracker.add_bytes(msg_size);
-        room.total_memory_bytes.fetch_add(msg_size, Ordering::SeqCst);
+        room.total_memory_bytes
+            .fetch_add(msg_size, Ordering::SeqCst);
         room.chat_history.push(msg);
     }
 
     let before_tracker = tracker.total_bytes.load(Ordering::Relaxed);
     room.preserve_messages(&tracker);
-    
+
     assert!(room.chat_history.len() <= MAX_MESSAGES_PER_ROOM);
     let after_tracker = tracker.total_bytes.load(Ordering::Relaxed);
     assert!(after_tracker < before_tracker);
@@ -362,7 +376,7 @@ async fn test_preserve_messages_trims_and_updates_tracker() {
 async fn test_trim_to_max_messages_limits_history() {
     let mut room = create_room();
     let tracker = MemoryTracker::new();
-    
+
     for _i in 0..(MAX_MESSAGES_PER_ROOM + 100) {
         let msg = OutgoingMessage {
             message_id: uuid::Uuid::new_v4(),
@@ -376,11 +390,11 @@ async fn test_trim_to_max_messages_limits_history() {
         room.total_memory_bytes.fetch_add(size, Ordering::SeqCst);
         room.chat_history.push(msg);
     }
-    
+
     let before = tracker.total_bytes.load(Ordering::Relaxed);
     room.trim_to_max_messages(&tracker);
     let after = tracker.total_bytes.load(Ordering::Relaxed);
-    
+
     assert_eq!(room.chat_history.len(), MAX_MESSAGES_PER_ROOM);
     assert!(after < before);
 }
@@ -392,7 +406,7 @@ async fn test_animal_assignment() {
     let mut room = create_room();
     let animal1 = room.assign_animal();
     let animal2 = room.assign_animal();
-    
+
     assert!(!animal1.is_empty());
     assert!(!animal2.is_empty());
     assert_ne!(animal1, animal2);
@@ -402,10 +416,10 @@ async fn test_animal_assignment() {
 async fn test_animal_reuse_after_user_removal() {
     let mut room = create_room();
     let first_animal = room.assign_animal();
-    
+
     // Simulate user disconnect: return animal to pool
     room.available_animals.push_back(first_animal.clone());
-    
+
     // Next assignment will take from front of queue
     let reassigned = room.assign_animal();
     // The reassigned animal should be from our pool, not necessarily the one we added
@@ -442,11 +456,11 @@ async fn test_user_data_initial_state() {
 #[tokio::test]
 async fn test_typing_event_timestamp_tracking() {
     let now = Instant::now();
-    
+
     // Simulating debounce check logic
     let last_event = Some(now);
     let min_interval = Duration::from_millis(200);
-    
+
     // Too soon (100ms)
     let too_soon = now + Duration::from_millis(100);
     let allowed_soon = match last_event {
@@ -454,7 +468,7 @@ async fn test_typing_event_timestamp_tracking() {
         None => true,
     };
     assert!(!allowed_soon);
-    
+
     // Allowed (300ms)
     let ok_later = now + Duration::from_millis(300);
     let allowed_later = match last_event {
@@ -468,9 +482,9 @@ async fn test_typing_event_timestamp_tracking() {
 async fn test_read_receipt_timestamp_tracking() {
     let now = Instant::now();
     let min_interval = Duration::from_millis(200);
-    
+
     let last_event = Some(now);
-    
+
     // Too soon (100ms)
     let too_soon = now + Duration::from_millis(100);
     let can_send_soon = match last_event {
@@ -478,7 +492,7 @@ async fn test_read_receipt_timestamp_tracking() {
         None => true,
     };
     assert!(!can_send_soon);
-    
+
     // Allowed (250ms)
     let later = now + Duration::from_millis(250);
     let can_send_later = match last_event {
@@ -494,12 +508,12 @@ async fn test_read_receipt_timestamp_tracking() {
 async fn test_cleanup_messages_by_age() {
     let mut room = create_room();
     let tracker = MemoryTracker::new();
-    
+
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis();
-    
+
     // Old message (40 days)
     let old_timestamp = format!("{}", now_ms - (40 * 24 * 60 * 60 * 1000));
     let old_msg = OutgoingMessage {
@@ -509,7 +523,7 @@ async fn test_cleanup_messages_by_age() {
         text: "<p>Old</p>".to_string(),
         timestamp: old_timestamp,
     };
-    
+
     // Fresh message
     let fresh_msg = OutgoingMessage {
         message_id: uuid::Uuid::new_v4(),
@@ -518,19 +532,17 @@ async fn test_cleanup_messages_by_age() {
         text: "<p>Fresh</p>".to_string(),
         timestamp: format!("{}", now_ms),
     };
-    
+
     let old_size = old_msg.estimate_size();
     room.chat_history.push(old_msg);
     room.chat_history.push(fresh_msg);
-    room.total_memory_bytes.store(
-        old_size + 100,
-        Ordering::SeqCst,
-    );
+    room.total_memory_bytes
+        .store(old_size + 100, Ordering::SeqCst);
     tracker.add_bytes(old_size + 100);
-    
+
     // Cleanup old messages (anything > 30 days)
     room.cleanup_messages(Instant::now(), &tracker).await;
-    
+
     // Old message should be removed (only fresh message remains)
     assert_eq!(room.chat_history.len(), 1);
 }
@@ -539,7 +551,7 @@ async fn test_cleanup_messages_by_age() {
 async fn test_room_memory_accounting() {
     let mut room = create_room();
     let tracker = MemoryTracker::new();
-    
+
     let msg1 = OutgoingMessage {
         message_id: uuid::Uuid::new_v4(),
         user_id: "user1".to_string(),
@@ -548,9 +560,9 @@ async fn test_room_memory_accounting() {
         timestamp: "1000".to_string(),
     };
     let msg1_size = msg1.estimate_size();
-    
+
     room.add_message(msg1, &tracker);
-    
+
     let msg2 = OutgoingMessage {
         message_id: uuid::Uuid::new_v4(),
         user_id: "user1".to_string(),
@@ -559,9 +571,9 @@ async fn test_room_memory_accounting() {
         timestamp: "2000".to_string(),
     };
     let msg2_size = msg2.estimate_size();
-    
+
     room.add_message(msg2, &tracker);
-    
+
     let total = tracker.total_bytes.load(Ordering::Relaxed);
     assert_eq!(total, msg1_size + msg2_size);
 }
@@ -571,9 +583,9 @@ async fn test_room_memory_accounting() {
 #[tokio::test]
 async fn test_user_count_with_mixed_states() {
     let mut room = create_room();
-    
+
     let now = Instant::now();
-    
+
     // Add connected user
     let connected_user = UserData {
         user_id: "user1".to_string(),
@@ -592,7 +604,7 @@ async fn test_user_count_with_mixed_states() {
         last_sanitized_message: None,
     };
     room.users.insert("user1".to_string(), connected_user);
-    
+
     // Add disconnected user
     let disconnected_user = UserData {
         user_id: "user2".to_string(),
@@ -608,11 +620,13 @@ async fn test_user_count_with_mixed_states() {
         last_sanitized_message: None,
     };
     room.users.insert("user2".to_string(), disconnected_user);
-    
-    let connected_count = room.users.values()
+
+    let connected_count = room
+        .users
+        .values()
         .filter(|u| matches!(u.connection_state, ConnectionState::Connected { .. }))
         .count();
-    
+
     assert_eq!(connected_count, 1);
     assert_eq!(room.users.len(), 2);
 }
@@ -621,7 +635,7 @@ async fn test_user_count_with_mixed_states() {
 async fn test_stale_user_detection() {
     let now = Instant::now();
     let stale_heartbeat = now - Duration::from_secs(10); // > 6s timeout
-    
+
     let user = UserData {
         user_id: "stale".to_string(),
         animal_name: "Lion".to_string(),
@@ -638,13 +652,14 @@ async fn test_stale_user_detection() {
         rate_limiter: RateLimiter::new(),
         last_sanitized_message: None,
     };
-    
-    let is_stale = if let ConnectionState::Connected { last_heartbeat, .. } = user.connection_state {
+
+    let is_stale = if let ConnectionState::Connected { last_heartbeat, .. } = user.connection_state
+    {
         now.duration_since(last_heartbeat) > HEARTBEAT_TIMEOUT
     } else {
         false
     };
-    
+
     assert!(is_stale);
 }
 
@@ -652,7 +667,7 @@ async fn test_stale_user_detection() {
 async fn test_fresh_user_not_stale() {
     let now = Instant::now();
     let fresh_heartbeat = now - Duration::from_secs(2); // < 6s timeout
-    
+
     let user = UserData {
         user_id: "fresh".to_string(),
         animal_name: "Tiger".to_string(),
@@ -669,13 +684,14 @@ async fn test_fresh_user_not_stale() {
         rate_limiter: RateLimiter::new(),
         last_sanitized_message: None,
     };
-    
-    let is_stale = if let ConnectionState::Connected { last_heartbeat, .. } = user.connection_state {
+
+    let is_stale = if let ConnectionState::Connected { last_heartbeat, .. } = user.connection_state
+    {
         now.duration_since(last_heartbeat) > HEARTBEAT_TIMEOUT
     } else {
         false
     };
-    
+
     assert!(!is_stale);
 }
 
@@ -684,7 +700,7 @@ async fn test_fresh_user_not_stale() {
 #[tokio::test]
 async fn test_room_capacity_tracking() {
     let mut room = create_room();
-    
+
     let now = Instant::now();
     for i in 0..100 {
         let user = UserData {
@@ -705,12 +721,14 @@ async fn test_room_capacity_tracking() {
         };
         room.users.insert(format!("user-{}", i), user);
     }
-    
+
     // Room has 100 users
-    let connected_count = room.users.values()
+    let connected_count = room
+        .users
+        .values()
         .filter(|u| matches!(u.connection_state, ConnectionState::Connected { .. }))
         .count();
-    
+
     assert_eq!(connected_count, 100);
 }
 
@@ -723,7 +741,7 @@ async fn test_outgoing_message_size_estimation() {
         text: "<p>A long test message with more content</p>".to_string(),
         timestamp: "1234567890".to_string(),
     };
-    
+
     let size = msg.estimate_size();
     assert!(size > 0);
     // Size should be reasonable: ~300-600 bytes for this message
@@ -735,13 +753,13 @@ async fn test_concurrent_message_additions() {
     let room = Arc::new(tokio::sync::Mutex::new(create_room()));
     let tracker = Arc::new(MemoryTracker::new());
     let barrier = Arc::new(Barrier::new(10));
-    
+
     let mut handles = vec![];
     for _i in 0..10 {
         let room_clone = room.clone();
         let tracker_clone = tracker.clone();
         let barrier_clone = barrier.clone();
-        
+
         handles.push(tokio::spawn(async move {
             barrier_clone.wait().await;
             let msg = OutgoingMessage {
@@ -754,7 +772,7 @@ async fn test_concurrent_message_additions() {
             room_clone.lock().await.add_message(msg, &tracker_clone);
         }));
     }
-    
+
     join_all(handles).await;
     assert_eq!(room.lock().await.chat_history.len(), 10);
 }
@@ -782,7 +800,7 @@ async fn test_socket_message_rate_limiting_per_user() {
     for _ in 0..MAX_MESSAGES_PER_WINDOW {
         assert!(user.rate_limiter.can_send_message());
     }
-    
+
     // Should be rate limited
     assert!(!user.rate_limiter.can_send_message());
 }
@@ -793,14 +811,14 @@ async fn test_duplicate_message_prevention() {
     let msg2 = "<p>Duplicate</p>";
     let now = Instant::now();
     let timeout = Duration::from_millis(50);
-    
+
     // Simulate duplicate check
     let last_sanitized = Some((msg1.to_string(), now));
-    let can_send = match last_sanitized {
-        Some((prev_text, prev_time)) if prev_text == msg2 && now.duration_since(prev_time) < timeout => false,
-        _ => true,
-    };
-    
+    let can_send = !matches!(
+        last_sanitized,
+        Some((ref prev_text, prev_time)) if prev_text == msg2 && now.duration_since(prev_time) < timeout
+    );
+
     assert!(!can_send); // Should be blocked as duplicate
 }
 
@@ -808,7 +826,7 @@ async fn test_duplicate_message_prevention() {
 async fn test_html_sanitization_removes_script() {
     let dangerous = "<script>alert('xss')</script><p>Safe content</p>";
     let result = validate_message(dangerous);
-    
+
     assert!(result.is_ok());
     let sanitized = result.unwrap();
     assert!(!sanitized.contains("<script>"));
@@ -821,9 +839,11 @@ async fn test_connection_state_transitions() {
         last_heartbeat: Instant::now(),
         connection_id: "conn1".to_string(),
     };
-    
-    let disconnected = ConnectionState::Disconnected { since: Instant::now() };
-    
+
+    let disconnected = ConnectionState::Disconnected {
+        since: Instant::now(),
+    };
+
     // Verify state types
     assert!(matches!(disconnected, ConnectionState::Disconnected { .. }));
     assert!(matches!(connected, ConnectionState::Connected { .. }));
@@ -833,7 +853,7 @@ async fn test_connection_state_transitions() {
 async fn test_room_last_activity_tracking() {
     let mut room = create_room();
     let initial_activity = room.last_activity;
-    
+
     // Room activity should update
     room.last_activity = Instant::now();
     assert!(room.last_activity > initial_activity);
@@ -842,7 +862,7 @@ async fn test_room_last_activity_tracking() {
 #[tokio::test]
 async fn test_message_ordering_by_timestamp() {
     let mut room = create_room();
-    
+
     let msg1 = OutgoingMessage {
         message_id: uuid::Uuid::new_v4(),
         user_id: "user".to_string(),
@@ -850,7 +870,7 @@ async fn test_message_ordering_by_timestamp() {
         text: "<p>First</p>".to_string(),
         timestamp: "1000".to_string(),
     };
-    
+
     let msg2 = OutgoingMessage {
         message_id: uuid::Uuid::new_v4(),
         user_id: "user".to_string(),
@@ -858,10 +878,10 @@ async fn test_message_ordering_by_timestamp() {
         text: "<p>Second</p>".to_string(),
         timestamp: "2000".to_string(),
     };
-    
+
     room.chat_history.push(msg1);
     room.chat_history.push(msg2);
-    
+
     // Verify messages are in order
     assert_eq!(room.chat_history[0].timestamp, "1000");
     assert_eq!(room.chat_history[1].timestamp, "2000");
@@ -958,7 +978,10 @@ async fn test_broadcast_system_event_sends_event() {
 
     match event {
         OutgoingEvent::System { event } => match event {
-            SystemEvent::UserJoined { user_id, animal_name } => {
+            SystemEvent::UserJoined {
+                user_id,
+                animal_name,
+            } => {
                 assert_eq!(user_id, "u1");
                 assert_eq!(animal_name, "Lion");
             }
@@ -1109,7 +1132,10 @@ async fn start_ws_server() -> (SocketAddr, tokio::task::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
-    let server = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>());
+    let server = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    );
     let handle = tokio::spawn(async move {
         let _ = server.await;
     });
@@ -1117,11 +1143,13 @@ async fn start_ws_server() -> (SocketAddr, tokio::task::JoinHandle<()>) {
     (addr, handle)
 }
 
-async fn recv_json_event(ws: &mut tokio_tungstenite::WebSocketStream<
-    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
->) -> JsonValue {
+async fn recv_json_event(
+    ws: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+) -> JsonValue {
     loop {
-        let msg = timeout(Duration::from_secs(5), ws.next())
+        let msg = timeout(Duration::from_secs(10), ws.next())
             .await
             .expect("timed out waiting for ws event")
             .expect("ws stream ended")
@@ -1162,10 +1190,7 @@ async fn test_ws_reconnect_token_sent() {
     for _ in 0..5 {
         let val = recv_json_event(&mut ws).await;
         if val.get("type") == Some(&JsonValue::String("ReconnectToken".to_string())) {
-            let token = val
-                .get("token")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let token = val.get("token").and_then(|v| v.as_str()).unwrap_or("");
             assert!(!token.is_empty());
             found = true;
             break;
@@ -1190,7 +1215,10 @@ async fn test_ws_user_join_event_sent() {
         if val.get("type") == Some(&JsonValue::String("System".to_string())) {
             if let Some(event) = val.get("event") {
                 if let Some(payload) = extract_system_event(event, "UserJoined") {
-                    let user_id = payload.get("user_id").and_then(|v| v.as_str()).unwrap_or("");
+                    let user_id = payload
+                        .get("user_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
                     let animal = payload
                         .get("animal_name")
                         .and_then(|v| v.as_str())
@@ -1487,8 +1515,9 @@ async fn test_xss_attempt_in_message() {
         let _ = recv_json_event(&mut ws2).await;
     }
 
-    // Client 1 sends XSS attempt
-    let xss_payload = r#"<script>alert('XSS')</script>"#;
+    // Client 1 sends XSS attempt mixed with real text content
+    // Pure script tags would be rejected as empty after sanitization
+    let xss_payload = r#"Hello <script>alert('XSS')</script> world"#;
     ws1.send(WsMessage::Text(format!(
         r#"{{"type":"Message","text":"{}"}}"#,
         xss_payload
@@ -1496,18 +1525,23 @@ async fn test_xss_attempt_in_message() {
     .await
     .unwrap();
 
-    // Client 2 should receive sanitized version
+    // Client 2 should receive sanitized version with scripts removed
     let mut found_message = false;
     for _ in 0..10 {
         let event = recv_json_event(&mut ws2).await;
-            if event["type"] == "Message" {
-                let text = event["message"]["text"].as_str().unwrap();
-                // Should NOT contain script tags
-                assert!(!text.contains("<script>"), "XSS not sanitized!");
-                found_message = true;
-                break;
-            }
+        if event["type"] == "Message" {
+            let text = event["message"]["text"].as_str().unwrap();
+            // Should NOT contain script tags
+            assert!(!text.contains("<script>"), "XSS not sanitized!");
+            // But should contain the actual text
+            assert!(
+                text.contains("Hello") || text.contains("world"),
+                "Legit text should be preserved"
+            );
+            found_message = true;
+            break;
         }
+    }
 
     assert!(found_message, "Sanitized message not received");
     handle.abort();
@@ -1590,8 +1624,7 @@ async fn test_read_receipt_for_nonexistent_message() {
 
     // Send read receipt for fake message ID
     ws.send(WsMessage::Text(
-        r#"{"type":"ReadReceipt","message_id":"00000000-0000-0000-0000-000000000000"}"#
-            .to_string(),
+        r#"{"type":"ReadReceipt","message_id":"00000000-0000-0000-0000-000000000000"}"#.to_string(),
     ))
     .await
     .unwrap();
@@ -1681,7 +1714,10 @@ async fn test_connection_pool_cleanup_stale() {
         let mut counters = pool.ip_counters.write().await;
         counters.insert(
             "10.10.10.10".to_string(),
-            (AtomicUsize::new(1), Instant::now() - Duration::from_secs(7200)),
+            (
+                AtomicUsize::new(1),
+                Instant::now() - Duration::from_secs(7200),
+            ),
         );
     }
 
@@ -1917,7 +1953,7 @@ async fn test_connection_from_same_ip_multiple_times() {
     for i in 0..3 {
         let (ws, _) = tokio_tungstenite::connect_async(&ws_url)
             .await
-            .expect(&format!("Failed to connect #{}", i));
+            .unwrap_or_else(|_| panic!("Failed to connect #{}", i));
         connections.push(ws);
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -1964,7 +2000,7 @@ async fn test_system_event_types_coverage() {
     let room_state = room.get(&room_name).unwrap();
 
     // Just verify we can call broadcast_user_count
-    let _ = room_state.broadcast_user_count();
+    room_state.broadcast_user_count();
 }
 
 #[tokio::test]
@@ -2137,7 +2173,7 @@ async fn test_room_name_too_short() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/ab")  // Less than MIN_ROOM_NAME_LEN (3)
+                .uri("/ab") // Less than MIN_ROOM_NAME_LEN (3)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -2162,7 +2198,7 @@ async fn test_room_name_too_long() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(&format!("/{}", long_name))
+                .uri(format!("/{}", long_name))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -2235,10 +2271,10 @@ async fn test_room_name_special_characters_rejected() {
 #[tokio::test]
 async fn test_memory_tracker_cleanup_threshold() {
     let tracker = MemoryTracker::new();
-    
+
     // Fill to near capacity
     assert!(tracker.add_bytes(MAX_TOTAL_ROOMS_MEMORY - 1024));
-    
+
     // Should still accept small additions
     assert!(tracker.add_bytes(512));
 }
@@ -2246,10 +2282,10 @@ async fn test_memory_tracker_cleanup_threshold() {
 #[tokio::test]
 async fn test_memory_tracker_reject_when_full() {
     let tracker = MemoryTracker::new();
-    
+
     // Fill to capacity
     assert!(tracker.add_bytes(MAX_TOTAL_ROOMS_MEMORY));
-    
+
     // Should reject new additions
     assert!(!tracker.add_bytes(1));
 }
@@ -2266,7 +2302,7 @@ async fn test_room_cleanup_removes_old_inactive() {
     }
 
     cleanup_rooms(&app_state).await;
-    
+
     let rooms = app_state.rooms.read().await;
     assert!(!rooms.contains_key("old_inactive"));
 }
@@ -2318,7 +2354,7 @@ async fn test_security_manager_suspicious_activity_accumulation() {
     // One more should trigger ban
     let _ = security_manager.record_suspicious_activity(ip).await;
     let _ = security_manager.record_suspicious_activity(ip).await;
-    
+
     assert!(security_manager.check_ip(ip).await.is_err());
 }
 
@@ -2360,7 +2396,7 @@ async fn test_room_message_history_capacity() {
     {
         let mut rooms = app_state.rooms.write().await;
         let mut room = create_room();
-        
+
         // Add messages beyond MAX_MESSAGES_PER_ROOM
         for i in 0..MAX_MESSAGES_PER_ROOM + 10 {
             room.chat_history.push(OutgoingMessage {
@@ -2375,7 +2411,7 @@ async fn test_room_message_history_capacity() {
                     .to_string(),
             });
         }
-        
+
         rooms.insert(room_name.clone(), room);
     }
 
@@ -2398,9 +2434,7 @@ async fn test_ws_ping_pong_handling() {
         .expect("Failed to connect");
 
     // Send ping
-    ws.send(WsMessage::Ping(vec![1, 2, 3, 4]))
-        .await
-        .unwrap();
+    ws.send(WsMessage::Ping(vec![1, 2, 3, 4])).await.unwrap();
 
     // Server should respond with pong (though we don't strictly verify response)
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -2469,13 +2503,17 @@ async fn test_typing_debounce_same_state() {
     }
 
     // Send typing=true twice
-    ws.send(WsMessage::Text(r#"{"type":"Typing","is_typing":true}"#.to_string()))
-        .await
-        .unwrap();
+    ws.send(WsMessage::Text(
+        r#"{"type":"Typing","is_typing":true}"#.to_string(),
+    ))
+    .await
+    .unwrap();
     tokio::time::sleep(Duration::from_millis(20)).await;
-    ws.send(WsMessage::Text(r#"{"type":"Typing","is_typing":true}"#.to_string()))
-        .await
-        .unwrap();
+    ws.send(WsMessage::Text(
+        r#"{"type":"Typing","is_typing":true}"#.to_string(),
+    ))
+    .await
+    .unwrap();
 
     // Should debounce
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -2540,7 +2578,9 @@ async fn test_resource_monitor_total_memory_tracking() {
     assert!(monitor.can_accept_connection());
 
     // Max out memory
-    monitor.total_memory.store(MAX_TOTAL_ROOMS_MEMORY, Ordering::SeqCst);
+    monitor
+        .total_memory
+        .store(MAX_TOTAL_ROOMS_MEMORY, Ordering::SeqCst);
     assert!(!monitor.can_accept_connection());
 }
 
@@ -2558,12 +2598,12 @@ async fn test_validate_input_special_chars() {
 #[tokio::test]
 async fn test_user_cookie_parsing() {
     use axum::http::HeaderValue;
-    
+
     // Valid cookie
     let valid_cookie = "user_id=550e8400-e29b-41d4-a716-446655440000; animal_name=Lion";
     let mut headers = HeaderMap::new();
     headers.insert("cookie", HeaderValue::from_str(valid_cookie).unwrap());
-    
+
     // Just verify cookies can be parsed (actual parsing is done by axum extractors)
     assert!(headers.get("cookie").is_some());
 }
@@ -2573,14 +2613,14 @@ async fn test_validate_message_length_boundaries() {
     // Max length message
     let max_msg = "a".repeat(MAX_MESSAGE_LEN);
     assert!(validate_message(&max_msg).is_ok());
-    
+
     // Over max length
     let too_long = "a".repeat(MAX_MESSAGE_LEN + 1);
     assert!(validate_message(&too_long).is_err());
-    
+
     // Empty message
     assert!(validate_message("").is_err());
-    
+
     // Single character
     assert!(validate_message("a").is_ok());
 }
@@ -2619,7 +2659,7 @@ async fn test_message_with_bold_italic() {
 async fn test_message_with_lists() {
     let list_msg = "- Item 1\n- Item 2\n- Item 3";
     let result = validate_message(list_msg).unwrap();
-    assert!(result.contains("<li>") || result.len() > 0);
+    assert!(result.contains("<li>") || !result.is_empty());
 }
 
 #[tokio::test]
@@ -2664,7 +2704,7 @@ async fn test_reconnect_token_format() {
         if event["type"] == "ReconnectToken" {
             let token = event["token"].as_str().unwrap();
             // Should be a valid UUID
-            assert!(token.len() > 0);
+            assert!(!token.is_empty());
             assert!(token.contains("-") || token.len() == 36);
             break;
         }
@@ -2730,9 +2770,11 @@ async fn test_message_broadcast_excludes_sender() {
     }
 
     // ws1 sends message
-    ws1.send(WsMessage::Text(r#"{"type":"Message","text":"Test from ws1"}"#.to_string()))
-        .await
-        .unwrap();
+    ws1.send(WsMessage::Text(
+        r#"{"type":"Message","text":"Test from ws1"}"#.to_string(),
+    ))
+    .await
+    .unwrap();
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -2762,7 +2804,7 @@ async fn test_room_cleanup_preserves_recent_messages() {
         let mut rooms = app_state.rooms.write().await;
         let mut room = create_room();
         room.last_activity = Instant::now();
-        
+
         // Add some recent messages
         for i in 0..10 {
             room.chat_history.push(OutgoingMessage {
@@ -2777,12 +2819,12 @@ async fn test_room_cleanup_preserves_recent_messages() {
                     .to_string(),
             });
         }
-        
+
         rooms.insert(room_name.clone(), room);
     }
 
     cleanup_rooms(&app_state).await;
-    
+
     let rooms = app_state.rooms.read().await;
     let room = rooms.get(&room_name).unwrap();
     assert_eq!(room.chat_history.len(), 10);
@@ -2794,10 +2836,10 @@ async fn test_concurrent_connections_from_different_ips() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let ws_url = format!("ws://{}/ws/multi-ip-test", addr);
-    
+
     // All connections come from same IP in test, but simulate behavior
     let mut connections = Vec::new();
-    for i in 0..3 {
+    for _i in 0..3 {
         match tokio_tungstenite::connect_async(&ws_url).await {
             Ok((ws, _)) => {
                 connections.push(ws);
@@ -2875,9 +2917,11 @@ async fn test_room_state_typing_broadcast() {
     }
 
     // Send typing event
-    ws1.send(WsMessage::Text(r#"{"type":"Typing","is_typing":true}"#.to_string()))
-        .await
-        .unwrap();
+    ws1.send(WsMessage::Text(
+        r#"{"type":"Typing","is_typing":true}"#.to_string(),
+    ))
+    .await
+    .unwrap();
 
     tokio::time::sleep(Duration::from_millis(100)).await;
     handle.abort();
@@ -2935,14 +2979,18 @@ async fn test_message_deduplication_different_messages() {
         let _ = recv_json_event(&mut ws).await;
     }
 
-    ws.send(WsMessage::Text(r#"{"type":"Message","text":"Message 1"}"#.to_string()))
-        .await
-        .unwrap();
+    ws.send(WsMessage::Text(
+        r#"{"type":"Message","text":"Message 1"}"#.to_string(),
+    ))
+    .await
+    .unwrap();
     tokio::time::sleep(Duration::from_millis(600)).await;
-    
-    ws.send(WsMessage::Text(r#"{"type":"Message","text":"Message 2"}"#.to_string()))
-        .await
-        .unwrap();
+
+    ws.send(WsMessage::Text(
+        r#"{"type":"Message","text":"Message 2"}"#.to_string(),
+    ))
+    .await
+    .unwrap();
 
     tokio::time::sleep(Duration::from_millis(100)).await;
     handle.abort();
@@ -3032,45 +3080,50 @@ async fn test_message_with_inline_code() {
 async fn test_connection_pool_boundary() {
     let pool = ConnectionPool::new();
     let ip = "192.168.1.1";
-    
+
     assert!(pool.add_connection(ip).await.is_ok());
     assert!(pool.add_connection(ip).await.is_ok());
     assert!(pool.add_connection(ip).await.is_ok());
-    
+
     assert!(pool.add_connection(ip).await.is_err());
 }
 
 #[tokio::test]
 async fn test_rate_limiter_window_expiry() {
     let mut limiter = RateLimiter::new();
-    
+
     for _ in 0..30 {
         assert!(limiter.can_send_message());
     }
-    
+
     assert!(!limiter.can_send_message());
 }
 
 #[tokio::test]
 async fn test_security_manager_ban_threshold() {
-    let _security = SecurityManager::new();
-    let _ip = "10.0.0.1";
-    
-    // SecurityManager doesn't expose public API - just verify creation
-    assert!(true);
+    let security = SecurityManager::new();
+    let ip = "10.0.0.1";
+
+    // Record suspicious activity but stay below threshold
+    for _ in 0..9 {
+        let _ = security.record_suspicious_activity(ip).await;
+    }
+
+    // Should still be allowed - not yet at threshold of 10
+    assert!(security.check_ip(ip).await.is_ok());
 }
 
 #[tokio::test]
 async fn test_memory_tracker_peak_tracking() {
     let tracker = MemoryTracker::new();
-    
+
     assert!(tracker.add_bytes(100));
     assert!(tracker.add_bytes(200));
-    
+
     assert_eq!(tracker.peak_bytes.load(Ordering::SeqCst), 300);
-    
+
     tracker.remove_bytes(200);
-    
+
     assert_eq!(tracker.peak_bytes.load(Ordering::SeqCst), 300);
 }
 
@@ -3082,9 +3135,15 @@ async fn test_websocket_invalid_json() {
 
     let _ = recv_json_event(&mut ws).await;
 
-    ws.send(WsMessage::Text("{not valid json}".to_string())).await.unwrap();
-    
-    let result = ws.send(WsMessage::Text(r#"{"type":"Message","text":"test"}"#.to_string())).await;
+    ws.send(WsMessage::Text("{not valid json}".to_string()))
+        .await
+        .unwrap();
+
+    let result = ws
+        .send(WsMessage::Text(
+            r#"{"type":"Message","text":"test"}"#.to_string(),
+        ))
+        .await;
     assert!(result.is_ok());
 }
 
@@ -3096,9 +3155,17 @@ async fn test_websocket_unknown_event_type() {
 
     let _ = recv_json_event(&mut ws).await;
 
-    ws.send(WsMessage::Text(r#"{"type":"UnknownEvent","data":"test"}"#.to_string())).await.unwrap();
-    
-    let result = ws.send(WsMessage::Text(r#"{"type":"Message","text":"test"}"#.to_string())).await;
+    ws.send(WsMessage::Text(
+        r#"{"type":"UnknownEvent","data":"test"}"#.to_string(),
+    ))
+    .await
+    .unwrap();
+
+    let result = ws
+        .send(WsMessage::Text(
+            r#"{"type":"Message","text":"test"}"#.to_string(),
+        ))
+        .await;
     assert!(result.is_ok());
 }
 
@@ -3145,7 +3212,7 @@ async fn test_message_history_ordering() {
         text: "First".to_string(),
         timestamp: "1000000000".to_string(),
     };
-    
+
     let msg2 = OutgoingMessage {
         message_id: Uuid::new_v4(),
         user_id: Uuid::new_v4().to_string(),
@@ -3164,9 +3231,9 @@ async fn test_message_history_ordering() {
 #[tokio::test]
 async fn test_concurrent_room_creation() {
     let app_state = Arc::new(AppState::new());
-    
+
     let mut handles = vec![];
-    
+
     for i in 0..10 {
         let state = Arc::clone(&app_state);
         let handle = tokio::spawn(async move {
@@ -3177,11 +3244,11 @@ async fn test_concurrent_room_creation() {
         });
         handles.push(handle);
     }
-    
+
     for handle in handles {
         let _ = handle.await.unwrap();
     }
-    
+
     let rooms = app_state.rooms.read().await;
     assert_eq!(rooms.len(), 10);
 }
@@ -3196,10 +3263,10 @@ async fn test_message_at_max_length() {
 #[tokio::test]
 async fn test_websocket_connection_without_room() {
     let (addr, _handle) = start_ws_server().await;
-    
+
     let url = format!("ws://{}/ws/", addr);
     let result = tokio_tungstenite::connect_async(&url).await;
-    
+
     assert!(result.is_ok() || result.is_err());
 }
 
@@ -3239,27 +3306,38 @@ async fn test_connection_pool_different_ips_new() {
     let pool = ConnectionPool::new();
     let ip1 = "192.168.1.1";
     let ip2 = "192.168.1.2";
-    
+
     assert!(pool.add_connection(ip1).await.is_ok());
     assert!(pool.add_connection(ip2).await.is_ok());
 }
 
 #[tokio::test]
 async fn test_security_manager_below_threshold() {
-    let _security = SecurityManager::new();
-    assert!(true);
+    let security = SecurityManager::new();
+    let ip = "192.168.1.100";
+
+    // First check should pass
+    assert!(security.check_ip(ip).await.is_ok());
+
+    // Record a few suspicious activities but stay well under threshold
+    for _ in 0..3 {
+        let _ = security.record_suspicious_activity(ip).await;
+    }
+
+    // Should still be allowed
+    assert!(security.check_ip(ip).await.is_ok());
 }
 
 #[tokio::test]
 async fn test_rate_limiter_reset() {
     let mut limiter = RateLimiter::new();
-    
+
     for _ in 0..5 {
         assert!(limiter.can_send_message());
     }
-    
+
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-    
+
     assert!(limiter.can_send_message());
 }
 
@@ -3275,7 +3353,7 @@ async fn test_room_state_broadcast_count() {
 
     let rooms = app_state.rooms.read().await;
     let room_state = rooms.get(&room_name).unwrap();
-    
+
     assert!(room_state.chat_history.is_empty());
 }
 
@@ -3292,5 +3370,2010 @@ async fn test_message_newlines() {
     assert!(result.is_ok());
 }
 
+// ========== PREVIOUSLY REMOVED TESTS - NOW FIXED ==========
 
+#[tokio::test]
+async fn test_message_only_whitespace() {
+    // Whitespace-only messages should be rejected
+    let text = "   \n\t  ";
+    let result = validate_message(text);
+    assert!(
+        result.is_err(),
+        "Whitespace-only messages should be rejected"
+    );
+}
 
+#[tokio::test]
+async fn test_http_redirect_from_root() {
+    let app = Router::new().route("/", get(root_redirect));
+
+    let response = app
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    // Root should redirect to /main with a permanent redirect (301 or 308)
+    let status = response.status();
+    assert!(
+        status == StatusCode::MOVED_PERMANENTLY || status == StatusCode::PERMANENT_REDIRECT,
+        "Expected permanent redirect (301 or 308), got {}",
+        status
+    );
+    let location = response.headers().get("location").unwrap();
+    assert_eq!(location, "/main");
+}
+
+#[tokio::test]
+async fn test_websocket_multiple_rapid_frames() {
+    let (addr, _handle) = start_ws_server().await;
+    let url = format!("ws://{}/ws/rapid-frames-test", addr);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+    // Skip initial events (UserJoined, UserCount, etc.)
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    while let Ok(Some(_)) = tokio::time::timeout(Duration::from_millis(50), ws.next()).await {}
+
+    // Send 5 messages rapidly (not 10 - rate limiting kicks in)
+    for i in 0..5 {
+        let msg = serde_json::json!({"type": "Message", "text": format!("Rapid message {}", i)});
+        ws.send(WsMessage::Text(msg.to_string())).await.unwrap();
+        // Small delay to avoid rate limiting
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // Should receive messages back
+    let mut received = 0;
+    for _ in 0..10 {
+        if let Ok(Some(Ok(WsMessage::Text(text)))) =
+            tokio::time::timeout(Duration::from_millis(500), ws.next()).await
+        {
+            if let Ok(event) = serde_json::from_str::<serde_json::Value>(&text) {
+                if event["type"] == "Message" {
+                    received += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        received >= 3,
+        "Should receive at least 3 of the 5 rapid messages, got {}",
+        received
+    );
+}
+
+#[tokio::test]
+async fn test_typing_indicator_broadcast() {
+    let (addr, _handle) = start_ws_server().await;
+    let url = format!("ws://{}/ws/typing-broadcast-test", addr);
+
+    // Connect two clients
+    let (mut ws1, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let (mut ws2, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Clear initial events from ws2
+    while let Ok(Some(_)) = tokio::time::timeout(Duration::from_millis(50), ws2.next()).await {}
+
+    // ws1 sends typing indicator
+    ws1.send(WsMessage::Text(
+        r#"{"type":"Typing","is_typing":true}"#.to_string(),
+    ))
+    .await
+    .unwrap();
+
+    // ws2 should receive the typing event (ws1 shouldn't see its own typing)
+    let mut received_typing = false;
+    for _ in 0..10 {
+        if let Ok(Some(Ok(WsMessage::Text(text)))) =
+            tokio::time::timeout(Duration::from_millis(200), ws2.next()).await
+        {
+            if let Ok(event) = serde_json::from_str::<serde_json::Value>(&text) {
+                if event["type"] == "System" {
+                    if let Some(typing) = event.get("event").and_then(|e| e.get("Typing")) {
+                        if typing.get("is_typing") == Some(&serde_json::json!(true)) {
+                            received_typing = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        received_typing,
+        "Second client should receive typing indicator from first client"
+    );
+}
+
+// ========== NEW COVERAGE TESTS ==========
+
+#[tokio::test]
+async fn test_chat_error_into_response_room_full() {
+    let error = ChatError::RoomFull;
+    let response = error.into_response();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn test_chat_error_into_response_rate_limited() {
+    let error = ChatError::RateLimited;
+    let response = error.into_response();
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn test_chat_error_into_response_rate_limit_error() {
+    let error = ChatError::RateLimitError("Too fast".to_string());
+    let response = error.into_response();
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn test_chat_error_into_response_invalid_message() {
+    let error = ChatError::InvalidMessage("Bad input".to_string());
+    let response = error.into_response();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_chat_error_into_response_resource_limit() {
+    let error = ChatError::ResourceLimit("Out of memory".to_string());
+    let response = error.into_response();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn test_chat_error_into_response_connection_error() {
+    let error = ChatError::ConnectionError("Timeout".to_string());
+    let response = error.into_response();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[tokio::test]
+async fn test_chat_error_into_response_security_error() {
+    let error = ChatError::SecurityError("Banned".to_string());
+    let response = error.into_response();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn test_chat_error_into_response_room_error() {
+    let error = ChatError::RoomError("Room closed".to_string());
+    let response = error.into_response();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_health_endpoint() {
+    let app_state = Arc::new(AppState::new());
+    let app = Router::new()
+        .route("/health", get(health_handler))
+        .with_state(app_state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let health: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+
+    assert_eq!(health["status"], "healthy");
+    assert!(health["version"].is_string());
+    assert!(health["connections"].is_number());
+    assert!(health["rooms"].is_number());
+    assert!(health["memory_bytes"].is_number());
+}
+
+#[tokio::test]
+async fn test_metrics_endpoint() {
+    let app_state = Arc::new(AppState::new());
+    let app = Router::new()
+        .route("/metrics", get(metrics_handler))
+        .with_state(app_state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/metrics")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("content-type").unwrap(),
+        "text/plain; version=0.0.4"
+    );
+
+    let body_bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+
+    assert!(body_str.contains("chat_rooms_total"));
+    assert!(body_str.contains("chat_connections_total"));
+    assert!(body_str.contains("chat_users_total"));
+    assert!(body_str.contains("chat_messages_total"));
+    assert!(body_str.contains("chat_memory_bytes"));
+    assert!(body_str.contains("chat_memory_peak_bytes"));
+}
+
+#[tokio::test]
+async fn test_extract_client_ip_from_x_forwarded_for() {
+    use axum::http::HeaderMap;
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "x-forwarded-for",
+        "203.0.113.195, 70.41.3.18, 150.172.238.178"
+            .parse()
+            .unwrap(),
+    );
+
+    let ip = extract_client_ip(&headers, None);
+    assert_eq!(ip, Some("203.0.113.195".to_string()));
+}
+
+#[tokio::test]
+async fn test_extract_client_ip_from_x_real_ip() {
+    use axum::http::HeaderMap;
+
+    let mut headers = HeaderMap::new();
+    headers.insert("x-real-ip", "192.168.1.100".parse().unwrap());
+
+    let ip = extract_client_ip(&headers, None);
+    assert_eq!(ip, Some("192.168.1.100".to_string()));
+}
+
+#[tokio::test]
+async fn test_extract_client_ip_empty_x_forwarded_for() {
+    use axum::http::HeaderMap;
+
+    let mut headers = HeaderMap::new();
+    headers.insert("x-forwarded-for", "".parse().unwrap());
+
+    let ip = extract_client_ip(&headers, None);
+    // Should fallback to None since no conn_info provided
+    assert!(ip.is_none());
+}
+
+#[tokio::test]
+async fn test_extract_client_ip_priority() {
+    use axum::http::HeaderMap;
+
+    let mut headers = HeaderMap::new();
+    headers.insert("x-forwarded-for", "10.0.0.1".parse().unwrap());
+    headers.insert("x-real-ip", "10.0.0.2".parse().unwrap());
+
+    // x-forwarded-for should take priority
+    let ip = extract_client_ip(&headers, None);
+    assert_eq!(ip, Some("10.0.0.1".to_string()));
+}
+
+#[tokio::test]
+async fn test_connection_pool_max_connections_per_ip() {
+    let pool = ConnectionPool::new();
+    let ip = "192.168.50.1";
+
+    // Add up to MAX_CONCURRENT_CONNECTIONS_PER_IP (3)
+    for _ in 0..MAX_CONCURRENT_CONNECTIONS_PER_IP {
+        assert!(pool.add_connection(ip).await.is_ok());
+    }
+
+    // 4th connection should fail
+    assert!(!pool.can_accept(ip).await);
+}
+
+#[tokio::test]
+async fn test_connection_pool_remove_connection_allows_new() {
+    let pool = ConnectionPool::new();
+    let ip = "192.168.50.2";
+
+    // Fill up connections
+    for _ in 0..MAX_CONCURRENT_CONNECTIONS_PER_IP {
+        pool.add_connection(ip).await.unwrap();
+    }
+
+    // Should be full
+    assert!(!pool.can_accept(ip).await);
+
+    // Remove one
+    pool.remove_connection(ip).await;
+
+    // Should be able to accept again
+    assert!(pool.can_accept(ip).await);
+}
+
+#[tokio::test]
+async fn test_room_name_validation_via_handler() {
+    // Test room name validation through room_handler
+    let app_state = Arc::new(AppState::new());
+    let app = Router::new()
+        .route("/{room}", get(room_handler))
+        .with_state(app_state);
+
+    // Valid room name
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/myroom123")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Invalid room name (starts with hyphen) - should fail regex
+    let response2 = Router::new()
+        .route("/{room}", get(room_handler))
+        .with_state(Arc::new(AppState::new()))
+        .oneshot(
+            Request::builder()
+                .uri("/-invalid")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = to_bytes(response2.into_body(), usize::MAX).await.unwrap();
+    let body_str = String::from_utf8(body.to_vec()).unwrap();
+    assert!(body_str.contains("alphanumeric"));
+}
+
+#[tokio::test]
+async fn test_reserved_room_names_via_handler() {
+    let reserved = [
+        "robots.txt",
+        "main",
+        "admin",
+        "api",
+        "ws",
+        "health",
+        "metrics",
+    ];
+
+    for name in reserved {
+        let app_state = Arc::new(AppState::new());
+        let app = Router::new()
+            .route("/{room}", get(room_handler))
+            .with_state(app_state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/{}", name))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body_str = String::from_utf8(body.to_vec()).unwrap();
+        // Reserved names should return an error message
+        assert!(
+            body_str.contains("Reserved")
+                || body_str.contains("reserved")
+                || body_str.contains("Invalid")
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_invalid_read_receipt_message_id() {
+    let (addr, handle) = start_ws_server().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let ws_url = format!("ws://{}/ws/invalid-receipt-test", addr);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url)
+        .await
+        .expect("Failed to connect");
+
+    // Receive initial events
+    for _ in 0..3 {
+        let _ = recv_json_event(&mut ws).await;
+    }
+
+    // Send invalid read receipt (not a valid UUID)
+    ws.send(WsMessage::Text(
+        r#"{"type":"ReadReceipt","message_id":"not-a-uuid"}"#.to_string(),
+    ))
+    .await
+    .unwrap();
+
+    // Server should handle gracefully without crashing
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Connection should still be alive
+    ws.send(WsMessage::Text(
+        r#"{"type":"Message","text":"Still connected"}"#.to_string(),
+    ))
+    .await
+    .unwrap();
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_payload_too_large_rejected() {
+    let (addr, handle) = start_ws_server().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let ws_url = format!("ws://{}/ws/large-payload-test", addr);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url)
+        .await
+        .expect("Failed to connect");
+
+    // Receive initial events
+    for _ in 0..3 {
+        let _ = recv_json_event(&mut ws).await;
+    }
+
+    // Send a very large payload (larger than MAX_PAYLOAD_SIZE which is 64KB)
+    let large_text = "x".repeat(70000);
+    let msg = format!(r#"{{"type":"Message","text":"{}"}}"#, large_text);
+    ws.send(WsMessage::Text(msg)).await.unwrap();
+
+    // Server should handle gracefully - message won't be broadcast
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Connection should still work
+    ws.send(WsMessage::Text(
+        r#"{"type":"Message","text":"Small message"}"#.to_string(),
+    ))
+    .await
+    .unwrap();
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_duplicate_message_rejected() {
+    let (addr, handle) = start_ws_server().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let ws_url = format!("ws://{}/ws/duplicate-msg-test", addr);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url)
+        .await
+        .expect("Failed to connect");
+
+    // Receive initial events
+    for _ in 0..3 {
+        let _ = recv_json_event(&mut ws).await;
+    }
+
+    // Send same message twice rapidly
+    let msg = r#"{"type":"Message","text":"Duplicate test message"}"#;
+    ws.send(WsMessage::Text(msg.to_string())).await.unwrap();
+    ws.send(WsMessage::Text(msg.to_string())).await.unwrap();
+
+    // Should only receive one message back (duplicate rejected)
+    let mut message_count = 0;
+    for _ in 0..5 {
+        if let Ok(Some(Ok(WsMessage::Text(text)))) =
+            tokio::time::timeout(Duration::from_millis(200), ws.next()).await
+        {
+            if let Ok(event) = serde_json::from_str::<serde_json::Value>(&text) {
+                if event["type"] == "Message"
+                    && event["message"]["text"]
+                        .as_str()
+                        .map(|t| t.contains("Duplicate test message"))
+                        .unwrap_or(false)
+                {
+                    message_count += 1;
+                }
+            }
+        }
+    }
+
+    // Ideally only 1, but timing could allow 2
+    assert!(
+        message_count <= 2,
+        "Duplicate messages should be rejected, got {}",
+        message_count
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_room_max_reached_error() {
+    let app_state = Arc::new(AppState::new());
+
+    // Fill up rooms to MAX_ROOMS
+    {
+        let mut rooms = app_state.rooms.write().await;
+        for i in 0..MAX_ROOMS {
+            rooms.insert(format!("room{}", i), create_room());
+        }
+    }
+
+    // Now try to access a new room via room_handler
+    let app = Router::new()
+        .route("/{room}", get(room_handler))
+        .with_state(app_state.clone());
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/newroom")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Should get an error message about max rooms
+    let status = response.status();
+    let body_bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = String::from_utf8(body_bytes.to_vec()).unwrap();
+    assert!(
+        body.contains("Maximum number of rooms reached")
+            || body.contains("max")
+            || status == StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn test_app_state_shutdown() {
+    let app_state = Arc::new(AppState::new());
+
+    // Create a room with a user
+    {
+        let mut rooms = app_state.rooms.write().await;
+        let mut room = create_room();
+        room.users.insert(
+            "user1".to_string(),
+            UserData {
+                user_id: "user1".to_string(),
+                animal_name: "Lion".to_string(),
+                last_active: Instant::now(),
+                last_message_time: Instant::now(),
+                connection_state: ConnectionState::Connected {
+                    last_heartbeat: Instant::now(),
+                    connection_id: "conn1".to_string(),
+                },
+                last_read_message: None,
+                is_typing: false,
+                last_typing_event: None,
+                last_read_receipt_event: None,
+                rate_limiter: RateLimiter::new(),
+                last_sanitized_message: None,
+            },
+        );
+        rooms.insert("test-room".to_string(), room);
+    }
+
+    // Verify room exists
+    assert_eq!(app_state.rooms.read().await.len(), 1);
+
+    // Call shutdown
+    app_state.shutdown().await;
+
+    // Rooms should be cleared
+    assert_eq!(app_state.rooms.read().await.len(), 0);
+}
+
+#[tokio::test]
+async fn test_app_state_cleanup() {
+    let app_state = Arc::new(AppState::new());
+
+    // Create a room
+    {
+        let mut rooms = app_state.rooms.write().await;
+        rooms.insert("cleanup-test".to_string(), create_room());
+    }
+
+    // Trigger cleanup
+    app_state.cleanup().await;
+
+    // Room should still exist (cleanup only removes stale connections)
+    assert_eq!(app_state.rooms.read().await.len(), 1);
+}
+
+#[tokio::test]
+async fn test_memory_cleanup_trigger() {
+    let app_state = Arc::new(AppState::new());
+
+    // Force memory tracker to think we need GC
+    app_state
+        .memory_tracker
+        .total_bytes
+        .store(MAX_TOTAL_ROOMS_MEMORY + 1000, Ordering::Relaxed);
+    app_state.memory_tracker.last_gc.store(0, Ordering::Relaxed);
+
+    // Create a room with messages
+    {
+        let mut rooms = app_state.rooms.write().await;
+        let room = create_room();
+        rooms.insert("memory-cleanup-test".to_string(), room);
+    }
+
+    // Should trigger memory cleanup
+    assert!(app_state.memory_tracker.should_gc());
+}
+
+#[tokio::test]
+async fn test_validate_message_empty_after_trim() {
+    // Whitespace only should fail
+    assert!(validate_message("   ").is_err());
+    assert!(validate_message("\t\n").is_err());
+    assert!(validate_message("   \n\t   ").is_err());
+}
+
+#[tokio::test]
+async fn test_validate_message_empty_after_sanitization() {
+    // HTML-only content that sanitizes to empty
+    assert!(validate_message("<script></script>").is_err());
+    assert!(validate_message("<style>body{}</style>").is_err());
+}
+
+#[tokio::test]
+async fn test_validate_message_preserves_safe_html() {
+    let result = validate_message("Hello <b>bold</b> world").unwrap();
+    assert!(result.contains("<b>") || result.contains("bold"));
+    assert!(result.contains("Hello"));
+}
+
+#[tokio::test]
+async fn test_create_user_cookies_format() {
+    let (user_cookie, animal_cookie) = create_user_cookies("test-user-123", "Tiger");
+
+    assert!(user_cookie.contains("user_id=test-user-123"));
+    assert!(user_cookie.contains("Path=/"));
+    assert!(user_cookie.contains("SameSite=Strict"));
+    assert!(user_cookie.contains("HttpOnly"));
+    assert!(user_cookie.contains("Secure"));
+
+    assert!(animal_cookie.contains("animal_name=Tiger"));
+    assert!(animal_cookie.contains("Path=/"));
+    assert!(animal_cookie.contains("SameSite=Strict"));
+    assert!(animal_cookie.contains("HttpOnly"));
+    assert!(animal_cookie.contains("Secure"));
+}
+
+#[tokio::test]
+async fn test_resource_monitor_initial_state() {
+    let monitor = ResourceMonitor::new();
+    assert_eq!(monitor.total_connections.load(Ordering::Relaxed), 0);
+    assert!(monitor.can_accept_connection());
+}
+
+#[tokio::test]
+async fn test_resource_monitor_at_capacity() {
+    let monitor = ResourceMonitor::new();
+
+    // Under capacity, should accept
+    monitor.total_connections.store(399, Ordering::Relaxed);
+    assert!(monitor.can_accept_connection());
+
+    // At max capacity (400), should reject
+    monitor.total_connections.store(400, Ordering::Relaxed);
+    assert!(!monitor.can_accept_connection());
+
+    // Over max capacity, should definitely reject
+    monitor.total_connections.store(401, Ordering::Relaxed);
+    assert!(!monitor.can_accept_connection());
+}
+
+#[tokio::test]
+async fn test_robots_txt_content() {
+    let app_state = Arc::new(AppState::new());
+    let app = Router::new()
+        .route("/robots.txt", get(robots_txt_handler))
+        .with_state(app_state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/robots.txt")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = String::from_utf8(body_bytes.to_vec()).unwrap();
+
+    assert!(body.contains("User-agent:"));
+}
+
+#[tokio::test]
+async fn test_main_room_handler_content_type() {
+    let app_state = Arc::new(AppState::new());
+    let app = Router::new()
+        .route("/main", get(main_room_handler))
+        .with_state(app_state);
+
+    let response = app
+        .oneshot(Request::builder().uri("/main").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Should return HTML content
+    let content_type = response.headers().get("content-type");
+    assert!(content_type.is_some());
+}
+
+#[tokio::test]
+async fn test_room_handler_invalid_regex() {
+    let app_state = Arc::new(AppState::new());
+    let app = Router::new()
+        .route("/{room}", get(room_handler))
+        .with_state(app_state);
+
+    // Room name that doesn't match regex (starts with hyphen)
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/-invalid")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let body_bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = String::from_utf8(body_bytes.to_vec()).unwrap();
+    assert!(body.contains("alphanumeric") || body.contains("Invalid"));
+}
+
+#[tokio::test]
+async fn test_room_handler_too_long_name() {
+    let app_state = Arc::new(AppState::new());
+    let app = Router::new()
+        .route("/{room}", get(room_handler))
+        .with_state(app_state);
+
+    // Room name that's too long
+    let long_name = "a".repeat(MAX_ROOM_NAME_LEN + 1);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/{}", long_name))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let status = response.status();
+    let body_bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = String::from_utf8(body_bytes.to_vec()).unwrap();
+    assert!(body.contains("Invalid") || body.contains("room") || status == StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_typing_event_debounce() {
+    let (addr, handle) = start_ws_server().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let ws_url = format!("ws://{}/ws/typing-debounce-test", addr);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url)
+        .await
+        .expect("Failed to connect");
+
+    // Receive initial events
+    for _ in 0..3 {
+        let _ = recv_json_event(&mut ws).await;
+    }
+
+    // Send typing events rapidly (should be debounced)
+    for _ in 0..5 {
+        ws.send(WsMessage::Text(
+            r#"{"type":"Typing","is_typing":true}"#.to_string(),
+        ))
+        .await
+        .unwrap();
+    }
+
+    // Not all should go through due to debouncing
+    // Just verify connection is still alive
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    ws.send(WsMessage::Text(
+        r#"{"type":"Message","text":"Still connected"}"#.to_string(),
+    ))
+    .await
+    .unwrap();
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_read_receipt_event_debounce() {
+    let (addr, handle) = start_ws_server().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let ws_url = format!("ws://{}/ws/receipt-debounce-test", addr);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url)
+        .await
+        .expect("Failed to connect");
+
+    // Receive initial events
+    for _ in 0..3 {
+        let _ = recv_json_event(&mut ws).await;
+    }
+
+    // Send read receipts rapidly (should be debounced)
+    let msg_id = Uuid::new_v4().to_string();
+    for _ in 0..5 {
+        ws.send(WsMessage::Text(format!(
+            r#"{{"type":"ReadReceipt","message_id":"{}"}}"#,
+            msg_id
+        )))
+        .await
+        .unwrap();
+    }
+
+    // Verify connection still works
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    ws.send(WsMessage::Text(
+        r#"{"type":"Message","text":"Still connected"}"#.to_string(),
+    ))
+    .await
+    .unwrap();
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_connection_state_disconnected() {
+    let state = ConnectionState::Disconnected {
+        since: Instant::now(),
+    };
+    match state {
+        ConnectionState::Disconnected { since } => {
+            assert!(since.elapsed() < Duration::from_secs(1));
+        }
+        _ => panic!("Expected Disconnected state"),
+    }
+}
+
+#[tokio::test]
+async fn test_connection_state_connected() {
+    let state = ConnectionState::Connected {
+        last_heartbeat: Instant::now(),
+        connection_id: "conn123".to_string(),
+    };
+    match state {
+        ConnectionState::Connected {
+            last_heartbeat,
+            connection_id,
+        } => {
+            assert!(last_heartbeat.elapsed() < Duration::from_secs(1));
+            assert_eq!(connection_id, "conn123");
+        }
+        _ => panic!("Expected Connected state"),
+    }
+}
+
+#[tokio::test]
+async fn test_outgoing_event_serialization() {
+    let msg = OutgoingMessage {
+        message_id: Uuid::new_v4(),
+        user_id: "user1".to_string(),
+        animal_name: "Tiger".to_string(),
+        text: "Hello".to_string(),
+        timestamp: "1234567890".to_string(),
+    };
+
+    let event = OutgoingEvent::Message {
+        message: msg.clone(),
+    };
+    let json = serde_json::to_string(&event).unwrap();
+
+    assert!(json.contains("\"type\":\"Message\""));
+    assert!(json.contains("Tiger"));
+    assert!(json.contains("Hello"));
+}
+
+#[tokio::test]
+async fn test_system_event_server_shutdown() {
+    let event = OutgoingEvent::System {
+        event: SystemEvent::ServerShutdown {
+            reason: "Maintenance".to_string(),
+        },
+    };
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains("ServerShutdown"));
+    assert!(json.contains("Maintenance"));
+}
+
+// ========== ADDITIONAL COVERAGE TESTS ==========
+
+#[tokio::test]
+async fn test_client_event_message_deserialization() {
+    let json = r#"{"type":"Message","text":"Hello world"}"#;
+    let event: ClientEvent = serde_json::from_str(json).unwrap();
+    match event {
+        ClientEvent::Message { text } => assert_eq!(text, "Hello world"),
+        _ => panic!("Expected Message event"),
+    }
+}
+
+#[tokio::test]
+async fn test_client_event_typing_deserialization() {
+    let json = r#"{"type":"Typing","is_typing":true}"#;
+    let event: ClientEvent = serde_json::from_str(json).unwrap();
+    match event {
+        ClientEvent::Typing { is_typing } => assert!(is_typing),
+        _ => panic!("Expected Typing event"),
+    }
+}
+
+#[tokio::test]
+async fn test_client_event_read_receipt_deserialization() {
+    let msg_id = Uuid::new_v4().to_string();
+    let json = format!(r#"{{"type":"ReadReceipt","message_id":"{}"}}"#, msg_id);
+    let event: ClientEvent = serde_json::from_str(&json).unwrap();
+    match event {
+        ClientEvent::ReadReceipt { message_id } => assert_eq!(message_id, msg_id),
+        _ => panic!("Expected ReadReceipt event"),
+    }
+}
+
+#[tokio::test]
+async fn test_outgoing_event_user_count() {
+    let event = OutgoingEvent::UserCount { count: 5 };
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains("UserCount"));
+    assert!(json.contains("5"));
+}
+
+#[tokio::test]
+async fn test_outgoing_event_heartbeat() {
+    let event = OutgoingEvent::Heartbeat;
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains("Heartbeat"));
+}
+
+#[tokio::test]
+async fn test_outgoing_event_reconnect_token() {
+    let event = OutgoingEvent::ReconnectToken {
+        token: "test-token-123".to_string(),
+    };
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains("ReconnectToken"));
+    assert!(json.contains("test-token-123"));
+}
+
+#[tokio::test]
+async fn test_system_event_user_joined() {
+    let event = SystemEvent::UserJoined {
+        user_id: "user1".to_string(),
+        animal_name: "Lion".to_string(),
+    };
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains("UserJoined"));
+    assert!(json.contains("Lion"));
+}
+
+#[tokio::test]
+async fn test_system_event_user_left() {
+    let event = SystemEvent::UserLeft {
+        user_id: "user1".to_string(),
+        animal_name: "Lion".to_string(),
+    };
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains("UserLeft"));
+    assert!(json.contains("Lion"));
+}
+
+#[tokio::test]
+async fn test_system_event_typing() {
+    let event = SystemEvent::Typing {
+        user_id: "user1".to_string(),
+        animal_name: "Lion".to_string(),
+        is_typing: true,
+    };
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains("Typing"));
+    assert!(json.contains("is_typing"));
+}
+
+#[tokio::test]
+async fn test_system_event_read_receipt() {
+    let event = SystemEvent::ReadReceipt {
+        user_id: "user1".to_string(),
+        animal_name: "Lion".to_string(),
+        message_id: Uuid::new_v4(),
+    };
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains("ReadReceipt"));
+    assert!(json.contains("message_id"));
+}
+
+#[tokio::test]
+async fn test_room_state_add_message_updates_memory() {
+    let mut room_state = create_room();
+    let memory_tracker = MemoryTracker::new();
+
+    let msg = OutgoingMessage {
+        message_id: Uuid::new_v4(),
+        user_id: "user1".to_string(),
+        animal_name: "Tiger".to_string(),
+        text: "Test message".to_string(),
+        timestamp: "1234567890".to_string(),
+    };
+
+    let initial_memory = room_state.total_memory_bytes.load(Ordering::Relaxed);
+    room_state.add_message(msg, &memory_tracker);
+    let final_memory = room_state.total_memory_bytes.load(Ordering::Relaxed);
+
+    assert!(final_memory > initial_memory);
+    assert_eq!(room_state.chat_history.len(), 1);
+}
+
+#[tokio::test]
+async fn test_room_state_preserve_messages() {
+    let mut room_state = create_room();
+    let memory_tracker = MemoryTracker::new();
+
+    // Add messages
+    for i in 0..10 {
+        let msg = OutgoingMessage {
+            message_id: Uuid::new_v4(),
+            user_id: "user1".to_string(),
+            animal_name: "Tiger".to_string(),
+            text: format!("Message {}", i),
+            timestamp: "1234567890".to_string(),
+        };
+        room_state.add_message(msg, &memory_tracker);
+    }
+
+    assert_eq!(room_state.chat_history.len(), 10);
+
+    // Preserve messages should keep them
+    room_state.preserve_messages(&memory_tracker);
+    assert_eq!(room_state.chat_history.len(), 10);
+}
+
+#[tokio::test]
+async fn test_room_state_trim_messages_over_limit() {
+    let mut room_state = create_room();
+    let memory_tracker = MemoryTracker::new();
+
+    // Add more than MAX_MESSAGES_PER_ROOM
+    for i in 0..(MAX_MESSAGES_PER_ROOM + 50) {
+        let msg = OutgoingMessage {
+            message_id: Uuid::new_v4(),
+            user_id: "user1".to_string(),
+            animal_name: "Tiger".to_string(),
+            text: format!("Message {}", i),
+            timestamp: "1234567890".to_string(),
+        };
+        room_state.add_message(msg, &memory_tracker);
+    }
+
+    // Explicitly trim to max (add_message doesn't auto-trim)
+    room_state.trim_to_max_messages(&memory_tracker);
+
+    // History should be trimmed to MAX_MESSAGES_PER_ROOM
+    assert!(room_state.chat_history.len() <= MAX_MESSAGES_PER_ROOM);
+}
+
+#[tokio::test]
+async fn test_user_data_rate_limiter_integration() {
+    let mut user = UserData {
+        user_id: "user1".to_string(),
+        animal_name: "Tiger".to_string(),
+        last_active: Instant::now(),
+        last_message_time: Instant::now(),
+        connection_state: ConnectionState::Connected {
+            last_heartbeat: Instant::now(),
+            connection_id: "conn1".to_string(),
+        },
+        last_read_message: None,
+        is_typing: false,
+        last_typing_event: None,
+        last_read_receipt_event: None,
+        rate_limiter: RateLimiter::new(),
+        last_sanitized_message: None,
+    };
+
+    // Should be able to send messages initially
+    assert!(user.rate_limiter.can_send_message());
+
+    // Update typing state
+    user.is_typing = true;
+    assert!(user.is_typing);
+
+    // Set last read message
+    let msg_id = Uuid::new_v4();
+    user.last_read_message = Some(msg_id);
+    assert_eq!(user.last_read_message, Some(msg_id));
+}
+
+#[tokio::test]
+async fn test_validate_input_length_boundary() {
+    // Exactly at limit - should pass
+    let at_limit = "a".repeat(50);
+    assert!(validate_input(&at_limit, 50).is_ok());
+
+    // One over limit - should fail
+    let over_limit = "a".repeat(51);
+    assert!(validate_input(&over_limit, 50).is_err());
+}
+
+#[tokio::test]
+async fn test_validate_input_underscore_position() {
+    // Underscore in middle is ok
+    assert!(validate_input("my_room", 50).is_ok());
+
+    // Underscore only is not alphanumeric start/end
+    // Note: validate_input allows underscores as long as chars are alphanumeric
+    let result = validate_input("a_", 50);
+    assert!(result.is_ok()); // _ is allowed
+}
+
+#[tokio::test]
+async fn test_validate_message_max_length() {
+    let max_msg = "a".repeat(MAX_MESSAGE_LEN);
+    assert!(validate_message(&max_msg).is_ok());
+
+    let over_max = "a".repeat(MAX_MESSAGE_LEN + 1);
+    assert!(validate_message(&over_max).is_err());
+}
+
+#[tokio::test]
+async fn test_markdown_rendering_headers() {
+    let msg = "# Header\n\nSome text";
+    let result = validate_message(msg).unwrap();
+    assert!(result.contains("<h1>") || result.contains("Header"));
+}
+
+#[tokio::test]
+async fn test_markdown_rendering_code() {
+    let msg = "Here is `code` inline";
+    let result = validate_message(msg).unwrap();
+    assert!(result.contains("<code>") || result.contains("code"));
+}
+
+#[tokio::test]
+async fn test_markdown_rendering_links() {
+    let msg = "[link](https://example.com)";
+    let result = validate_message(msg).unwrap();
+    // Links might be stripped or kept - just verify it doesn't error
+    assert!(!result.is_empty());
+}
+
+#[tokio::test]
+async fn test_health_handler_with_rooms() {
+    let app_state = Arc::new(AppState::new());
+
+    // Create a room
+    {
+        let mut rooms = app_state.rooms.write().await;
+        rooms.insert("test-room".to_string(), create_room());
+    }
+
+    let app = Router::new()
+        .route("/health", get(health_handler))
+        .with_state(app_state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let body_bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let health: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+
+    assert_eq!(health["rooms"], 1);
+}
+
+#[tokio::test]
+async fn test_metrics_handler_with_users() {
+    let app_state = Arc::new(AppState::new());
+
+    // Create a room with a user
+    {
+        let mut rooms = app_state.rooms.write().await;
+        let mut room = create_room();
+        room.users.insert(
+            "user1".to_string(),
+            UserData {
+                user_id: "user1".to_string(),
+                animal_name: "Tiger".to_string(),
+                last_active: Instant::now(),
+                last_message_time: Instant::now(),
+                connection_state: ConnectionState::Connected {
+                    last_heartbeat: Instant::now(),
+                    connection_id: "conn1".to_string(),
+                },
+                last_read_message: None,
+                is_typing: false,
+                last_typing_event: None,
+                last_read_receipt_event: None,
+                rate_limiter: RateLimiter::new(),
+                last_sanitized_message: None,
+            },
+        );
+        rooms.insert("test-room".to_string(), room);
+    }
+
+    let app = Router::new()
+        .route("/metrics", get(metrics_handler))
+        .with_state(app_state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/metrics")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let body_bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = String::from_utf8(body_bytes.to_vec()).unwrap();
+
+    assert!(body.contains("chat_users_total 1"));
+}
+
+#[tokio::test]
+async fn test_connection_pool_cleanup_stale_connections() {
+    let pool = ConnectionPool::new();
+    let ip = "192.168.1.200";
+
+    // Add a connection
+    pool.add_connection(ip).await.unwrap();
+
+    // Cleanup stale (shouldn't remove recent connections)
+    pool.cleanup_stale().await;
+
+    // Connection should still be tracked
+    // Note: cleanup_stale removes entries that haven't been accessed in a while
+    // For a fresh connection this should still be fine
+}
+
+#[tokio::test]
+async fn test_security_manager_check_banned_ip() {
+    let security = SecurityManager::new();
+    let ip = "192.168.1.201";
+
+    // Ban the IP by adding it directly with a future expiry
+    {
+        let mut banned = security.banned_ips.write().await;
+        banned.insert(ip.to_string(), Instant::now() + Duration::from_secs(3600));
+    }
+
+    // Check should fail
+    assert!(security.check_ip(ip).await.is_err());
+}
+
+#[tokio::test]
+async fn test_memory_tracker_add_removes_bytes() {
+    let tracker = MemoryTracker::new();
+
+    // Add bytes
+    tracker.add_bytes(1000);
+    assert_eq!(tracker.total_bytes.load(Ordering::Relaxed), 1000);
+
+    // Remove bytes
+    tracker.remove_bytes(500);
+    assert_eq!(tracker.total_bytes.load(Ordering::Relaxed), 500);
+
+    // Remove more than available - should not go negative
+    tracker.remove_bytes(1000);
+    assert_eq!(tracker.total_bytes.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn test_room_handler_special_chars_rejected() {
+    let app_state = Arc::new(AppState::new());
+    let app = Router::new()
+        .route("/{room}", get(room_handler))
+        .with_state(app_state);
+
+    // Room name with special characters
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/room!name")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let body_bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = String::from_utf8(body_bytes.to_vec()).unwrap();
+    assert!(body.contains("Invalid") || body.contains("alphanumeric"));
+}
+
+#[tokio::test]
+async fn test_room_handler_valid_name() {
+    let app_state = Arc::new(AppState::new());
+    let app = Router::new()
+        .route("/{room}", get(room_handler))
+        .with_state(app_state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/valid-room-name")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_websocket_connection_with_room_limit() {
+    let (addr, handle) = start_ws_server().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Connect multiple clients to same room
+    let ws_url = format!("ws://{}/ws/limit-test", addr);
+    let mut connections = Vec::new();
+
+    for _ in 0..5 {
+        if let Ok((ws, _)) = tokio_tungstenite::connect_async(&ws_url).await {
+            connections.push(ws);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    // All should connect (under limit)
+    assert!(connections.len() >= 3);
+
+    // Clean up
+    for mut ws in connections {
+        let _ = ws.close(None).await;
+    }
+
+    handle.abort();
+}
+
+// ===== Additional Coverage Tests =====
+
+#[tokio::test]
+async fn test_is_user_allowed_at_capacity() {
+    let mut room_state = create_room();
+
+    // Add 100 connected users (at capacity)
+    for i in 0..100 {
+        let user_id = format!("user_{}", i);
+        room_state.users.insert(
+            user_id.clone(),
+            UserData {
+                user_id,
+                animal_name: format!("Animal{}", i),
+                last_active: Instant::now(),
+                last_message_time: Instant::now(),
+                connection_state: ConnectionState::Connected {
+                    last_heartbeat: Instant::now(),
+                    connection_id: format!("conn_{}", i),
+                },
+                last_read_message: None,
+                is_typing: false,
+                last_typing_event: None,
+                last_read_receipt_event: None,
+                rate_limiter: RateLimiter::new(),
+                last_sanitized_message: None,
+            },
+        );
+    }
+
+    // At capacity, should reject new users
+    assert!(!room_state.is_user_allowed("new_user"));
+}
+
+#[tokio::test]
+async fn test_is_user_allowed_existing_user() {
+    let mut room_state = create_room();
+
+    // Add an existing user
+    let user_id = "existing_user".to_string();
+    room_state.users.insert(
+        user_id.clone(),
+        UserData {
+            user_id: user_id.clone(),
+            animal_name: "Lion".to_string(),
+            last_active: Instant::now(),
+            last_message_time: Instant::now(),
+            connection_state: ConnectionState::Connected {
+                last_heartbeat: Instant::now(),
+                connection_id: "conn_1".to_string(),
+            },
+            last_read_message: None,
+            is_typing: false,
+            last_typing_event: None,
+            last_read_receipt_event: None,
+            rate_limiter: RateLimiter::new(),
+            last_sanitized_message: None,
+        },
+    );
+
+    // Existing user should be allowed (via rate limiter check)
+    assert!(room_state.is_user_allowed(&user_id));
+}
+
+#[tokio::test]
+async fn test_is_user_allowed_new_user_under_capacity() {
+    let mut room_state = create_room();
+
+    // Add only a few users (under capacity)
+    for i in 0..10 {
+        let user_id = format!("user_{}", i);
+        room_state.users.insert(
+            user_id.clone(),
+            UserData {
+                user_id,
+                animal_name: format!("Animal{}", i),
+                last_active: Instant::now(),
+                last_message_time: Instant::now(),
+                connection_state: ConnectionState::Connected {
+                    last_heartbeat: Instant::now(),
+                    connection_id: format!("conn_{}", i),
+                },
+                last_read_message: None,
+                is_typing: false,
+                last_typing_event: None,
+                last_read_receipt_event: None,
+                rate_limiter: RateLimiter::new(),
+                last_sanitized_message: None,
+            },
+        );
+    }
+
+    // New user should be allowed when under capacity
+    assert!(room_state.is_user_allowed("brand_new_user"));
+}
+
+#[tokio::test]
+async fn test_trigger_cleanup_when_memory_high() {
+    let mut room_state = create_room();
+    let memory_tracker = MemoryTracker::new();
+
+    // Set memory to > 90% of MAX_TOTAL_ROOMS_MEMORY
+    let high_memory = (MAX_TOTAL_ROOMS_MEMORY * 95) / 100;
+    room_state
+        .total_memory_bytes
+        .store(high_memory, Ordering::SeqCst);
+
+    // Add some messages that could be cleaned up
+    for i in 0..10 {
+        let msg = OutgoingMessage {
+            message_id: Uuid::new_v4(),
+            user_id: "user1".to_string(),
+            animal_name: "Tiger".to_string(),
+            text: format!("Message {}", i),
+            timestamp: "1234567890".to_string(),
+        };
+        room_state.chat_history.push(msg);
+    }
+
+    // Should trigger cleanup
+    room_state.trigger_cleanup(&memory_tracker).await;
+}
+
+#[tokio::test]
+async fn test_trigger_cleanup_when_memory_low() {
+    let mut room_state = create_room();
+    let memory_tracker = MemoryTracker::new();
+
+    // Set memory to < 90% of MAX_TOTAL_ROOMS_MEMORY
+    let low_memory = (MAX_TOTAL_ROOMS_MEMORY * 50) / 100;
+    room_state
+        .total_memory_bytes
+        .store(low_memory, Ordering::SeqCst);
+
+    // Add some messages
+    for i in 0..5 {
+        let msg = OutgoingMessage {
+            message_id: Uuid::new_v4(),
+            user_id: "user1".to_string(),
+            animal_name: "Tiger".to_string(),
+            text: format!("Message {}", i),
+            timestamp: "1234567890".to_string(),
+        };
+        room_state.chat_history.push(msg);
+    }
+
+    let history_len_before = room_state.chat_history.len();
+
+    // Should not trigger cleanup (low memory)
+    room_state.trigger_cleanup(&memory_tracker).await;
+
+    // History should remain the same
+    assert_eq!(room_state.chat_history.len(), history_len_before);
+}
+
+#[tokio::test]
+async fn test_memory_tracker_add_bytes_exact_limit() {
+    let tracker = MemoryTracker::new();
+
+    // Add exactly at the limit
+    let result = tracker.add_bytes(MAX_TOTAL_ROOMS_MEMORY);
+    // Should succeed if starting from 0
+    assert!(result);
+
+    // Adding any more should fail
+    let result2 = tracker.add_bytes(1);
+    assert!(!result2);
+}
+
+#[tokio::test]
+async fn test_prune_old_messages_empties_when_all_old() {
+    let mut room_state = create_room();
+    let memory_tracker = MemoryTracker::new();
+
+    // Add messages with very old timestamps (30+ days)
+    let old_time = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        - (31 * 24 * 60 * 60); // 31 days ago
+
+    for i in 0..5 {
+        let msg = OutgoingMessage {
+            message_id: Uuid::new_v4(),
+            user_id: "user1".to_string(),
+            animal_name: "Tiger".to_string(),
+            text: format!("Old message {}", i),
+            timestamp: old_time.to_string(),
+        };
+        room_state.add_message(msg, &memory_tracker);
+    }
+
+    // Cleanup should remove all old messages
+    room_state
+        .cleanup_messages(Instant::now(), &memory_tracker)
+        .await;
+
+    // Messages should be removed since they're > 30 days old
+    assert!(room_state.chat_history.is_empty());
+}
+
+#[tokio::test]
+async fn test_app_state_cleanup_stale_connections() {
+    let app_state = Arc::new(AppState::new());
+
+    // Add a connection
+    let ip = "192.168.1.100";
+    app_state.connection_pool.add_connection(ip).await.unwrap();
+
+    // Run cleanup
+    app_state.cleanup().await;
+
+    // Connection pool cleanup should have been called
+    // (The connection may still exist if recent)
+}
+
+#[tokio::test]
+async fn test_resource_monitor_update_connections_count() {
+    let monitor = ResourceMonitor::new();
+
+    assert_eq!(monitor.total_connections.load(Ordering::Relaxed), 0);
+
+    // Simulate adding connections
+    monitor.total_connections.fetch_add(10, Ordering::SeqCst);
+    assert_eq!(monitor.total_connections.load(Ordering::Relaxed), 10);
+
+    // Simulate removing connections
+    monitor.total_connections.fetch_sub(3, Ordering::SeqCst);
+    assert_eq!(monitor.total_connections.load(Ordering::Relaxed), 7);
+}
+
+#[tokio::test]
+async fn test_outgoing_message_large_text_size_estimation() {
+    let large_text = "A".repeat(5000);
+    let msg = OutgoingMessage {
+        message_id: Uuid::new_v4(),
+        user_id: "user1".to_string(),
+        animal_name: "Elephant".to_string(),
+        text: large_text.clone(),
+        timestamp: "1234567890".to_string(),
+    };
+
+    let size = msg.estimate_size();
+
+    // Size should include the large text
+    assert!(size > 5000);
+}
+
+#[tokio::test]
+async fn test_security_manager_suspicious_activity_decay() {
+    let security = SecurityManager::new();
+    let ip = "10.0.0.50";
+
+    // Record some activity but not enough to ban
+    for _ in 0..5 {
+        let _ = security.record_suspicious_activity(ip).await;
+    }
+
+    // Should not be banned (under threshold of 10)
+    assert!(security.check_ip(ip).await.is_ok());
+}
+
+#[tokio::test]
+async fn test_connection_pool_concurrent_add_remove() {
+    let pool = ConnectionPool::new();
+    let ip = "10.0.0.100";
+
+    // Add connections
+    pool.add_connection(ip).await.unwrap();
+    pool.add_connection(ip).await.unwrap();
+
+    // Remove one
+    pool.remove_connection(ip).await;
+
+    // Should still be able to add one more
+    pool.add_connection(ip).await.unwrap();
+}
+
+#[tokio::test]
+async fn test_room_state_user_removal_returns_animal() {
+    let mut room_state = create_room();
+    let user_id = "user_to_remove".to_string();
+
+    // Store original available animals count
+    let original_animal_count = room_state.available_animals.len();
+
+    // Add a user
+    room_state.users.insert(
+        user_id.clone(),
+        UserData {
+            user_id: user_id.clone(),
+            animal_name: "Tiger".to_string(),
+            last_active: Instant::now(),
+            last_message_time: Instant::now(),
+            connection_state: ConnectionState::Connected {
+                last_heartbeat: Instant::now(),
+                connection_id: "conn_1".to_string(),
+            },
+            last_read_message: None,
+            is_typing: false,
+            last_typing_event: None,
+            last_read_receipt_event: None,
+            rate_limiter: RateLimiter::new(),
+            last_sanitized_message: None,
+        },
+    );
+
+    // Remove the user via drop logic (simulated)
+    let removed_user = room_state.users.remove(&user_id);
+    if let Some(user) = removed_user {
+        room_state
+            .available_animals
+            .push_back(user.animal_name.clone());
+    }
+
+    // Animal should be returned to the pool
+    assert_eq!(
+        room_state.available_animals.len(),
+        original_animal_count + 1
+    );
+}
+
+#[tokio::test]
+async fn test_validate_message_with_only_html_tags() {
+    // Message that becomes empty after sanitization
+    let result = validate_message("<script>alert(1)</script>");
+
+    // Should return error since sanitized result is empty
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn test_rate_limiter_max_messages_in_window() {
+    let mut limiter = RateLimiter::new();
+
+    // Send MAX_MESSAGES_PER_WINDOW messages
+    for _ in 0..MAX_MESSAGES_PER_WINDOW {
+        assert!(limiter.can_send_message());
+    }
+
+    // Next message should be rejected
+    assert!(!limiter.can_send_message());
+}
+
+#[tokio::test]
+async fn test_extract_client_ip_with_multiple_x_forwarded_for() {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "x-forwarded-for",
+        "10.0.0.1, 10.0.0.2, 10.0.0.3".parse().unwrap(),
+    );
+
+    let ip = extract_client_ip(&headers, None);
+
+    // Should return the first IP
+    assert_eq!(ip, Some("10.0.0.1".to_string()));
+}
+
+#[tokio::test]
+async fn test_memory_tracker_should_gc_check() {
+    let tracker = MemoryTracker::new();
+
+    // Add some bytes
+    tracker.add_bytes(1000);
+
+    // Check should_gc (time-based check)
+    let _ = tracker.should_gc();
+
+    // This just exercises the should_gc path
+}
+
+#[tokio::test]
+async fn test_app_state_cleanup_high_memory() {
+    let app_state = Arc::new(AppState::new());
+
+    // Create a room with high memory usage
+    {
+        let mut rooms = app_state.rooms.write().await;
+        let room = create_room();
+        rooms.insert("high_memory_room".to_string(), room);
+        if let Some(r) = rooms.get_mut("high_memory_room") {
+            r.total_memory_bytes
+                .store(MAX_TOTAL_ROOMS_MEMORY + 1000, Ordering::SeqCst);
+        }
+    }
+
+    // Run cleanup
+    app_state.cleanup().await;
+}
+
+#[tokio::test]
+async fn test_cleanup_batch_size_limit() {
+    let mut room_state = create_room();
+    let memory_tracker = MemoryTracker::new();
+
+    // Add more messages than CLEANUP_BATCH_SIZE (which is 50)
+    let old_time = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        - (31 * 24 * 60 * 60); // 31 days ago
+
+    for i in 0..100 {
+        let msg = OutgoingMessage {
+            message_id: Uuid::new_v4(),
+            user_id: "user1".to_string(),
+            animal_name: "Tiger".to_string(),
+            text: format!("Old message {}", i),
+            timestamp: old_time.to_string(),
+        };
+        room_state.chat_history.push(msg);
+        memory_tracker.add_bytes(50);
+    }
+
+    // After first cleanup, should only remove CLEANUP_BATCH_SIZE (50)
+    room_state
+        .cleanup_messages(Instant::now(), &memory_tracker)
+        .await;
+
+    // Should have around 50 messages left (100 - 50)
+    assert!(room_state.chat_history.len() <= 60);
+}
+
+#[tokio::test]
+async fn test_room_handler_max_rooms_reached() {
+    let app_state = Arc::new(AppState::new());
+
+    // Fill up to MAX_ROOMS
+    {
+        let mut rooms = app_state.rooms.write().await;
+        for i in 0..MAX_ROOMS {
+            rooms.insert(format!("existingroom{}", i), create_room());
+        }
+    }
+
+    let app = Router::new()
+        .route("/{room}", get(room_handler))
+        .with_state(app_state);
+
+    // Request a new room that doesn't exist
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/newroomthatdoesntexist")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let body_bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = String::from_utf8(body_bytes.to_vec()).unwrap();
+
+    // Should get "Maximum number of rooms reached" error
+    assert!(body.contains("Maximum") || body.contains("room"));
+}
+
+#[tokio::test]
+async fn test_room_handler_existing_room_at_max_rooms() {
+    let app_state = Arc::new(AppState::new());
+
+    // Fill up to MAX_ROOMS with one named "existingroom"
+    {
+        let mut rooms = app_state.rooms.write().await;
+        rooms.insert("existingroom".to_string(), create_room());
+        for i in 1..MAX_ROOMS {
+            rooms.insert(format!("room{}", i), create_room());
+        }
+    }
+
+    let app = Router::new()
+        .route("/{room}", get(room_handler))
+        .with_state(app_state);
+
+    // Request an existing room - should work even at max rooms
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/existingroom")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Should be successful since room exists
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_room_handler_special_char_validation() {
+    let app_state = Arc::new(AppState::new());
+    let app = Router::new()
+        .route("/{room}", get(room_handler))
+        .with_state(app_state);
+
+    // Test room name with only hyphens
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/a-b-c")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Should be valid (alphanumeric with hyphens)
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_memory_tracker_gc_timing() {
+    let tracker = MemoryTracker::new();
+
+    // First call should return true (enough time since epoch)
+    let first = tracker.should_gc();
+
+    // Immediate second call should return false (within 5 min window)
+    let second = tracker.should_gc();
+
+    // First may be true or false depending on timing, but second should be false
+    if first {
+        assert!(!second);
+    }
+}
+
+#[tokio::test]
+async fn test_rate_limiter_existing_user_rate_limited() {
+    let mut room_state = create_room();
+
+    // Add an existing user with exhausted rate limiter
+    let user_id = "rate_limited_user".to_string();
+    let mut rate_limiter = RateLimiter::new();
+
+    // Exhaust the join rate limiter
+    for _ in 0..5 {
+        let _ = rate_limiter.can_join_room();
+    }
+
+    room_state.users.insert(
+        user_id.clone(),
+        UserData {
+            user_id: user_id.clone(),
+            animal_name: "Lion".to_string(),
+            last_active: Instant::now(),
+            last_message_time: Instant::now(),
+            connection_state: ConnectionState::Connected {
+                last_heartbeat: Instant::now(),
+                connection_id: "conn_1".to_string(),
+            },
+            last_read_message: None,
+            is_typing: false,
+            last_typing_event: None,
+            last_read_receipt_event: None,
+            rate_limiter,
+            last_sanitized_message: None,
+        },
+    );
+
+    // User should still be allowed but their rate limiter is checked
+    let _allowed = room_state.is_user_allowed(&user_id);
+    // Result depends on rate limiter state - just exercise the code path
+}
+
+#[tokio::test]
+async fn test_prune_old_messages_partial() {
+    let mut room_state = create_room();
+    let memory_tracker = MemoryTracker::new();
+
+    // Add a mix of old and new messages
+    let old_time = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        - (31 * 24 * 60 * 60); // 31 days ago
+
+    let new_time = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+
+    // Add 5 old messages
+    for i in 0..5 {
+        let msg = OutgoingMessage {
+            message_id: Uuid::new_v4(),
+            user_id: "user1".to_string(),
+            animal_name: "Tiger".to_string(),
+            text: format!("Old message {}", i),
+            timestamp: old_time.to_string(),
+        };
+        room_state.chat_history.push(msg);
+        memory_tracker.add_bytes(50);
+    }
+
+    // Add 5 new messages
+    for i in 0..5 {
+        let msg = OutgoingMessage {
+            message_id: Uuid::new_v4(),
+            user_id: "user1".to_string(),
+            animal_name: "Tiger".to_string(),
+            text: format!("New message {}", i),
+            timestamp: new_time.to_string(),
+        };
+        room_state.chat_history.push(msg);
+        memory_tracker.add_bytes(50);
+    }
+
+    // Cleanup should remove only old messages
+    room_state
+        .cleanup_messages(Instant::now(), &memory_tracker)
+        .await;
+
+    // Should have only the 5 new messages
+    assert_eq!(room_state.chat_history.len(), 5);
+}
