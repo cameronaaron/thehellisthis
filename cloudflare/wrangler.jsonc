@@ -16,10 +16,8 @@
       "image": "../Dockerfile.cloudflare",
       "class_name": "InfiniteChatContainer",
       "name": "infinite-chat-container",
-      // Hobby tier: single instance to minimize memory costs
-      "max_instances": 1,
-      // Auto-sleep after 5 minutes of inactivity to save costs
-      "sleepAfter": 300
+      // Hobby tier: single instance to minimize memory costs (~$0.50-2/month)
+      "max_instances": 1
     }
   ],
   

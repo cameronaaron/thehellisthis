@@ -16,7 +16,7 @@ echo "📦 Installing dependencies..."
 npm ci
 
 echo "🚢 Deploying to Cloudflare Workers + Containers..."
-npx wrangler deploy --no-cache
+npx wrangler deploy
 
 echo "✅ Deployment complete!"
 echo "🌍 Live at: https://infinite-chat.cameronaaron1.workers.dev"
