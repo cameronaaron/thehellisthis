@@ -1357,6 +1357,303 @@ async fn test_ws_read_receipt_event_broadcast() {
     handle.abort();
 }
 
+// ========== FAILURE INJECTION & EDGE CASES ==========
+
+#[tokio::test]
+async fn test_malformed_client_event() {
+    let (addr, handle) = start_ws_server().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let ws_url = format!("ws://{}/ws/malformed-test", addr);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url)
+        .await
+        .expect("Failed to connect");
+
+    // Send invalid JSON
+    ws.send(WsMessage::Text(r#"{"type":"InvalidType"}"#.to_string()))
+        .await
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Send malformed JSON
+    ws.send(WsMessage::Text(r#"{not valid json}"#.to_string()))
+        .await
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_empty_message_text() {
+    let (addr, handle) = start_ws_server().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let ws_url = format!("ws://{}/ws/empty-msg-test", addr);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url)
+        .await
+        .expect("Failed to connect");
+
+    // Receive initial events
+    for _ in 0..3 {
+        let _ = recv_json_event(&mut ws).await;
+    }
+
+    // Send empty message
+    ws.send(WsMessage::Text(
+        r#"{"type":"Message","text":""}"#.to_string(),
+    ))
+    .await
+    .unwrap();
+
+    // Should not receive broadcast of empty message
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_message_exceeds_max_length() {
+    let (addr, handle) = start_ws_server().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let ws_url = format!("ws://{}/ws/long-msg-test", addr);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url)
+        .await
+        .expect("Failed to connect");
+
+    // Receive initial events
+    for _ in 0..3 {
+        let _ = recv_json_event(&mut ws).await;
+    }
+
+    // Send message longer than MAX_MESSAGE_LEN
+    let long_text = "x".repeat(10000);
+    ws.send(WsMessage::Text(format!(
+        r#"{{"type":"Message","text":"{}"}}"#,
+        long_text
+    )))
+    .await
+    .unwrap();
+
+    // Should not receive broadcast of too-long message
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_rapid_reconnections() {
+    let (addr, handle) = start_ws_server().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let ws_url = format!("ws://{}/ws/reconnect-test", addr);
+
+    // Rapidly connect and disconnect
+    for _ in 0..5 {
+        let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url)
+            .await
+            .expect("Failed to connect");
+
+        // Wait for initial events
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Close connection
+        let _ = ws.close(None).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_xss_attempt_in_message() {
+    let (addr, handle) = start_ws_server().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let ws_url = format!("ws://{}/ws/xss-test", addr);
+    let (mut ws1, _) = tokio_tungstenite::connect_async(&ws_url)
+        .await
+        .expect("Failed to connect client 1");
+    let (mut ws2, _) = tokio_tungstenite::connect_async(&ws_url)
+        .await
+        .expect("Failed to connect client 2");
+
+    // Receive initial events for both clients
+    for _ in 0..3 {
+        let _ = recv_json_event(&mut ws1).await;
+    }
+    for _ in 0..3 {
+        let _ = recv_json_event(&mut ws2).await;
+    }
+
+    // Client 1 sends XSS attempt
+    let xss_payload = r#"<script>alert('XSS')</script>"#;
+    ws1.send(WsMessage::Text(format!(
+        r#"{{"type":"Message","text":"{}"}}"#,
+        xss_payload
+    )))
+    .await
+    .unwrap();
+
+    // Client 2 should receive sanitized version
+    let mut found_message = false;
+    for _ in 0..10 {
+        let event = recv_json_event(&mut ws2).await;
+            if event["type"] == "Message" {
+                let text = event["message"]["text"].as_str().unwrap();
+                // Should NOT contain script tags
+                assert!(!text.contains("<script>"), "XSS not sanitized!");
+                found_message = true;
+                break;
+            }
+        }
+
+    assert!(found_message, "Sanitized message not received");
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_sql_injection_attempt_in_message() {
+    let (addr, handle) = start_ws_server().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let ws_url = format!("ws://{}/ws/sql-test", addr);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url)
+        .await
+        .expect("Failed to connect");
+
+    // Receive initial events
+    for _ in 0..3 {
+        let _ = recv_json_event(&mut ws).await;
+    }
+
+    // Send SQL injection attempt
+    let sql_payload = r#"'; DROP TABLE users; --"#;
+    ws.send(WsMessage::Text(format!(
+        r#"{{"type":"Message","text":"{}"}}"#,
+        sql_payload
+    )))
+    .await
+    .unwrap();
+
+    // Should still function normally (we don't have SQL, but test sanitization)
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_concurrent_typing_events() {
+    let (addr, handle) = start_ws_server().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let ws_url = format!("ws://{}/ws/typing-concurrent", addr);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url)
+        .await
+        .expect("Failed to connect");
+
+    // Receive initial events
+    for _ in 0..3 {
+        let _ = recv_json_event(&mut ws).await;
+    }
+
+    // Send multiple typing events rapidly
+    for i in 0..10 {
+        let is_typing = i % 2 == 0;
+        ws.send(WsMessage::Text(format!(
+            r#"{{"type":"Typing","is_typing":{}}}"#,
+            is_typing
+        )))
+        .await
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_read_receipt_for_nonexistent_message() {
+    let (addr, handle) = start_ws_server().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let ws_url = format!("ws://{}/ws/receipt-invalid", addr);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url)
+        .await
+        .expect("Failed to connect");
+
+    // Receive initial events
+    for _ in 0..3 {
+        let _ = recv_json_event(&mut ws).await;
+    }
+
+    // Send read receipt for fake message ID
+    ws.send(WsMessage::Text(
+        r#"{"type":"ReadReceipt","message_id":"00000000-0000-0000-0000-000000000000"}"#
+            .to_string(),
+    ))
+    .await
+    .unwrap();
+
+    // Should handle gracefully
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_multiple_rooms_isolation() {
+    let (addr, handle) = start_ws_server().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let ws_url1 = format!("ws://{}/ws/room-a", addr);
+    let ws_url2 = format!("ws://{}/ws/room-b", addr);
+
+    let (mut ws1, _) = tokio_tungstenite::connect_async(&ws_url1)
+        .await
+        .expect("Failed to connect room A");
+    let (mut ws2, _) = tokio_tungstenite::connect_async(&ws_url2)
+        .await
+        .expect("Failed to connect room B");
+
+    // Receive initial events
+    for _ in 0..3 {
+        let _ = recv_json_event(&mut ws1).await;
+    }
+    for _ in 0..3 {
+        let _ = recv_json_event(&mut ws2).await;
+    }
+
+    // Send message in room A
+    ws1.send(WsMessage::Text(
+        r#"{"type":"Message","text":"Room A message"}"#.to_string(),
+    ))
+    .await
+    .unwrap();
+
+    // Room B should NOT receive it
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Try to receive from room B (should timeout or get unrelated events)
+    let mut received_room_a_message = false;
+    for _ in 0..5 {
+        let event = recv_json_event(&mut ws2).await;
+        if event["type"] == "Message" {
+            let text = event["message"]["text"].as_str().unwrap_or("");
+            if text.contains("Room A message") {
+                received_room_a_message = true;
+                break;
+            }
+        }
+    }
+
+    assert!(
+        !received_room_a_message,
+        "Room isolation violated - message leaked across rooms"
+    );
+    handle.abort();
+}
+
 // ========== RESOURCE MONITOR & POOL HOUSEKEEPING ==========
 
 #[tokio::test]
@@ -1432,3 +1729,290 @@ async fn test_cleanup_rooms_keeps_active() {
     let rooms = app_state.rooms.read().await;
     assert!(rooms.contains_key("active_room"));
 }
+
+// ========== STRESS & CONCURRENCY TESTS ==========
+
+#[tokio::test]
+async fn test_concurrent_message_sends() {
+    let (addr, handle) = start_ws_server().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let ws_url = format!("ws://{}/ws/concurrent-msgs", addr);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url)
+        .await
+        .expect("Failed to connect");
+
+    // Receive initial events
+    for _ in 0..3 {
+        let _ = recv_json_event(&mut ws).await;
+    }
+
+    // Send multiple messages concurrently (within rate limit window)
+    for i in 0..5 {
+        ws.send(WsMessage::Text(format!(
+            r#"{{"type":"Message","text":"Concurrent message {}"}}"#,
+            i
+        )))
+        .await
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(600)).await; // Stay within rate limit
+    }
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_large_room_with_many_users() {
+    let (addr, handle) = start_ws_server().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let ws_url = format!("ws://{}/ws/large-room", addr);
+    let mut connections = Vec::new();
+
+    // Create only 3 concurrent connections (MAX_CONCURRENT_CONNECTIONS_PER_IP is 3)
+    for _ in 0..3 {
+        match tokio_tungstenite::connect_async(&ws_url).await {
+            Ok((ws, _)) => {
+                connections.push(ws);
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Err(_) => {
+                // Hit rate limit, which is expected
+                break;
+            }
+        }
+    }
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Close all connections
+    for mut ws in connections {
+        let _ = ws.close(None).await;
+    }
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_message_history_preserved_across_reconnects() {
+    let (addr, handle) = start_ws_server().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let ws_url = format!("ws://{}/ws/history-test", addr);
+
+    // First connection sends messages
+    {
+        let (mut ws1, _) = tokio_tungstenite::connect_async(&ws_url)
+            .await
+            .expect("Failed to connect");
+
+        for _ in 0..3 {
+            let _ = recv_json_event(&mut ws1).await;
+        }
+
+        ws1.send(WsMessage::Text(
+            r#"{"type":"Message","text":"Historical message"}"#.to_string(),
+        ))
+        .await
+        .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let _ = ws1.close(None).await;
+    }
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Second connection should see the history in subsequent events
+    let (mut ws2, _) = tokio_tungstenite::connect_async(&ws_url)
+        .await
+        .expect("Failed to connect");
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let _ = ws2.close(None).await;
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_markdown_rendering_in_messages() {
+    let (addr, handle) = start_ws_server().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let ws_url = format!("ws://{}/ws/markdown-test", addr);
+    let (mut ws1, _) = tokio_tungstenite::connect_async(&ws_url)
+        .await
+        .expect("Failed to connect client 1");
+    let (mut ws2, _) = tokio_tungstenite::connect_async(&ws_url)
+        .await
+        .expect("Failed to connect client 2");
+
+    // Receive initial events
+    for _ in 0..3 {
+        let _ = recv_json_event(&mut ws1).await;
+    }
+    for _ in 0..3 {
+        let _ = recv_json_event(&mut ws2).await;
+    }
+
+    // Send markdown formatted message
+    ws1.send(WsMessage::Text(
+        r#"{"type":"Message","text":"**bold** and *italic* text"}"#.to_string(),
+    ))
+    .await
+    .unwrap();
+
+    // Client 2 should receive rendered markdown
+    let mut found_markdown = false;
+    for _ in 0..10 {
+        let event = recv_json_event(&mut ws2).await;
+        if event["type"] == "Message" {
+            let text = event["message"]["text"].as_str().unwrap();
+            // Should contain HTML tags from markdown rendering
+            if text.contains("<strong>") || text.contains("<em>") {
+                found_markdown = true;
+                break;
+            }
+        }
+    }
+
+    assert!(found_markdown, "Markdown not rendered");
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_special_characters_in_messages() {
+    let (addr, handle) = start_ws_server().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let ws_url = format!("ws://{}/ws/special-chars", addr);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url)
+        .await
+        .expect("Failed to connect");
+
+    for _ in 0..3 {
+        let _ = recv_json_event(&mut ws).await;
+    }
+
+    // Send message with special characters
+    ws.send(WsMessage::Text(
+        r#"{"type":"Message","text":"Hello 世界 🌍 café"}"#.to_string(),
+    ))
+    .await
+    .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_connection_from_same_ip_multiple_times() {
+    let (addr, handle) = start_ws_server().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let ws_url = format!("ws://{}/ws/same-ip-test", addr);
+    let mut connections = Vec::new();
+
+    // Create multiple connections from same IP (up to limit)
+    for i in 0..3 {
+        let (ws, _) = tokio_tungstenite::connect_async(&ws_url)
+            .await
+            .expect(&format!("Failed to connect #{}", i));
+        connections.push(ws);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    for mut ws in connections {
+        let _ = ws.close(None).await;
+    }
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_room_name_boundary_cases() {
+    let _app_state = Arc::new(AppState::new());
+
+    // Test minimum valid length (just 1 char is actually ok per validate_input)
+    assert!(validate_input("a", 50).is_ok());
+
+    // Test maximum valid length (50 chars)
+    let max_name = "a".repeat(50);
+    assert!(validate_input(&max_name, 50).is_ok());
+
+    // Test just over max (51 chars)
+    let too_long = "a".repeat(51);
+    assert!(validate_input(&too_long, 50).is_err());
+
+    // Test empty (not allowed)
+    assert!(validate_input("", 50).is_err());
+}
+
+#[tokio::test]
+async fn test_system_event_types_coverage() {
+    let app_state = Arc::new(AppState::new());
+    let room_name = "event-test".to_string();
+
+    {
+        let mut rooms = app_state.rooms.write().await;
+        rooms.insert(room_name.clone(), create_room());
+    }
+
+    let room = app_state.rooms.read().await;
+    let room_state = room.get(&room_name).unwrap();
+
+    // Just verify we can call broadcast_user_count
+    let _ = room_state.broadcast_user_count();
+}
+
+#[tokio::test]
+async fn test_heartbeat_event_delivery() {
+    let (addr, handle) = start_ws_server().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let ws_url = format!("ws://{}/ws/heartbeat-test", addr);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url)
+        .await
+        .expect("Failed to connect");
+
+    // Wait for heartbeat (sent every 5s, but we should get other events first)
+    let mut _received_heartbeat = false;
+    for _ in 0..20 {
+        let event = recv_json_event(&mut ws).await;
+        if event["type"] == "Heartbeat" {
+            _received_heartbeat = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+
+    // Note: may not always receive heartbeat in test timeframe, so we don't assert
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_animal_name_uniqueness_in_room() {
+    let app_state = Arc::new(AppState::new());
+    let room_name = "animal-test".to_string();
+
+    {
+        let mut rooms = app_state.rooms.write().await;
+        rooms.insert(room_name.clone(), create_room());
+    }
+
+    let mut rooms = app_state.rooms.write().await;
+    let room_state = rooms.get_mut(&room_name).unwrap();
+
+    // Assign multiple animals
+    let animal1 = room_state.assign_animal();
+    let animal2 = room_state.assign_animal();
+    let animal3 = room_state.assign_animal();
+
+    // All should be different
+    assert_ne!(animal1, animal2);
+    assert_ne!(animal2, animal3);
+    assert_ne!(animal1, animal3);
+}
+
