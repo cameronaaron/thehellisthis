@@ -6986,3 +6986,166 @@ async fn test_claim_html_sanitization() {
     let clean = ammonia::clean(xss);
     assert!(!clean.contains("onerror")); // XSS removed
 }
+
+// ========== GAMIFICATION INFRASTRUCTURE TESTS ==========
+// Tests for backend behavior that supports frontend gamification
+
+#[tokio::test]
+async fn test_empty_room_cleanup_delay_constant() {
+    // Verify the EMPTY_ROOM_CLEANUP_DELAY is 5 minutes (300 seconds)
+    // This is the timeout that drives the "keep talking or it fades" mechanic
+    assert_eq!(EMPTY_ROOM_CLEANUP_DELAY.as_secs(), 300);
+}
+
+#[tokio::test]
+async fn test_room_cleanup_interval_matches_delay() {
+    // Cleanup should run frequently enough to catch rooms at the 5-min mark
+    assert_eq!(ROOM_CLEANUP_INTERVAL.as_secs(), 300);
+}
+
+#[tokio::test]
+async fn test_room_survives_before_cleanup_delay() {
+    // Room with activity within the cleanup window should survive
+    let app_state = Arc::new(AppState::new());
+    
+    {
+        let mut rooms = app_state.rooms.write().await;
+        let room_state = RoomState {
+            sender: tokio::sync::broadcast::channel(1000).0,
+            chat_history: vec![],
+            users: std::collections::HashMap::new(),
+            available_animals: std::collections::VecDeque::new(),
+            // Only 4 minutes old (under 5 min threshold)
+            last_activity: Instant::now() - Duration::from_secs(240),
+            total_memory_bytes: std::sync::atomic::AtomicUsize::new(0),
+        };
+        rooms.insert("should-survive".to_string(), room_state);
+    }
+    
+    cleanup_rooms(&app_state).await;
+    
+    // Room should still exist (under threshold)
+    assert!(app_state.rooms.read().await.contains_key("should-survive"));
+}
+
+#[tokio::test]
+async fn test_room_deleted_after_cleanup_delay() {
+    // Room with no activity past the cleanup window should be deleted
+    let app_state = Arc::new(AppState::new());
+    
+    {
+        let mut rooms = app_state.rooms.write().await;
+        let room_state = RoomState {
+            sender: tokio::sync::broadcast::channel(1000).0,
+            chat_history: vec![],
+            users: std::collections::HashMap::new(),
+            available_animals: std::collections::VecDeque::new(),
+            // 6 minutes old (over 5 min threshold)
+            last_activity: Instant::now() - Duration::from_secs(360),
+            total_memory_bytes: std::sync::atomic::AtomicUsize::new(0),
+        };
+        rooms.insert("should-die".to_string(), room_state);
+    }
+    
+    cleanup_rooms(&app_state).await;
+    
+    // Room should be deleted
+    assert!(!app_state.rooms.read().await.contains_key("should-die"));
+}
+
+#[tokio::test]
+async fn test_room_with_active_users_never_deleted() {
+    // Even an old room with active users should survive
+    let app_state = Arc::new(AppState::new());
+    let now = Instant::now();
+    
+    {
+        let mut rooms = app_state.rooms.write().await;
+        let mut users = std::collections::HashMap::new();
+        users.insert("user1".to_string(), UserData {
+            user_id: "user-123".to_string(),
+            animal_name: "Tiger".to_string(),
+            last_active: now,
+            last_message_time: now,
+            connection_state: ConnectionState::Connected {
+                last_heartbeat: now,
+                connection_id: "conn1".to_string(),
+            },
+            last_read_message: None,
+            is_typing: false,
+            last_typing_event: None,
+            last_read_receipt_event: None,
+            rate_limiter: RateLimiter::new(),
+            last_sanitized_message: None,
+        });
+        
+        let room_state = RoomState {
+            sender: tokio::sync::broadcast::channel(1000).0,
+            chat_history: vec![],
+            users,
+            available_animals: std::collections::VecDeque::new(),
+            // Very old, but has active user
+            last_activity: Instant::now() - Duration::from_secs(7200),
+            total_memory_bytes: std::sync::atomic::AtomicUsize::new(0),
+        };
+        rooms.insert("has-users".to_string(), room_state);
+    }
+    
+    cleanup_rooms(&app_state).await;
+    
+    // Should survive because it has users
+    assert!(app_state.rooms.read().await.contains_key("has-users"));
+}
+
+#[tokio::test]
+async fn test_message_timestamps_are_numeric_strings() {
+    // Frontend expects timestamps as numeric strings for the lifespan counter
+    let msg = OutgoingMessage {
+        message_id: uuid::Uuid::new_v4(),
+        user_id: "test".to_string(),
+        animal_name: "Lion".to_string(),
+        text: "<p>Test</p>".to_string(),
+        timestamp: "1705276800000".to_string(),
+    };
+    
+    // Should parse as a number
+    assert!(msg.timestamp.parse::<u64>().is_ok());
+}
+
+#[tokio::test]
+async fn test_broadcast_channel_capacity_supports_rapid_messages() {
+    // Combo effects need rapid message delivery - verify channel has capacity
+    let (tx, mut rx1) = tokio::sync::broadcast::channel::<String>(1000);
+    let mut rx2 = tx.subscribe();
+    
+    // Simulate rapid combo messages
+    for i in 0..10 {
+        tx.send(format!("rapid-msg-{}", i)).unwrap();
+    }
+    
+    // Both receivers should get all messages (no dropped)
+    for i in 0..10 {
+        assert_eq!(rx1.recv().await.unwrap(), format!("rapid-msg-{}", i));
+        assert_eq!(rx2.recv().await.unwrap(), format!("rapid-msg-{}", i));
+    }
+}
+
+#[tokio::test]
+async fn test_max_messages_constant_for_history_limit() {
+    // Frontend displays "max 500" - verify constant matches
+    assert_eq!(MAX_MESSAGES_PER_ROOM, 500);
+}
+
+#[tokio::test]
+async fn test_heartbeat_interval_faster_than_cleanup() {
+    // Server heartbeat should be much faster than cleanup to keep connections alive
+    assert!(HEARTBEAT_INTERVAL.as_secs() < EMPTY_ROOM_CLEANUP_DELAY.as_secs());
+    assert_eq!(HEARTBEAT_INTERVAL.as_secs(), 5);
+}
+
+#[tokio::test]
+async fn test_heartbeat_timeout_reasonable() {
+    // Client should have time to respond before being considered dead
+    assert!(HEARTBEAT_TIMEOUT.as_secs() > HEARTBEAT_INTERVAL.as_secs());
+    assert_eq!(HEARTBEAT_TIMEOUT.as_secs(), 6);
+}

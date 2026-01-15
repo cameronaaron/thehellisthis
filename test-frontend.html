@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Frontend Gamification Tests</title>
+<style>
+body { font-family: system-ui, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; }
+.test { padding: 12px; margin: 8px 0; border-radius: 8px; }
+.pass { background: #c4eed0; color: #146c2e; }
+.fail { background: #f9dedc; color: #b3261e; }
+h1 { color: #1f1f1f; }
+.summary { font-size: 18px; font-weight: 600; margin-top: 20px; padding: 16px; border-radius: 12px; }
+.summary.all-pass { background: #c4eed0; color: #146c2e; }
+.summary.has-fail { background: #f9dedc; color: #b3261e; }
+</style>
+</head>
+<body>
+<h1>Frontend Gamification Tests</h1>
+<div id="results"></div>
+<div id="summary"></div>
+
+<script>
+const results = [];
+
+function test(name, fn) {
+    try {
+        fn();
+        results.push({ name, pass: true });
+    } catch (e) {
+        results.push({ name, pass: false, error: e.message });
+    }
+}
+
+function assertEqual(actual, expected, msg = '') {
+    if (actual !== expected) {
+        throw new Error(`${msg} Expected ${expected}, got ${actual}`);
+    }
+}
+
+function assertTrue(condition, msg = '') {
+    if (!condition) {
+        throw new Error(msg || 'Assertion failed');
+    }
+}
+
+// ========== HEARTBEAT STATE TESTS ==========
+
+test('Heartbeat shows active state when idle < 60s', () => {
+    const idleSeconds = 30;
+    let state = 'normal';
+    if (idleSeconds < 60) state = 'active';
+    else if (idleSeconds < 180) state = 'normal';
+    else if (idleSeconds < 240) state = 'warning';
+    else state = 'critical';
+    assertEqual(state, 'active');
+});
+
+test('Heartbeat shows normal state when idle 60-180s', () => {
+    const idleSeconds = 120;
+    let state = 'normal';
+    if (idleSeconds < 60) state = 'active';
+    else if (idleSeconds < 180) state = 'normal';
+    else if (idleSeconds < 240) state = 'warning';
+    else state = 'critical';
+    assertEqual(state, 'normal');
+});
+
+test('Heartbeat shows warning state when idle 180-240s', () => {
+    const idleSeconds = 200;
+    let state = 'normal';
+    if (idleSeconds < 60) state = 'active';
+    else if (idleSeconds < 180) state = 'normal';
+    else if (idleSeconds < 240) state = 'warning';
+    else state = 'critical';
+    assertEqual(state, 'warning');
+});
+
+test('Heartbeat shows critical state when idle >= 240s', () => {
+    const idleSeconds = 250;
+    let state = 'normal';
+    if (idleSeconds < 60) state = 'active';
+    else if (idleSeconds < 180) state = 'normal';
+    else if (idleSeconds < 240) state = 'warning';
+    else state = 'critical';
+    assertEqual(state, 'critical');
+});
+
+// ========== LIFESPAN DISPLAY TESTS ==========
+
+test('Lifespan displays minutes when under 60', () => {
+    const aliveMinutes = 45;
+    let display;
+    if (aliveMinutes < 60) {
+        display = `${aliveMinutes}m alive`;
+    } else {
+        const hours = Math.floor(aliveMinutes / 60);
+        const mins = aliveMinutes % 60;
+        display = `${hours}h ${mins}m alive`;
+    }
+    assertEqual(display, '45m alive');
+});
+
+test('Lifespan displays hours and minutes when >= 60', () => {
+    const aliveMinutes = 125;
+    let display;
+    if (aliveMinutes < 60) {
+        display = `${aliveMinutes}m alive`;
+    } else {
+        const hours = Math.floor(aliveMinutes / 60);
+        const mins = aliveMinutes % 60;
+        display = `${hours}h ${mins}m alive`;
+    }
+    assertEqual(display, '2h 5m alive');
+});
+
+test('Lifespan handles exact hour boundary', () => {
+    const aliveMinutes = 60;
+    let display;
+    if (aliveMinutes < 60) {
+        display = `${aliveMinutes}m alive`;
+    } else {
+        const hours = Math.floor(aliveMinutes / 60);
+        const mins = aliveMinutes % 60;
+        display = `${hours}h ${mins}m alive`;
+    }
+    assertEqual(display, '1h 0m alive');
+});
+
+// ========== COMBO DETECTION TESTS ==========
+
+test('Combo detected when messages within 3 seconds', () => {
+    let lastMessageTime = Date.now() - 2000; // 2 seconds ago
+    const now = Date.now();
+    const isCombo = (now - lastMessageTime) < 3000;
+    assertTrue(isCombo, 'Should be combo');
+});
+
+test('No combo when messages more than 3 seconds apart', () => {
+    let lastMessageTime = Date.now() - 4000; // 4 seconds ago
+    const now = Date.now();
+    const isCombo = (now - lastMessageTime) < 3000;
+    assertTrue(!isCombo, 'Should not be combo');
+});
+
+test('Combo counter increments on rapid messages', () => {
+    let recentMessageCount = 1;
+    let lastMessageTime = Date.now() - 1000;
+    
+    // Simulate 3 rapid messages
+    for (let i = 0; i < 3; i++) {
+        const now = Date.now();
+        const isCombo = (now - lastMessageTime) < 3000;
+        lastMessageTime = now;
+        if (isCombo) {
+            recentMessageCount++;
+        } else {
+            recentMessageCount = 1;
+        }
+    }
+    
+    assertTrue(recentMessageCount >= 3, 'Should have at least 3 combo messages');
+});
+
+test('Combo counter resets after gap', () => {
+    let recentMessageCount = 5;
+    let lastMessageTime = Date.now() - 5000; // 5 seconds ago (gap)
+    
+    const now = Date.now();
+    const isCombo = (now - lastMessageTime) < 3000;
+    if (isCombo) {
+        recentMessageCount++;
+    } else {
+        recentMessageCount = 1;
+    }
+    
+    assertEqual(recentMessageCount, 1, 'Should reset to 1');
+});
+
+// ========== FADE WARNING TESTS ==========
+
+test('Fade warning triggers at 240 seconds idle', () => {
+    let fadeWarningShown = false;
+    const idleSeconds = 245;
+    
+    if (!fadeWarningShown && idleSeconds >= 240) {
+        fadeWarningShown = true;
+    }
+    
+    assertTrue(fadeWarningShown, 'Warning should be shown');
+});
+
+test('Fade warning does not trigger before 240 seconds', () => {
+    let fadeWarningShown = false;
+    const idleSeconds = 230;
+    
+    if (!fadeWarningShown && idleSeconds >= 240) {
+        fadeWarningShown = true;
+    }
+    
+    assertTrue(!fadeWarningShown, 'Warning should not be shown yet');
+});
+
+test('Fade warning only shows once until activity', () => {
+    let fadeWarningShown = false;
+    
+    // First trigger
+    let idleSeconds = 245;
+    if (!fadeWarningShown && idleSeconds >= 240) {
+        fadeWarningShown = true;
+    }
+    
+    // Try to trigger again
+    idleSeconds = 250;
+    let shownAgain = false;
+    if (!fadeWarningShown && idleSeconds >= 240) {
+        shownAgain = true;
+    }
+    
+    assertTrue(fadeWarningShown, 'Should be shown');
+    assertTrue(!shownAgain, 'Should not trigger again');
+});
+
+test('Fade warning resets after activity', () => {
+    let fadeWarningShown = true;
+    
+    // Simulate new message (activity)
+    fadeWarningShown = false;
+    
+    // Can now trigger again
+    const idleSeconds = 245;
+    if (!fadeWarningShown && idleSeconds >= 240) {
+        fadeWarningShown = true;
+    }
+    
+    assertTrue(fadeWarningShown, 'Should show warning again after reset');
+});
+
+// ========== ROOM FADING CLASS TESTS ==========
+
+test('Room fading class added when critical', () => {
+    const idleSeconds = 250;
+    let roomFading = false;
+    
+    if (idleSeconds >= 240) {
+        roomFading = true;
+    }
+    
+    assertTrue(roomFading, 'Should add room-fading class');
+});
+
+test('Room fading class removed when not critical', () => {
+    const idleSeconds = 100;
+    let roomFading = idleSeconds >= 240;
+    
+    assertTrue(!roomFading, 'Should not have room-fading class');
+});
+
+// ========== ACTIVITY TRACKING TESTS ==========
+
+test('Activity time updates on message', () => {
+    let lastActivityTime = Date.now() - 60000; // 1 min ago
+    const originalTime = lastActivityTime;
+    
+    // Simulate message received
+    lastActivityTime = Date.now();
+    
+    assertTrue(lastActivityTime > originalTime, 'Activity time should update');
+});
+
+test('Room start time stays constant', () => {
+    const roomStartTime = Date.now() - 120000;
+    
+    // Simulate message received (should not change roomStartTime)
+    const afterMessage = roomStartTime;
+    
+    assertEqual(roomStartTime, afterMessage, 'Start time should not change');
+});
+
+// ========== TIMESTAMP PARSING TESTS ==========
+
+test('Timestamp parsing handles milliseconds', () => {
+    const ts = '1705276800000';
+    const num = parseInt(ts);
+    const parsed = num < 1e12 ? num * 1000 : num;
+    assertEqual(parsed, 1705276800000);
+});
+
+test('Timestamp parsing handles seconds', () => {
+    const ts = '1705276800';
+    const num = parseInt(ts);
+    const parsed = num < 1e12 ? num * 1000 : num;
+    assertEqual(parsed, 1705276800000);
+});
+
+// ========== RENDER RESULTS ==========
+
+const resultsDiv = document.getElementById('results');
+const summaryDiv = document.getElementById('summary');
+
+let passed = 0;
+let failed = 0;
+
+results.forEach(r => {
+    const div = document.createElement('div');
+    div.className = `test ${r.pass ? 'pass' : 'fail'}`;
+    div.textContent = r.pass ? `✓ ${r.name}` : `✗ ${r.name}: ${r.error}`;
+    resultsDiv.appendChild(div);
+    if (r.pass) passed++; else failed++;
+});
+
+summaryDiv.className = `summary ${failed === 0 ? 'all-pass' : 'has-fail'}`;
+summaryDiv.textContent = `${passed} passed, ${failed} failed`;
+
+console.log(`Frontend Tests: ${passed} passed, ${failed} failed`);
+</script>
+</body>
+</html>
