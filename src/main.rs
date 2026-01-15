@@ -46,7 +46,8 @@ const MESSAGE_RATE_LIMIT: Duration = Duration::from_millis(500);
 const MAX_MESSAGES_PER_WINDOW: usize = 30;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(6);
-const ROOM_CLEANUP_INTERVAL: Duration = Duration::from_secs(3600);
+const ROOM_CLEANUP_INTERVAL: Duration = Duration::from_secs(300); // Check every 5 minutes
+const EMPTY_ROOM_CLEANUP_DELAY: Duration = Duration::from_secs(300); // Delete empty rooms after 5 min
 const MAX_TOTAL_ROOMS_MEMORY: usize = 400_000_000;
 const MAX_MESSAGES_PER_ROOM: usize = 500;
 const MAX_MESSAGE_AGE: Duration = Duration::from_secs(86400 * 30);
@@ -2048,7 +2049,8 @@ async fn cleanup_rooms(state: &Arc<AppState>) {
                 .users
                 .values()
                 .any(|u| matches!(u.connection_state, ConnectionState::Connected { .. }));
-            if inactive_duration >= Duration::from_secs(7200) && !active_users {
+            // Delete empty rooms after 5 minutes of no activity
+            if !active_users && inactive_duration >= EMPTY_ROOM_CLEANUP_DELAY {
                 rooms_to_remove.push(room_name.clone());
             }
         }
