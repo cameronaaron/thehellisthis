@@ -409,12 +409,14 @@ h1 {
 /* Reply feature styles */
 .message {
     position: relative;
+    overflow: visible; /* ensure reply button outside bubble remains clickable */
 }
 
 .message .reply-btn {
     position: absolute;
     top: 8px;
-    right: 8px;
+    /* Offset outside the bubble edge to avoid overlap */
+    right: -28px;
     width: 28px;
     height: 28px;
     border-radius: var(--radius-full);
@@ -430,7 +432,8 @@ h1 {
     z-index: 10;
 }
 
-.message:hover .reply-btn {
+.message:hover .reply-btn,
+.message .reply-btn:hover {
     display: flex;
     opacity: 1;
 }
@@ -446,7 +449,8 @@ h1 {
 
 .message.sent .reply-btn {
     right: auto;
-    left: 8px;
+    /* Offset outside the bubble edge to avoid overlap for sent (right-aligned) */
+    left: -28px;
     background: rgba(255,255,255,0.2);
     color: var(--on-primary);
 }
