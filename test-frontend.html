@@ -45,42 +45,42 @@ function assertTrue(condition, msg = '') {
 
 // ========== HEARTBEAT STATE TESTS ==========
 
-test('Heartbeat shows active state when idle < 60s', () => {
-    const idleSeconds = 30;
+test('Heartbeat shows active state when idle < 30s', () => {
+    const idleSeconds = 15;
     let state = 'normal';
-    if (idleSeconds < 60) state = 'active';
-    else if (idleSeconds < 180) state = 'normal';
-    else if (idleSeconds < 240) state = 'warning';
+    if (idleSeconds < 30) state = 'active';
+    else if (idleSeconds < 90) state = 'normal';
+    else if (idleSeconds < 150) state = 'warning';
     else state = 'critical';
     assertEqual(state, 'active');
 });
 
-test('Heartbeat shows normal state when idle 60-180s', () => {
-    const idleSeconds = 120;
+test('Heartbeat shows normal state when idle 30-90s', () => {
+    const idleSeconds = 60;
     let state = 'normal';
-    if (idleSeconds < 60) state = 'active';
-    else if (idleSeconds < 180) state = 'normal';
-    else if (idleSeconds < 240) state = 'warning';
+    if (idleSeconds < 30) state = 'active';
+    else if (idleSeconds < 90) state = 'normal';
+    else if (idleSeconds < 150) state = 'warning';
     else state = 'critical';
     assertEqual(state, 'normal');
 });
 
-test('Heartbeat shows warning state when idle 180-240s', () => {
-    const idleSeconds = 200;
+test('Heartbeat shows warning state when idle 90-150s', () => {
+    const idleSeconds = 120;
     let state = 'normal';
-    if (idleSeconds < 60) state = 'active';
-    else if (idleSeconds < 180) state = 'normal';
-    else if (idleSeconds < 240) state = 'warning';
+    if (idleSeconds < 30) state = 'active';
+    else if (idleSeconds < 90) state = 'normal';
+    else if (idleSeconds < 150) state = 'warning';
     else state = 'critical';
     assertEqual(state, 'warning');
 });
 
-test('Heartbeat shows critical state when idle >= 240s', () => {
-    const idleSeconds = 250;
+test('Heartbeat shows critical state when idle >= 150s', () => {
+    const idleSeconds = 155;
     let state = 'normal';
-    if (idleSeconds < 60) state = 'active';
-    else if (idleSeconds < 180) state = 'normal';
-    else if (idleSeconds < 240) state = 'warning';
+    if (idleSeconds < 30) state = 'active';
+    else if (idleSeconds < 90) state = 'normal';
+    else if (idleSeconds < 150) state = 'warning';
     else state = 'critical';
     assertEqual(state, 'critical');
 });
@@ -178,22 +178,22 @@ test('Combo counter resets after gap', () => {
 
 // ========== FADE WARNING TESTS ==========
 
-test('Fade warning triggers at 240 seconds idle', () => {
+test('Fade warning triggers at 140 seconds idle', () => {
     let fadeWarningShown = false;
-    const idleSeconds = 245;
+    const idleSeconds = 145;
     
-    if (!fadeWarningShown && idleSeconds >= 240) {
+    if (!fadeWarningShown && idleSeconds >= 140) {
         fadeWarningShown = true;
     }
     
     assertTrue(fadeWarningShown, 'Warning should be shown');
 });
 
-test('Fade warning does not trigger before 240 seconds', () => {
+test('Fade warning does not trigger before 140 seconds', () => {
     let fadeWarningShown = false;
-    const idleSeconds = 230;
+    const idleSeconds = 135;
     
-    if (!fadeWarningShown && idleSeconds >= 240) {
+    if (!fadeWarningShown && idleSeconds >= 140) {
         fadeWarningShown = true;
     }
     
@@ -238,10 +238,10 @@ test('Fade warning resets after activity', () => {
 // ========== ROOM FADING CLASS TESTS ==========
 
 test('Room fading class added when critical', () => {
-    const idleSeconds = 250;
+    const idleSeconds = 155;
     let roomFading = false;
     
-    if (idleSeconds >= 240) {
+    if (idleSeconds >= 150) {
         roomFading = true;
     }
     
@@ -250,7 +250,7 @@ test('Room fading class added when critical', () => {
 
 test('Room fading class removed when not critical', () => {
     const idleSeconds = 100;
-    let roomFading = idleSeconds >= 240;
+    let roomFading = idleSeconds >= 150;
     
     assertTrue(!roomFading, 'Should not have room-fading class');
 });

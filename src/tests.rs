@@ -6992,15 +6992,15 @@ async fn test_claim_html_sanitization() {
 
 #[tokio::test]
 async fn test_empty_room_cleanup_delay_constant() {
-    // Verify the EMPTY_ROOM_CLEANUP_DELAY is 5 minutes (300 seconds)
+    // Verify the EMPTY_ROOM_CLEANUP_DELAY is 3 minutes (180 seconds)
     // This is the timeout that drives the "keep talking or it fades" mechanic
-    assert_eq!(EMPTY_ROOM_CLEANUP_DELAY.as_secs(), 300);
+    assert_eq!(EMPTY_ROOM_CLEANUP_DELAY.as_secs(), 180);
 }
 
 #[tokio::test]
 async fn test_room_cleanup_interval_matches_delay() {
-    // Cleanup should run frequently enough to catch rooms at the 5-min mark
-    assert_eq!(ROOM_CLEANUP_INTERVAL.as_secs(), 300);
+    // Cleanup should run frequently enough to catch rooms at the 3-min mark
+    assert_eq!(ROOM_CLEANUP_INTERVAL.as_secs(), 180);
 }
 
 #[tokio::test]
@@ -7015,8 +7015,8 @@ async fn test_room_survives_before_cleanup_delay() {
             chat_history: vec![],
             users: std::collections::HashMap::new(),
             available_animals: std::collections::VecDeque::new(),
-            // Only 4 minutes old (under 5 min threshold)
-            last_activity: Instant::now() - Duration::from_secs(240),
+            // Only 2.5 minutes old (under 3 min threshold)
+            last_activity: Instant::now() - Duration::from_secs(150),
             total_memory_bytes: std::sync::atomic::AtomicUsize::new(0),
         };
         rooms.insert("should-survive".to_string(), room_state);
@@ -7040,8 +7040,8 @@ async fn test_room_deleted_after_cleanup_delay() {
             chat_history: vec![],
             users: std::collections::HashMap::new(),
             available_animals: std::collections::VecDeque::new(),
-            // 6 minutes old (over 5 min threshold)
-            last_activity: Instant::now() - Duration::from_secs(360),
+            // 3.5 minutes old (over 3 min threshold)
+            last_activity: Instant::now() - Duration::from_secs(210),
             total_memory_bytes: std::sync::atomic::AtomicUsize::new(0),
         };
         rooms.insert("should-die".to_string(), room_state);
