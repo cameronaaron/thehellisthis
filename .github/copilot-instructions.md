@@ -4,8 +4,8 @@
 Dual-platform real-time WebSocket chat: native Rust server (Axum 0.7) + Cloudflare Workers+Containers edge proxy. Core is single-server ephemeral chat with multi-room support, no persistence.
 
 ### Core Components
-- **[src/main.rs](src/main.rs)** (2010 lines): Axum server, WS handlers, room state, rate limiting, memory tracking, IP bans. Contains all server logic.
-- **[src/tests.rs](src/tests.rs)**: 387 integration tests covering room validation, rate limits, memory tracking, security. Run with `cargo test`.
+- **[src/main.rs](src/main.rs)** (2331 lines): Axum server, WS handlers, room state, rate limiting, memory tracking, IP bans. Contains all server logic.
+- **[src/tests.rs](src/tests.rs)**: 397 integration tests covering room validation, rate limits, memory tracking, security. Run with `cargo test`.
 - **[index.html](index.html)**: Zero-dependency client. WebSocket connects to `ws(s)://host/ws/{room}`, renders Markdown, handles typing indicators, read receipts. Keep plain JS—no build step.
 - **[cloudflare/src/index.ts](cloudflare/src/index.ts)**: Durable Object proxy. Routes all traffic to Rust container at port 3000. Single `main` instance handles all rooms (rooms managed by Rust internally).
 
@@ -106,7 +106,7 @@ cargo clippy --all-targets --all-features -- -D warnings  # Lint
 ```bash
 git push heroku main
 ```
-Uses [heroku.yml](heroku.yml) Docker build, runs `infinite-chat` binary from [Procfile](Procfile). Binary name must match Cargo.toml `[package] name`. If changing, update both [Procfile](Procfile) and [heroku.yml](heroku.yml).
+Uses [Procfile](Procfile) to run `infinite-chat` binary. Binary name must match Cargo.toml `[package] name`. Heroku automatically detects Rust buildpack and compiles from source.
 
 **Cloudflare Containers** (edge, WebSocket-native, scales to zero)
 ```bash
