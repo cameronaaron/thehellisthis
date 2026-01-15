@@ -1944,16 +1944,15 @@ class ChatApp {
         } else if (idleSeconds < 100) {
             // Warning: 60-100s idle (1-1.67 min)
             this.roomHeartbeat.classList.add('warning');
-        } else {
-            // Critical: 100+ seconds (1.67+ min), room is dying
-            this.roomHeartbeat.classList.add('critical');
-            this.chat.classList.add('room-fading');
-            
-            // Show fade warning once at 90s (30s before death)
+            // Show fade warning at 45s (25s before critical)
             if (!this.fadeWarningShown && idleSeconds >= 45) {
                 this.fadeWarningShown = true;
                 this.showFadeWarning();
             }
+        } else {
+            // Critical: 100+ seconds (1.67+ min), room is dying
+            this.roomHeartbeat.classList.add('critical');
+            this.chat.classList.add('room-fading');
         }
     }
     
