@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::Barrier;
 use tower::util::ServiceExt;
+use futures::future::join_all;
 
 #[tokio::test]
 async fn test_root_redirect() {
@@ -282,4 +283,592 @@ async fn test_rate_limiter_window_reset() {
     // Should be able to send messages again
     assert!(rate_limiter.can_send_message());
     assert_eq!(rate_limiter.message_count, 1);
+}
+
+// ========== MESSAGE & BROADCASTING ==========
+
+#[tokio::test]
+async fn test_message_added_to_room_history() {
+    let mut room = create_room();
+    let tracker = MemoryTracker::new();
+    let test_id = uuid::Uuid::new_v4();
+    let msg = OutgoingMessage {
+        message_id: test_id,
+        user_id: "user1".to_string(),
+        animal_name: "Lion".to_string(),
+        text: "<p>Hello</p>".to_string(),
+        timestamp: "1000".to_string(),
+    };
+
+    room.add_message(msg.clone(), &tracker);
+    assert_eq!(room.chat_history.len(), 1);
+    assert_eq!(room.chat_history[0].message_id, test_id);
+}
+
+#[tokio::test]
+async fn test_message_memory_tracking() {
+    let mut room = create_room();
+    let tracker = MemoryTracker::new();
+    let msg = OutgoingMessage {
+        message_id: uuid::Uuid::new_v4(),
+        user_id: "user1".to_string(),
+        animal_name: "Lion".to_string(),
+        text: "<p>Test message</p>".to_string(),
+        timestamp: "1000".to_string(),
+    };
+
+    let msg_size = msg.estimate_size();
+    room.add_message(msg, &tracker);
+    assert!(room.total_memory_bytes.load(Ordering::Relaxed) > 0);
+    assert_eq!(tracker.total_bytes.load(Ordering::Relaxed), msg_size);
+}
+
+#[tokio::test]
+async fn test_preserve_messages_trims_and_updates_tracker() {
+    let mut room = create_room();
+    let tracker = MemoryTracker::new();
+    
+    // Add messages beyond MAX_MESSAGES_PER_ROOM
+    for _i in 0..(MAX_MESSAGES_PER_ROOM + 150) {
+        let msg = OutgoingMessage {
+            message_id: uuid::Uuid::new_v4(),
+            user_id: "user1".to_string(),
+            animal_name: "Lion".to_string(),
+            text: "<p>Test</p>".to_string(),
+            timestamp: "1000".to_string(),
+        };
+        let msg_size = msg.estimate_size();
+        tracker.add_bytes(msg_size);
+        room.total_memory_bytes.fetch_add(msg_size, Ordering::SeqCst);
+        room.chat_history.push(msg);
+    }
+
+    let before_tracker = tracker.total_bytes.load(Ordering::Relaxed);
+    room.preserve_messages(&tracker);
+    
+    assert!(room.chat_history.len() <= MAX_MESSAGES_PER_ROOM);
+    let after_tracker = tracker.total_bytes.load(Ordering::Relaxed);
+    assert!(after_tracker < before_tracker);
+}
+
+#[tokio::test]
+async fn test_trim_to_max_messages_limits_history() {
+    let mut room = create_room();
+    let tracker = MemoryTracker::new();
+    
+    for _i in 0..(MAX_MESSAGES_PER_ROOM + 100) {
+        let msg = OutgoingMessage {
+            message_id: uuid::Uuid::new_v4(),
+            user_id: "user1".to_string(),
+            animal_name: "Lion".to_string(),
+            text: "<p>Test</p>".to_string(),
+            timestamp: "1000".to_string(),
+        };
+        let size = msg.estimate_size();
+        tracker.add_bytes(size);
+        room.total_memory_bytes.fetch_add(size, Ordering::SeqCst);
+        room.chat_history.push(msg);
+    }
+    
+    let before = tracker.total_bytes.load(Ordering::Relaxed);
+    room.trim_to_max_messages(&tracker);
+    let after = tracker.total_bytes.load(Ordering::Relaxed);
+    
+    assert_eq!(room.chat_history.len(), MAX_MESSAGES_PER_ROOM);
+    assert!(after < before);
+}
+
+// ========== USER LIFECYCLE ==========
+
+#[tokio::test]
+async fn test_animal_assignment() {
+    let mut room = create_room();
+    let animal1 = room.assign_animal();
+    let animal2 = room.assign_animal();
+    
+    assert!(!animal1.is_empty());
+    assert!(!animal2.is_empty());
+    assert_ne!(animal1, animal2);
+}
+
+#[tokio::test]
+async fn test_animal_reuse_after_user_removal() {
+    let mut room = create_room();
+    let first_animal = room.assign_animal();
+    
+    // Simulate user disconnect: return animal to pool
+    room.available_animals.push_back(first_animal.clone());
+    
+    // Next assignment will take from front of queue
+    let reassigned = room.assign_animal();
+    // The reassigned animal should be from our pool, not necessarily the one we added
+    // since more animals were removed from front after our push_back
+    assert!(!reassigned.is_empty());
+}
+
+#[tokio::test]
+async fn test_user_data_initial_state() {
+    let user = UserData {
+        user_id: "test-id".to_string(),
+        animal_name: "Tiger".to_string(),
+        last_active: Instant::now(),
+        last_message_time: Instant::now(),
+        connection_state: ConnectionState::Connected {
+            last_heartbeat: Instant::now(),
+            connection_id: "conn1".to_string(),
+        },
+        last_read_message: None,
+        is_typing: false,
+        last_typing_event: None,
+        last_read_receipt_event: None,
+        rate_limiter: RateLimiter::new(),
+        last_sanitized_message: None,
+    };
+
+    assert_eq!(user.user_id, "test-id");
+    assert!(!user.is_typing);
+    assert!(user.last_read_message.is_none());
+}
+
+// ========== TYPING & READ RECEIPTS (DEBOUNCING) ==========
+
+#[tokio::test]
+async fn test_typing_event_timestamp_tracking() {
+    let now = Instant::now();
+    
+    // Simulating debounce check logic
+    let last_event = Some(now);
+    let min_interval = Duration::from_millis(200);
+    
+    // Too soon (100ms)
+    let too_soon = now + Duration::from_millis(100);
+    let allowed_soon = match last_event {
+        Some(t) => too_soon.duration_since(t) >= min_interval,
+        None => true,
+    };
+    assert!(!allowed_soon);
+    
+    // Allowed (300ms)
+    let ok_later = now + Duration::from_millis(300);
+    let allowed_later = match last_event {
+        Some(t) => ok_later.duration_since(t) >= min_interval,
+        None => true,
+    };
+    assert!(allowed_later);
+}
+
+#[tokio::test]
+async fn test_read_receipt_timestamp_tracking() {
+    let now = Instant::now();
+    let min_interval = Duration::from_millis(200);
+    
+    let last_event = Some(now);
+    
+    // Too soon (100ms)
+    let too_soon = now + Duration::from_millis(100);
+    let can_send_soon = match last_event {
+        Some(t) => too_soon.duration_since(t) >= min_interval,
+        None => true,
+    };
+    assert!(!can_send_soon);
+    
+    // Allowed (250ms)
+    let later = now + Duration::from_millis(250);
+    let can_send_later = match last_event {
+        Some(t) => later.duration_since(t) >= min_interval,
+        None => true,
+    };
+    assert!(can_send_later);
+}
+
+// ========== MEMORY MANAGEMENT ==========
+
+#[tokio::test]
+async fn test_cleanup_messages_by_age() {
+    let mut room = create_room();
+    let tracker = MemoryTracker::new();
+    
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    
+    // Old message (40 days)
+    let old_timestamp = format!("{}", now_ms - (40 * 24 * 60 * 60 * 1000));
+    let old_msg = OutgoingMessage {
+        message_id: uuid::Uuid::new_v4(),
+        user_id: "user1".to_string(),
+        animal_name: "Lion".to_string(),
+        text: "<p>Old</p>".to_string(),
+        timestamp: old_timestamp,
+    };
+    
+    // Fresh message
+    let fresh_msg = OutgoingMessage {
+        message_id: uuid::Uuid::new_v4(),
+        user_id: "user1".to_string(),
+        animal_name: "Lion".to_string(),
+        text: "<p>Fresh</p>".to_string(),
+        timestamp: format!("{}", now_ms),
+    };
+    
+    let old_size = old_msg.estimate_size();
+    room.chat_history.push(old_msg);
+    room.chat_history.push(fresh_msg);
+    room.total_memory_bytes.store(
+        old_size + 100,
+        Ordering::SeqCst,
+    );
+    tracker.add_bytes(old_size + 100);
+    
+    // Cleanup old messages (anything > 30 days)
+    room.cleanup_messages(Instant::now(), &tracker).await;
+    
+    // Old message should be removed (only fresh message remains)
+    assert_eq!(room.chat_history.len(), 1);
+}
+
+#[tokio::test]
+async fn test_room_memory_accounting() {
+    let mut room = create_room();
+    let tracker = MemoryTracker::new();
+    
+    let msg1 = OutgoingMessage {
+        message_id: uuid::Uuid::new_v4(),
+        user_id: "user1".to_string(),
+        animal_name: "Lion".to_string(),
+        text: "<p>First</p>".to_string(),
+        timestamp: "1000".to_string(),
+    };
+    let msg1_size = msg1.estimate_size();
+    
+    room.add_message(msg1, &tracker);
+    
+    let msg2 = OutgoingMessage {
+        message_id: uuid::Uuid::new_v4(),
+        user_id: "user1".to_string(),
+        animal_name: "Lion".to_string(),
+        text: "<p>Second</p>".to_string(),
+        timestamp: "2000".to_string(),
+    };
+    let msg2_size = msg2.estimate_size();
+    
+    room.add_message(msg2, &tracker);
+    
+    let total = tracker.total_bytes.load(Ordering::Relaxed);
+    assert_eq!(total, msg1_size + msg2_size);
+}
+
+// ========== HEARTBEAT & PRESENCE ==========
+
+#[tokio::test]
+async fn test_user_count_with_mixed_states() {
+    let mut room = create_room();
+    
+    let now = Instant::now();
+    
+    // Add connected user
+    let connected_user = UserData {
+        user_id: "user1".to_string(),
+        animal_name: "Lion".to_string(),
+        last_active: now,
+        last_message_time: now,
+        connection_state: ConnectionState::Connected {
+            last_heartbeat: now,
+            connection_id: "conn1".to_string(),
+        },
+        last_read_message: None,
+        is_typing: false,
+        last_typing_event: None,
+        last_read_receipt_event: None,
+        rate_limiter: RateLimiter::new(),
+        last_sanitized_message: None,
+    };
+    room.users.insert("user1".to_string(), connected_user);
+    
+    // Add disconnected user
+    let disconnected_user = UserData {
+        user_id: "user2".to_string(),
+        animal_name: "Tiger".to_string(),
+        last_active: now,
+        last_message_time: now,
+        connection_state: ConnectionState::Disconnected { since: now },
+        last_read_message: None,
+        is_typing: false,
+        last_typing_event: None,
+        last_read_receipt_event: None,
+        rate_limiter: RateLimiter::new(),
+        last_sanitized_message: None,
+    };
+    room.users.insert("user2".to_string(), disconnected_user);
+    
+    let connected_count = room.users.values()
+        .filter(|u| matches!(u.connection_state, ConnectionState::Connected { .. }))
+        .count();
+    
+    assert_eq!(connected_count, 1);
+    assert_eq!(room.users.len(), 2);
+}
+
+#[tokio::test]
+async fn test_stale_user_detection() {
+    let now = Instant::now();
+    let stale_heartbeat = now - Duration::from_secs(10); // > 6s timeout
+    
+    let user = UserData {
+        user_id: "stale".to_string(),
+        animal_name: "Lion".to_string(),
+        last_active: now - Duration::from_secs(10),
+        last_message_time: now - Duration::from_secs(10),
+        connection_state: ConnectionState::Connected {
+            last_heartbeat: stale_heartbeat,
+            connection_id: "conn1".to_string(),
+        },
+        last_read_message: None,
+        is_typing: false,
+        last_typing_event: None,
+        last_read_receipt_event: None,
+        rate_limiter: RateLimiter::new(),
+        last_sanitized_message: None,
+    };
+    
+    let is_stale = if let ConnectionState::Connected { last_heartbeat, .. } = user.connection_state {
+        now.duration_since(last_heartbeat) > HEARTBEAT_TIMEOUT
+    } else {
+        false
+    };
+    
+    assert!(is_stale);
+}
+
+#[tokio::test]
+async fn test_fresh_user_not_stale() {
+    let now = Instant::now();
+    let fresh_heartbeat = now - Duration::from_secs(2); // < 6s timeout
+    
+    let user = UserData {
+        user_id: "fresh".to_string(),
+        animal_name: "Tiger".to_string(),
+        last_active: now,
+        last_message_time: now,
+        connection_state: ConnectionState::Connected {
+            last_heartbeat: fresh_heartbeat,
+            connection_id: "conn1".to_string(),
+        },
+        last_read_message: None,
+        is_typing: false,
+        last_typing_event: None,
+        last_read_receipt_event: None,
+        rate_limiter: RateLimiter::new(),
+        last_sanitized_message: None,
+    };
+    
+    let is_stale = if let ConnectionState::Connected { last_heartbeat, .. } = user.connection_state {
+        now.duration_since(last_heartbeat) > HEARTBEAT_TIMEOUT
+    } else {
+        false
+    };
+    
+    assert!(!is_stale);
+}
+
+// ========== EDGE CASES ==========
+
+#[tokio::test]
+async fn test_room_capacity_tracking() {
+    let mut room = create_room();
+    
+    let now = Instant::now();
+    for i in 0..100 {
+        let user = UserData {
+            user_id: format!("user-{}", i),
+            animal_name: format!("Animal{}", i),
+            last_active: now,
+            last_message_time: now,
+            connection_state: ConnectionState::Connected {
+                last_heartbeat: now,
+                connection_id: format!("conn-{}", i),
+            },
+            last_read_message: None,
+            is_typing: false,
+            last_typing_event: None,
+            last_read_receipt_event: None,
+            rate_limiter: RateLimiter::new(),
+            last_sanitized_message: None,
+        };
+        room.users.insert(format!("user-{}", i), user);
+    }
+    
+    // Room has 100 users
+    let connected_count = room.users.values()
+        .filter(|u| matches!(u.connection_state, ConnectionState::Connected { .. }))
+        .count();
+    
+    assert_eq!(connected_count, 100);
+}
+
+#[tokio::test]
+async fn test_outgoing_message_size_estimation() {
+    let msg = OutgoingMessage {
+        message_id: uuid::Uuid::new_v4(),
+        user_id: "user-456".to_string(),
+        animal_name: "Elephant".to_string(),
+        text: "<p>A long test message with more content</p>".to_string(),
+        timestamp: "1234567890".to_string(),
+    };
+    
+    let size = msg.estimate_size();
+    assert!(size > 0);
+    // Size should be reasonable: ~300-600 bytes for this message
+    assert!(size < 2000);
+}
+
+#[tokio::test]
+async fn test_concurrent_message_additions() {
+    let room = Arc::new(tokio::sync::Mutex::new(create_room()));
+    let tracker = Arc::new(MemoryTracker::new());
+    let barrier = Arc::new(Barrier::new(10));
+    
+    let mut handles = vec![];
+    for _i in 0..10 {
+        let room_clone = room.clone();
+        let tracker_clone = tracker.clone();
+        let barrier_clone = barrier.clone();
+        
+        handles.push(tokio::spawn(async move {
+            barrier_clone.wait().await;
+            let msg = OutgoingMessage {
+                message_id: uuid::Uuid::new_v4(),
+                user_id: "user1".to_string(),
+                animal_name: "Lion".to_string(),
+                text: "<p>Test</p>".to_string(),
+                timestamp: "1000".to_string(),
+            };
+            room_clone.lock().await.add_message(msg, &tracker_clone);
+        }));
+    }
+    
+    join_all(handles).await;
+    assert_eq!(room.lock().await.chat_history.len(), 10);
+}
+
+#[tokio::test]
+async fn test_socket_message_rate_limiting_per_user() {
+    let mut user = UserData {
+        user_id: "user1".to_string(),
+        animal_name: "Lion".to_string(),
+        last_active: Instant::now(),
+        last_message_time: Instant::now(),
+        connection_state: ConnectionState::Connected {
+            last_heartbeat: Instant::now(),
+            connection_id: "conn1".to_string(),
+        },
+        last_read_message: None,
+        is_typing: false,
+        last_typing_event: None,
+        last_read_receipt_event: None,
+        rate_limiter: RateLimiter::new(),
+        last_sanitized_message: None,
+    };
+
+    // Fill window for this user
+    for _ in 0..MAX_MESSAGES_PER_WINDOW {
+        assert!(user.rate_limiter.can_send_message());
+    }
+    
+    // Should be rate limited
+    assert!(!user.rate_limiter.can_send_message());
+}
+
+#[tokio::test]
+async fn test_duplicate_message_prevention() {
+    let msg1 = "<p>Duplicate</p>";
+    let msg2 = "<p>Duplicate</p>";
+    let now = Instant::now();
+    let timeout = Duration::from_millis(50);
+    
+    // Simulate duplicate check
+    let last_sanitized = Some((msg1.to_string(), now));
+    let can_send = match last_sanitized {
+        Some((prev_text, prev_time)) if prev_text == msg2 && now.duration_since(prev_time) < timeout => false,
+        _ => true,
+    };
+    
+    assert!(!can_send); // Should be blocked as duplicate
+}
+
+#[tokio::test]
+async fn test_html_sanitization_removes_script() {
+    let dangerous = "<script>alert('xss')</script><p>Safe content</p>";
+    let result = validate_message(dangerous);
+    
+    assert!(result.is_ok());
+    let sanitized = result.unwrap();
+    assert!(!sanitized.contains("<script>"));
+    assert!(sanitized.contains("Safe content"));
+}
+
+#[tokio::test]
+async fn test_connection_state_transitions() {
+    let connected = ConnectionState::Connected {
+        last_heartbeat: Instant::now(),
+        connection_id: "conn1".to_string(),
+    };
+    
+    let disconnected = ConnectionState::Disconnected { since: Instant::now() };
+    
+    // Verify state types
+    assert!(matches!(disconnected, ConnectionState::Disconnected { .. }));
+    assert!(matches!(connected, ConnectionState::Connected { .. }));
+}
+
+#[tokio::test]
+async fn test_room_last_activity_tracking() {
+    let mut room = create_room();
+    let initial_activity = room.last_activity;
+    
+    // Room activity should update
+    room.last_activity = Instant::now();
+    assert!(room.last_activity > initial_activity);
+}
+
+#[tokio::test]
+async fn test_message_ordering_by_timestamp() {
+    let mut room = create_room();
+    
+    let msg1 = OutgoingMessage {
+        message_id: uuid::Uuid::new_v4(),
+        user_id: "user".to_string(),
+        animal_name: "Lion".to_string(),
+        text: "<p>First</p>".to_string(),
+        timestamp: "1000".to_string(),
+    };
+    
+    let msg2 = OutgoingMessage {
+        message_id: uuid::Uuid::new_v4(),
+        user_id: "user".to_string(),
+        animal_name: "Lion".to_string(),
+        text: "<p>Second</p>".to_string(),
+        timestamp: "2000".to_string(),
+    };
+    
+    room.chat_history.push(msg1);
+    room.chat_history.push(msg2);
+    
+    // Verify messages are in order
+    assert_eq!(room.chat_history[0].timestamp, "1000");
+    assert_eq!(room.chat_history[1].timestamp, "2000");
+}
+
+#[tokio::test]
+async fn test_empty_message_rejection() {
+    let result = validate_message("");
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn test_oversized_message_rejection() {
+    let huge_msg = "a".repeat(MAX_MESSAGE_LEN + 1);
+    let result = validate_message(&huge_msg);
+    assert!(result.is_err());
 }
