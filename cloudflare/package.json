@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "Cloudflare Containers deployment for Infinite Chat WebSocket server",
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",

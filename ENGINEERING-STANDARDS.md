@@ -55,6 +55,7 @@ concrete, executable version of "obsessive engineering quality." Concretely:
 | §10 Client | `empty_chat_placeholder_does_not_alter_container_layout`, `rendered_history_is_trimmed_from_the_dom_not_a_counter`, `the_page_does_not_block_pinch_zoom`, `images_reserve_their_space_before_they_load` |
 | Attachments | `an_attachment_must_be_the_image_type_it_claims_to_be`, `svg_is_not_an_allowed_attachment_type`, `a_rooms_oldest_images_fade_once_it_is_over_its_attachment_budget`, `images_are_re_encoded_rather_than_sent_as_picked` |
 | Reactions | `reacting_twice_with_the_same_emoji_removes_the_reaction`, `reactions_never_outlive_the_messages_they_belong_to`, `a_reaction_must_be_on_the_roster` |
+| §6.1 The gate answers "will this deploy" | `ci_node_version_satisfies_the_toolchain`, `the_workflows_install_with_the_lockfile_that_exists` |
 | Ratchets | `the_memory_budget_still_closes`, `the_join_path_shares_history_rather_than_copying_it`, `adding_a_message_costs_the_same_whatever_the_history_holds`, `reacting_never_touches_the_history` |
 | Dead webfonts | `the_page_names_no_font_it_does_not_ship_with`, `no_css_content_string_is_an_icon_ligature` |
 
@@ -669,6 +670,25 @@ assertion in §0.5 that a human reading the file had missed.
 The clippy gate was red for some time before this was noticed, because nothing
 downstream depended on it. `deploy.yml` now **waits for CI**, so a red gate
 cannot reach production.
+
+### 6.1a A green gate that cannot see the deploy is not a gate
+
+The gate exists to answer one question: *will this deploy?* For most of a day
+it answered "yes" and was wrong. `wrangler` requires Node >= 22; both workflows
+pinned Node 20. Every push showed fmt, clippy, 600 tests, a release build and
+the coverage floor all green — and then the **deploy step**, which runs after
+all of it, failed on a version check. Nothing reached the live site, and every
+signal a person actually looks at said the commit was fine.
+
+Switching the Worker toolchain to pnpm made it worse before it made it better:
+pnpm 11 needs `node:sqlite`, also Node 22, so the failure moved earlier — into
+the gate — which is the only reason it was noticed at all.
+
+**A requirement that only the last step enforces is a requirement nothing
+checks.** The version now lives once, in `cloudflare/package.json` under
+`engines`, `engineStrict` makes the install itself refuse a Node below it, and
+`ci_node_version_satisfies_the_toolchain` asserts the workflows agree — so the
+mismatch fails in the Rust suite, on a laptop, before any of it is pushed.
 
 ### 6.2 A fix and its test are one commit
 

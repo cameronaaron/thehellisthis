@@ -34,3 +34,10 @@ allowBuilds:
 # so a *different* new release still gets the waiting period.
 minimumReleaseAgeExclude:
   - '@cloudflare/workers-types@5.20260727.1'
+
+# Fail the install on a Node too old for the toolchain, rather than letting it
+# succeed and the *deploy* fail minutes later. wrangler needs >= 22 and pnpm 11
+# needs `node:sqlite`; with CI pinned to Node 20 the gate stayed green while
+# every deploy failed, because nothing checked the requirement until the last
+# step. `engines` in package.json is the single source; this is what enforces it.
+engineStrict: true

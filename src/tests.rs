@@ -15631,3 +15631,120 @@ async fn reacting_never_touches_the_history() {
     );
     assert_eq!(room.chat_history.len(), MAX_MESSAGES_PER_ROOM);
 }
+
+/// A workflow or shell script with its `#` comments removed.
+///
+/// §6.7: a sweep over a script must read the commands, not the prose about
+/// them. The CSS sweeps needed the same thing and got
+/// `embedded_html_without_comments`; this is that idea for `#`-commented files.
+fn strip_hash_comments(script: &str) -> String {
+    script
+        .lines()
+        .map(|line| match line.find('#') {
+            Some(index) => &line[..index],
+            None => line,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The Node that CI installs is one the toolchain can actually run on.
+///
+/// This is the test that would have saved the afternoon. `wrangler` requires
+/// Node >= 22 and pnpm 11 needs `node:sqlite`, which arrived in 22. Both
+/// workflows pinned Node 20. The Rust gate — fmt, clippy, 600 tests, release
+/// build, coverage — went green on every push, and then the *deploy step*
+/// failed, so nothing reached the live site while every signal a person looks
+/// at said the commit was fine.
+///
+/// §6.1 says the gate exists to answer "will this deploy". A gate that cannot
+/// see the deploy's own requirements is not answering it. The requirement lives
+/// in `cloudflare/package.json` under `engines`, once, and this asserts the
+/// workflows agree with it.
+#[test]
+fn ci_node_version_satisfies_the_toolchain() {
+    const PACKAGE_JSON: &str = include_str!("../cloudflare/package.json");
+    const CI: &str = include_str!("../.github/workflows/ci.yml");
+    const DEPLOY: &str = include_str!("../.github/workflows/deploy.yml");
+
+    // The declared floor, e.g. `"node": ">=22"`.
+    let required: u32 = PACKAGE_JSON
+        .split_once("\"node\":")
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map(|(spec, _)| {
+            spec.trim_start_matches(['>', '=', '^', '~', ' '])
+                .to_string()
+        })
+        .and_then(|spec| spec.split('.').next().unwrap_or_default().parse().ok())
+        .expect("cloudflare/package.json should declare engines.node");
+
+    assert!(
+        required >= 22,
+        "wrangler needs Node 22 or newer; the declared floor is {required}"
+    );
+
+    for (name, workflow) in [("ci.yml", CI), ("deploy.yml", DEPLOY)] {
+        let mut found = 0;
+        for (index, _) in workflow.match_indices("node-version: '") {
+            let rest = &workflow[index + "node-version: '".len()..];
+            let Some(end) = rest.find('\'') else { continue };
+            let major: u32 = rest[..end]
+                .split('.')
+                .next()
+                .unwrap_or_default()
+                .parse()
+                .unwrap_or_else(|_| panic!("{name} has an unparseable node-version"));
+
+            assert!(
+                major >= required,
+                "{name} installs Node {major}, below the {required} the Worker \
+                 toolchain requires — the Rust gate would still pass and the \
+                 deploy would still fail"
+            );
+            found += 1;
+        }
+        assert!(found > 0, "{name} should pin a Node version");
+    }
+}
+
+/// The deploy's install command is the one the lockfile format belongs to.
+///
+/// Switching package managers is easy to do halfway: a `pnpm-lock.yaml` in the
+/// tree and an `npm ci` in the workflow installs from `package.json` alone,
+/// silently resolving different versions than anything anyone tested.
+#[test]
+fn the_workflows_install_with_the_lockfile_that_exists() {
+    const CI: &str = include_str!("../.github/workflows/ci.yml");
+    const DEPLOY: &str = include_str!("../.github/workflows/deploy.yml");
+    const DEPLOY_SH: &str = include_str!("../deploy.sh");
+
+    for (name, script) in [
+        ("ci.yml", CI),
+        ("deploy.yml", DEPLOY),
+        ("deploy.sh", DEPLOY_SH),
+    ] {
+        // Tokens, and only from the commands — not substrings, and not prose.
+        // This test failed twice before it passed once: `pnpm install` contains
+        // "npm install", and then a comment mentioning "RUSTSEC and npm
+        // advisories" matched the token. §6.7, twice, in the same afternoon.
+        let commands = strip_hash_comments(script);
+        let invoked: Vec<&str> = commands
+            .split_whitespace()
+            .filter(|word| *word == "npm" || *word == "npx")
+            .collect();
+
+        assert!(
+            invoked.is_empty(),
+            "{name} invokes {invoked:?}, but the repository's lockfile is \
+             pnpm-lock.yaml — npm installs from package.json alone and npx \
+             resolves outside the pnpm store, either way running versions \
+             nothing was tested against"
+        );
+    }
+
+    assert!(
+        DEPLOY.contains("--frozen-lockfile"),
+        "the deploy must install from the lockfile, not update it"
+    );
+}
