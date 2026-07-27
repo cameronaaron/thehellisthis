@@ -80,9 +80,12 @@ pub async fn cleanup_rooms(state: &Arc<AppState>) {
     }
 
     for name in &rooms_to_remove {
-        let Some(room) = rooms.remove(name) else {
-            continue;
-        };
+        // The names were just collected from this same map under this same
+        // lock, so `remove` cannot miss; `if let` here would be an unreachable
+        // branch that no test could ever cover.
+        let room = rooms
+            .remove(name)
+            .expect("room was present when it was marked for removal");
 
         info!(room = %name, "deleted inactive room");
 

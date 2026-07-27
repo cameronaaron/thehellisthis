@@ -119,10 +119,14 @@ impl RoomState {
             .map(|u| u.animal_name.as_str())
             .collect();
 
+        // Rotate the pool at most once. `pop_front` cannot fail inside this
+        // bound, so it is unwrapped rather than guarded by a branch nothing
+        // could ever exercise.
         for _ in 0..self.available_animals.len() {
-            let Some(animal) = self.available_animals.pop_front() else {
-                break;
-            };
+            let animal = self
+                .available_animals
+                .pop_front()
+                .expect("pool length was just measured");
 
             if !taken.contains(animal.as_str()) {
                 trace!(animal = %animal, "assigned animal name");

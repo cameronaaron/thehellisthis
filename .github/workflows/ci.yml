@@ -45,6 +45,25 @@ jobs:
       - name: Verify binary exists
         run: test -f target/release/infinite-chat
 
+  # Separate job: tarpaulin rebuilds with instrumentation, so it cannot share
+  # the gate job's artifacts anyway, and running it in parallel keeps it off the
+  # critical path to a deploy.
+  coverage:
+    name: Coverage floor
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install tarpaulin
+        run: cargo install cargo-tarpaulin --locked
+
+      - name: Enforce the coverage floor
+        run: scripts/coverage.sh
+
   # The Worker is TypeScript and deploys alongside the container; a type error
   # here fails the deploy after the Rust gate has already passed.
   worker:

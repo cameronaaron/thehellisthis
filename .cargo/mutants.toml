@@ -1,0 +1,29 @@
+# Mutation testing configuration.
+#
+# Coverage says a line ran. Mutation testing asks whether anything would have
+# *noticed* if that line were wrong — it edits the code (flipping a comparison,
+# replacing a return value) and fails when the suite still passes. It is the
+# check that catches the class of test this repo has already shipped once:
+# `assert!(result || !result)`, which covered a line and asserted nothing.
+#
+# Run with: cargo mutants            (everything; slow, minutes to hours)
+#           cargo mutants -f src/room.rs   (one file, for iteration)
+
+# Skip the process shell. `main` binds a socket and installs a signal handler;
+# mutating it produces mutants that can only be caught by starting and killing a
+# real process, which is not what this suite is for.
+exclude_re = [
+    "^main$",
+    "^shutdown_signal$",
+    "^init_tracing$",
+]
+
+# The suite is ~20s; a mutant that hangs is a mutant that broke a loop
+# condition, and waiting the default multiple of the baseline wastes minutes per
+# occurrence.
+timeout_multiplier = 3.0
+minimum_test_timeout = 60
+
+# Test everything, not just the mutated file's own tests: most behaviour here is
+# asserted by integration tests that drive a real server.
+test_workspace = true

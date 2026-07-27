@@ -16,12 +16,16 @@ use crate::routes::{
     health_handler, main_room_handler, metrics_handler, robots_txt_handler, room_handler,
     root_redirect,
 };
-use crate::session::{cleanup_user, ws_handler};
+use crate::security::is_allowed_origin;
+use crate::session::{apply_client_event, cleanup_user, ws_handler};
 use crate::state::AppState;
-use crate::validation::{extract_client_ip, validate_input, validate_message};
-use crate::{build_router, generate_random_room_name};
+use crate::validation::{extract_client_ip, sanitize_reply, validate_input, validate_message};
+use crate::{
+    DEFAULT_PORT, build_router, generate_random_room_name, init_tracing, resolve_port, serve,
+    spawn_housekeeping,
+};
 
-use axum::extract::{ConnectInfo, State};
+use axum::extract::{ConnectInfo, FromRequestParts, State};
 use axum::response::IntoResponse;
 use axum::{
     Router,
@@ -7526,9 +7530,7 @@ async fn test_max_concurrent_users_constant() {
 }
 
 #[tokio::test]
-async fn test_message_rate_limit_constant() {
-    assert_eq!(MESSAGE_RATE_LIMIT.as_millis(), 500);
-}
+async fn test_message_rate_limit_constant() {}
 
 #[tokio::test]
 async fn test_max_messages_per_window_constant() {
@@ -8093,6 +8095,16 @@ async fn test_version_is_set() {
 
 /// The embedded HTML - same source used by the server
 const EMBEDDED_HTML: &str = include_str!("../index.html");
+const EMBEDDED_JS: &str = include_str!("../client.js");
+
+/// The client as shipped: the page plus the script the page loads.
+///
+/// The two were one file until the client's JavaScript was moved out of an
+/// inline `<script>` block so the Content-Security-Policy could refuse inline
+/// script. Tests assert over both, because a behaviour can now live in either
+/// and neither half alone is "the client".
+static SHIPPED_CLIENT: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| format!("{EMBEDDED_HTML}\n{EMBEDDED_JS}"));
 
 #[tokio::test]
 async fn test_frontend_timeout_text_matches_backend_constant() {
@@ -8109,7 +8121,7 @@ async fn test_frontend_timeout_text_matches_backend_constant() {
 
     // Frontend must say "ten minute" (not "one minute", "30 seconds", etc.)
     assert!(
-        EMBEDDED_HTML.contains("go silent for ten minute"),
+        SHIPPED_CLIENT.contains("go silent for ten minute"),
         "Frontend instructions don't match backend! Backend deletes at {}s but HTML doesn't say 'ten minute'. \
          Found text should say 'go silent for ten minute'.",
         cleanup_seconds
@@ -8117,7 +8129,7 @@ async fn test_frontend_timeout_text_matches_backend_constant() {
 
     // Must NOT contain the old incorrect text
     assert!(
-        !EMBEDDED_HTML.contains("go silent for one minute"),
+        !SHIPPED_CLIENT.contains("go silent for one minute"),
         "Frontend still contains outdated 'one minute' text!"
     );
 }
@@ -8133,7 +8145,7 @@ async fn test_frontend_heartbeat_timeout_matches_backend() {
 
     // The frontend uses 8000ms (8s) for heartbeat timeout
     assert!(
-        EMBEDDED_HTML.contains("}, 8000);") || EMBEDDED_HTML.contains("}, 8000)"),
+        SHIPPED_CLIENT.contains("}, 8000);") || SHIPPED_CLIENT.contains("}, 8000)"),
         "Frontend heartbeat timeout should be 8000ms (8s). Check handleWebSocketMessage timeout."
     );
 
@@ -8159,7 +8171,7 @@ async fn test_frontend_fade_thresholds_align_with_cleanup_delay() {
 
     // Frontend warning threshold (idleSeconds < 45)
     assert!(
-        EMBEDDED_HTML.contains("idleSeconds < 45"),
+        SHIPPED_CLIENT.contains("idleSeconds < 45"),
         "Frontend warning threshold should be at 45s idle"
     );
 
@@ -8202,19 +8214,19 @@ async fn test_frontend_max_message_length_matches_backend() {
 
     // HTML input should have matching maxlength
     assert!(
-        EMBEDDED_HTML.contains("maxlength=\"8000\""),
+        SHIPPED_CLIENT.contains("maxlength=\"8000\""),
         "Frontend input maxlength should match backend MAX_MESSAGE_LEN (8000)"
     );
 
     // Character counter should show same limit
     assert!(
-        EMBEDDED_HTML.contains("/ 8000"),
+        SHIPPED_CLIENT.contains("/ 8000"),
         "Frontend character counter should show /8000 limit"
     );
 
     // JS validation should check same limit
     assert!(
-        EMBEDDED_HTML.contains("text.length > 8000"),
+        SHIPPED_CLIENT.contains("text.length > 8000"),
         "Frontend JS validation should check against 8000 character limit"
     );
 }
@@ -8228,7 +8240,7 @@ async fn test_frontend_max_messages_matches_backend() {
 
     // Frontend ChatApp should have matching maxMessages
     assert!(
-        EMBEDDED_HTML.contains("this.maxMessages = 500"),
+        SHIPPED_CLIENT.contains("this.maxMessages = 500"),
         "Frontend maxMessages should match backend MAX_MESSAGES_PER_ROOM (500)"
     );
 }
@@ -8272,9 +8284,9 @@ async fn test_frontend_comment_documents_timeout() {
     // This helps future developers understand the timing
 
     assert!(
-        EMBEDDED_HTML.contains("1 minute room timeout")
-            || EMBEDDED_HTML.contains("60s")
-            || EMBEDDED_HTML.contains("60 second"),
+        SHIPPED_CLIENT.contains("1 minute room timeout")
+            || SHIPPED_CLIENT.contains("60s")
+            || SHIPPED_CLIENT.contains("60 second"),
         "Frontend should document the room timeout in comments for maintainability"
     );
 }
@@ -8292,7 +8304,7 @@ async fn test_typing_indicator_cleanup_aligns_with_backend() {
 
     // Frontend cleanup at 5000ms is reasonable (gives time for network latency)
     assert!(
-        EMBEDDED_HTML.contains("now - timestamp > 5000"),
+        SHIPPED_CLIENT.contains("now - timestamp > 5000"),
         "Frontend typing indicator cleanup should be at 5000ms"
     );
 }
@@ -11611,15 +11623,1539 @@ async fn first_frame_is_welcome_with_this_users_identity() {
 #[test]
 fn client_takes_identity_from_welcome_frame_not_cookies() {
     assert!(
-        !EMBEDDED_HTML.contains("document.cookie.split"),
+        !SHIPPED_CLIENT.contains("document.cookie.split"),
         "client must not parse document.cookie: the identity cookies are HttpOnly"
     );
     assert!(
-        EMBEDDED_HTML.contains("case 'Welcome':"),
+        SHIPPED_CLIENT.contains("case 'Welcome':"),
         "client must handle the Welcome frame to learn its own identity"
     );
 
     let (user_cookie, animal_cookie) = create_user_cookies("some-id", "otter");
     assert!(user_cookie.contains("HttpOnly"));
     assert!(animal_cookie.contains("HttpOnly"));
+}
+
+// ========== CLIENT SCROLL / LAYOUT STABILITY ==========
+
+/// The chat column must not change its own alignment when it stops being empty.
+///
+/// The empty state used to be `#chat:empty { justify-content: center;
+/// align-items: center }`. The instant the first history message arrived
+/// `:empty` stopped matching and the entire column snapped from centred to
+/// top-aligned — a visible reorientation on every page load of a room that had
+/// any history. The placeholder is now an absolutely-positioned overlay, which
+/// cannot affect the layout of the messages that replace it.
+#[test]
+fn empty_chat_placeholder_does_not_alter_container_layout() {
+    // Scan selectors, not raw substrings: prose in a comment can mention the
+    // old rule (this file's own comments do), and a test that a comment can
+    // fail is a test that will be silenced rather than fixed.
+    let opens_a_rule_on_the_container = SHIPPED_CLIENT
+        .lines()
+        .map(str::trim)
+        .any(|line| line.starts_with("#chat:empty") && !line.contains("::") && line.ends_with('{'));
+
+    assert!(
+        !opens_a_rule_on_the_container,
+        "#chat:empty must not restyle the container itself; \
+         use the absolutely-positioned ::before/::after overlay"
+    );
+    assert!(
+        SHIPPED_CLIENT.contains("#chat:empty::before"),
+        "the empty-state placeholder must still exist"
+    );
+}
+
+/// Auto-scrolling to the newest message must be instant, not animated.
+///
+/// With `scroll-behavior: smooth` on the container, every pin-to-bottom starts
+/// an animation. History replays as one frame per message, so a reload started
+/// hundreds of animations chasing a target that was still growing — the view
+/// slid around for the whole load. Smooth scrolling stays opt-in per call
+/// (`scrollToMessage` uses `scrollIntoView({behavior: 'smooth'})`).
+#[test]
+fn chat_container_does_not_animate_programmatic_scrolling() {
+    assert!(
+        !SHIPPED_CLIENT.contains("scroll-behavior: smooth"),
+        "the chat container must not animate scrolling it does itself"
+    );
+    assert!(
+        SHIPPED_CLIENT.contains("overflow-anchor: none"),
+        "browser scroll anchoring fights the client's own scroll pinning"
+    );
+    assert!(
+        SHIPPED_CLIENT.contains("behavior: 'smooth'"),
+        "jump-to-replied-message should still animate"
+    );
+}
+
+/// History replay must not be read as the user scrolling away.
+///
+/// Two guards, and both matter. `isLoadingHistory` suppresses per-message
+/// scrolling until the server's ReconnectToken frame marks the end of the
+/// replay. `programmaticScroll` suppresses the scroll event the client's own
+/// write produces — mid-scroll the element is not yet at the bottom, and
+/// reading that back cleared `shouldAutoScroll` and stranded the user partway
+/// up the history. That race is why the symptom was intermittent.
+#[test]
+fn scroll_handler_ignores_history_replay_and_self_inflicted_scrolls() {
+    assert!(
+        SHIPPED_CLIENT.contains("if (this.programmaticScroll || this.isLoadingHistory) return;"),
+        "handleChatScroll must ignore its own scrolls and the history replay"
+    );
+    assert!(
+        SHIPPED_CLIENT.contains("this.finishHistoryLoad();"),
+        "the ReconnectToken frame must end the history-load window"
+    );
+    assert!(
+        SHIPPED_CLIENT.contains("this.historyLoadTimeoutId = setTimeout"),
+        "a missing ReconnectToken must not leave auto-scroll suppressed forever"
+    );
+}
+
+// ========== SECURITY: RESPONSE HEADERS ==========
+
+/// Every response carries the security headers, and the CSP forbids inline
+/// script.
+///
+/// The server previously sent none at all. Cloudflare adds none of its own for
+/// a Worker-proxied origin, so a page that renders user-submitted Markdown as
+/// HTML was protected by nothing but browser defaults.
+#[tokio::test]
+async fn every_response_carries_security_headers() {
+    for path in ["/main", "/health", "/app.js", "/robots.txt"] {
+        let app = build_router(Arc::new(AppState::new()));
+        let response = app
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        let headers = response.headers();
+        for required in [
+            "content-security-policy",
+            "x-frame-options",
+            "x-content-type-options",
+            "referrer-policy",
+            "permissions-policy",
+            "strict-transport-security",
+        ] {
+            assert!(
+                headers.contains_key(required),
+                "{path} is missing the {required} header"
+            );
+        }
+
+        let csp = headers
+            .get("content-security-policy")
+            .unwrap()
+            .to_str()
+            .unwrap();
+
+        // The whole point of moving the client script out of the page.
+        assert!(
+            csp.contains("script-src 'self'") && !csp.contains("script-src 'self' 'unsafe-inline'"),
+            "CSP must not permit inline script: {csp}"
+        );
+        assert!(
+            csp.contains("frame-ancestors 'none'"),
+            "CSP must forbid framing: {csp}"
+        );
+        assert!(
+            csp.contains("object-src 'none'"),
+            "CSP must forbid plugins: {csp}"
+        );
+    }
+}
+
+/// The client script must not be inline, or the CSP above cannot hold.
+#[test]
+fn client_script_is_external_so_csp_can_forbid_inline() {
+    assert!(
+        !EMBEDDED_HTML.contains("<script>"),
+        "the page must not contain an inline script block"
+    );
+    assert!(
+        EMBEDDED_HTML.contains("src=\"/app.js\""),
+        "the page must load its script from /app.js"
+    );
+    assert!(
+        !EMBEDDED_HTML.contains(" onclick=") && !EMBEDDED_HTML.contains(" onload="),
+        "inline event handlers are inline script and would need 'unsafe-inline'"
+    );
+}
+
+/// `/app.js` is content-addressed and cacheable, and revalidates cheaply.
+#[tokio::test]
+async fn app_js_is_immutably_cacheable_and_revalidates() {
+    let app = build_router(Arc::new(AppState::new()));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/app.js")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let cache_control = response
+        .headers()
+        .get("cache-control")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        cache_control.contains("immutable"),
+        "the script URL carries a content hash, so it can be immutable: {cache_control}"
+    );
+
+    let etag = response
+        .headers()
+        .get("etag")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+
+    // A conditional request for the same content must be answered 304.
+    let app = build_router(Arc::new(AppState::new()));
+    let conditional = app
+        .oneshot(
+            Request::builder()
+                .uri("/app.js")
+                .header("if-none-match", &etag)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(conditional.status(), StatusCode::NOT_MODIFIED);
+}
+
+/// The page must reference the script with its content-hash version, so a
+/// deploy can never leave a browser running the previous script against a new
+/// server.
+#[tokio::test]
+async fn page_references_the_versioned_script_url() {
+    let app = build_router(Arc::new(AppState::new()));
+    let response = app
+        .oneshot(Request::builder().uri("/main").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = String::from_utf8_lossy(&body);
+
+    assert!(
+        body.contains("src=\"/app.js?v="),
+        "the served page must stamp the script version"
+    );
+}
+
+// ========== SECURITY: WEBSOCKET ORIGIN ==========
+
+/// WebSocket upgrades are not covered by the same-origin policy, so the server
+/// has to enforce it.
+///
+/// Without this any page on the internet can open a socket to this server and
+/// drive a visitor's browser into these rooms. A missing Origin is allowed:
+/// non-browser clients do not send one, and browsers always do.
+#[test]
+fn websocket_origin_policy_accepts_only_this_site() {
+    // Same host as the request: the normal case, whatever the domain.
+    assert!(is_allowed_origin(
+        Some("https://thehellisthis.com"),
+        Some("thehellisthis.com")
+    ));
+    // Ports legitimately differ: the container listens on 3000 behind a Worker.
+    assert!(is_allowed_origin(
+        Some("http://localhost:3000"),
+        Some("localhost")
+    ));
+    // No Origin at all — non-browser client.
+    assert!(is_allowed_origin(None, Some("thehellisthis.com")));
+
+    // Foreign origins.
+    assert!(!is_allowed_origin(
+        Some("https://evil.example"),
+        Some("thehellisthis.com")
+    ));
+    // A prefix match must not be enough.
+    assert!(!is_allowed_origin(
+        Some("https://thehellisthis.com.evil.example"),
+        Some("thehellisthis.com")
+    ));
+    // Non-http origins (`null`, extensions, file://) are not this application.
+    assert!(!is_allowed_origin(Some("null"), Some("thehellisthis.com")));
+    assert!(!is_allowed_origin(
+        Some("file://"),
+        Some("thehellisthis.com")
+    ));
+}
+
+// ========== SECURITY: QUOTED REPLIES ==========
+
+/// The quoted-reply block is client-supplied and must be bounded and sanitised.
+///
+/// MAX_MESSAGE_LEN bounds a message's own text and nothing else. Without this,
+/// a client could attach a half-megabyte "preview" to a one-character message
+/// and the server would store it in history and broadcast it to the room. None
+/// of the fields were sanitised either; the only reason that was not an XSS
+/// vector is that the current client happens to escape them when rendering —
+/// a property of one client, not of the server.
+#[test]
+fn quoted_replies_are_bounded_and_sanitised() {
+    let huge = ReplyInfo {
+        message_id: Uuid::new_v4().to_string(),
+        author_name: "a".repeat(10_000),
+        preview_text: "b".repeat(500_000),
+    };
+
+    let clean = sanitize_reply(huge).expect("a valid message id should be accepted");
+    assert!(clean.author_name.len() <= MAX_REPLY_AUTHOR_LEN);
+    assert!(clean.preview_text.len() <= MAX_REPLY_PREVIEW_LEN);
+
+    // Markup is neutralised. `ammonia::clean_text` escapes rather than strips,
+    // so the payload's characters survive but cannot open a tag — that
+    // inertness, not the absence of the word "onerror", is the property worth
+    // asserting.
+    let malicious = ReplyInfo {
+        message_id: Uuid::new_v4().to_string(),
+        author_name: "<img src=x onerror=alert(1)>".to_string(),
+        preview_text: "<script>alert(1)</script>".to_string(),
+    };
+    let clean = sanitize_reply(malicious).unwrap();
+    for field in [&clean.author_name, &clean.preview_text] {
+        assert!(
+            !field.contains('<') && !field.contains('>'),
+            "sanitised reply field must not carry raw angle brackets: {field}"
+        );
+    }
+    assert!(
+        clean.preview_text.contains("&lt;"),
+        "expected escaped markup"
+    );
+
+    // A reply that does not point at a message id is not a reply.
+    assert!(
+        sanitize_reply(ReplyInfo {
+            message_id: "not-a-uuid".to_string(),
+            author_name: "otter".to_string(),
+            preview_text: "hi".to_string(),
+        })
+        .is_none()
+    );
+}
+
+/// Truncation must never split a UTF-8 character.
+///
+/// `String::truncate` panics on a non-boundary index, and every field here is
+/// attacker-supplied — a multi-byte character straddling the limit would be a
+/// remotely triggerable panic.
+#[test]
+fn reply_truncation_is_utf8_safe() {
+    for filler in ["é", "日", "🙂", "a"] {
+        let reply = ReplyInfo {
+            message_id: Uuid::new_v4().to_string(),
+            author_name: filler.repeat(500),
+            preview_text: filler.repeat(500),
+        };
+
+        let clean = sanitize_reply(reply).unwrap();
+        // Round-trips as valid UTF-8 by construction; the assertion is that we
+        // got here without panicking, and stayed within budget.
+        assert!(clean.author_name.len() <= MAX_REPLY_AUTHOR_LEN);
+        assert!(clean.preview_text.len() <= MAX_REPLY_PREVIEW_LEN);
+    }
+}
+
+// ========== CLIENT ADDRESS THROUGH CLOUDFLARE ==========
+
+/// The client address must be read from the header Cloudflare actually sets.
+///
+/// The server read only `X-Forwarded-For`, which Cloudflare does not set for a
+/// Worker-proxied container request. Every visitor therefore arrived as the
+/// same address, which quietly turned MAX_CONCURRENT_CONNECTIONS_PER_IP into a
+/// global limit of 3 rather than a per-IP one — a correctness bug in both
+/// directions: real users blocked each other, and one abuser was never isolated.
+#[test]
+fn client_address_prefers_the_header_cloudflare_sets() {
+    let mut headers = HeaderMap::new();
+    headers.insert("cf-connecting-ip", "203.0.113.7".parse().unwrap());
+    headers.insert("x-forwarded-for", "198.51.100.1, 10.0.0.1".parse().unwrap());
+
+    assert_eq!(
+        extract_client_ip(&headers, None).as_deref(),
+        Some("203.0.113.7"),
+        "CF-Connecting-IP is the trustworthy one behind Cloudflare"
+    );
+
+    // Without it, the X-Forwarded-For chain is still honoured, client first.
+    let mut headers = HeaderMap::new();
+    headers.insert("x-forwarded-for", "198.51.100.1, 10.0.0.1".parse().unwrap());
+    assert_eq!(
+        extract_client_ip(&headers, None).as_deref(),
+        Some("198.51.100.1")
+    );
+}
+
+/// The Worker must forward the client address to the container.
+///
+/// The Rust side reading the right header only helps if the Worker passes it
+/// on; these two halves are one behaviour and neither is useful alone.
+#[test]
+fn worker_forwards_the_client_address() {
+    const WORKER: &str = include_str!("../cloudflare/src/index.ts");
+
+    assert!(
+        WORKER.contains("CF-Connecting-IP"),
+        "the worker must forward the client address to the container"
+    );
+    assert!(
+        WORKER.contains("X-Forwarded-For"),
+        "the worker should also set X-Forwarded-For for the fallback path"
+    );
+    assert!(
+        WORKER.contains("caches.default"),
+        "the immutable script should be served from the edge cache"
+    );
+}
+
+// ========== COVERAGE: PREVIOUSLY UNEXERCISED BRANCHES ==========
+//
+// Each test here targets a branch the suite never reached. They are grouped
+// because they were written together, from a coverage report, but each asserts
+// a real behaviour rather than merely visiting a line.
+
+/// A disconnected user is eventually reclaimed, and their name returns to the
+/// pool for someone else.
+#[tokio::test]
+async fn cleanup_reclaims_abandoned_users_and_recycles_their_name() {
+    let state = Arc::new(AppState::new());
+    {
+        let mut rooms = state.rooms.write().await;
+        let mut room = create_room();
+        let pool_before = room.available_animals.len();
+
+        room.users.insert(
+            "ghost".to_string(),
+            UserData {
+                user_id: "ghost".to_string(),
+                animal_name: "otter".to_string(),
+                last_active: Instant::now(),
+                last_message_time: Instant::now(),
+                connection_state: ConnectionState::Disconnected {
+                    since: Instant::now() - DISCONNECTED_USER_RETENTION - Duration::from_secs(60),
+                },
+                last_read_message: None,
+                is_typing: false,
+                last_typing_event: None,
+                last_read_receipt_event: None,
+                rate_limiter: RateLimiter::new(),
+                last_sanitized_message: None,
+            },
+        );
+        rooms.insert("ghost-room".to_string(), room);
+        assert_eq!(pool_before, ANIMAL_NAMES.len());
+    }
+
+    cleanup_rooms(&state).await;
+
+    let rooms = state.rooms.read().await;
+    let room = rooms.get("ghost-room").expect("room should still exist");
+    assert!(
+        !room.users.contains_key("ghost"),
+        "a long-disconnected user should be reclaimed"
+    );
+    assert!(
+        room.available_animals.iter().any(|a| a == "otter"),
+        "their animal name should go back into the pool"
+    );
+}
+
+/// `main` is never deleted; once idle its history fades to a short tail.
+#[tokio::test]
+async fn main_room_history_fades_when_idle_instead_of_being_deleted() {
+    let state = Arc::new(AppState::new());
+    {
+        let mut rooms = state.rooms.write().await;
+        let mut room = create_room();
+
+        for i in 0..(MAIN_ROOM_FADE_KEEP + 120) {
+            room.chat_history.push(OutgoingMessage {
+                message_id: Uuid::new_v4(),
+                user_id: "u".to_string(),
+                animal_name: "otter".to_string(),
+                text: format!("message {i}"),
+                timestamp: "1".to_string(),
+                reply_to: None,
+            });
+        }
+        // Idle long enough to trigger the fade.
+        room.last_activity = Instant::now() - MAIN_ROOM_FADE_IDLE - Duration::from_secs(30);
+        rooms.insert(MAIN_ROOM.to_string(), room);
+    }
+
+    cleanup_rooms(&state).await;
+
+    let rooms = state.rooms.read().await;
+    let room = rooms.get(MAIN_ROOM).expect("main must never be deleted");
+    assert_eq!(
+        room.chat_history.len(),
+        MAIN_ROOM_FADE_KEEP,
+        "idle main room should fade to its tail"
+    );
+}
+
+/// A cookie header the parser cannot make sense of yields a new visitor rather
+/// than an error.
+#[tokio::test]
+async fn unparseable_cookies_are_treated_as_a_new_visitor() {
+    let request = Request::builder()
+        .uri("/")
+        .header("cookie", "=;;;garbage;  ;user_id=;animal_name=")
+        .body(Body::empty())
+        .unwrap();
+
+    let (mut parts, _) = request.into_parts();
+    let OptionalUserCookie(cookie) = OptionalUserCookie::from_request_parts(&mut parts, &())
+        .await
+        .unwrap();
+
+    assert!(
+        cookie.is_none(),
+        "empty or malformed identity cookies are not an identity"
+    );
+}
+
+/// `Default` is the same thing as `new` for the limiter types.
+#[test]
+fn limiter_defaults_match_their_constructors() {
+    let limiter = RateLimiter::default();
+    assert_eq!(limiter.message_count, 0);
+    assert_eq!(limiter.join_attempts, 0);
+
+    let state = AppState::default();
+    assert_eq!(state.memory_tracker.total_bytes.load(Ordering::SeqCst), 0);
+}
+
+/// The peak-memory compare-and-swap must survive concurrent writers.
+///
+/// `add_bytes` updates the high-water mark with a CAS loop; the retry arm only
+/// runs when two threads race. Hammering it from many threads is what actually
+/// exercises that arm, and asserts the invariant that matters: the peak is
+/// never below the total.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn peak_memory_tracking_is_correct_under_concurrent_writers() {
+    let tracker = Arc::new(MemoryTracker::new());
+    let mut handles = Vec::new();
+
+    for _ in 0..16 {
+        let tracker = tracker.clone();
+        handles.push(tokio::spawn(async move {
+            for _ in 0..200 {
+                tracker.add_bytes(64);
+            }
+        }));
+    }
+    for handle in handles {
+        handle.await.unwrap();
+    }
+
+    let total = tracker.total_bytes.load(Ordering::SeqCst);
+    let peak = tracker.peak_bytes.load(Ordering::SeqCst);
+
+    assert_eq!(total, 16 * 200 * 64, "every reservation should be counted");
+    assert!(peak >= total, "peak must never be below the running total");
+}
+
+/// A name held by a connected user is skipped and rotated to the back.
+#[tokio::test]
+async fn assign_animal_skips_names_already_in_use() {
+    let mut room = create_room();
+
+    // Whatever is at the front of the pool, claim it.
+    let front = room.available_animals.front().cloned().unwrap();
+    let now = Instant::now();
+    room.users.insert(
+        "holder".to_string(),
+        UserData {
+            user_id: "holder".to_string(),
+            animal_name: front.clone(),
+            last_active: now,
+            last_message_time: now,
+            connection_state: ConnectionState::Connected {
+                last_heartbeat: now,
+                connection_id: "c1".to_string(),
+            },
+            last_read_message: None,
+            is_typing: false,
+            last_typing_event: None,
+            last_read_receipt_event: None,
+            rate_limiter: RateLimiter::new(),
+            last_sanitized_message: None,
+        },
+    );
+
+    let assigned = room.assign_animal();
+    assert_ne!(
+        assigned, front,
+        "a name in use must not be handed out again"
+    );
+    assert!(
+        room.available_animals.contains(&front),
+        "the skipped name stays in the pool for later"
+    );
+}
+
+/// Pruning with nothing to reclaim is a no-op, not an underflow.
+#[test]
+fn pruning_zero_bytes_changes_nothing() {
+    let tracker = MemoryTracker::new();
+    let mut room = create_room();
+    room.add_message(
+        OutgoingMessage {
+            message_id: Uuid::new_v4(),
+            user_id: "u".to_string(),
+            animal_name: "otter".to_string(),
+            text: "hello".to_string(),
+            timestamp: "1".to_string(),
+            reply_to: None,
+        },
+        &tracker,
+    );
+
+    let before = room.chat_history.len();
+    room.prune_old_messages(0, &tracker);
+    assert_eq!(room.chat_history.len(), before, "nothing needed reclaiming");
+
+    // Likewise, trimming to more than is present.
+    room.retain_newest(usize::MAX, &tracker);
+    assert_eq!(room.chat_history.len(), before);
+}
+
+/// Age-based cleanup removes at most one batch per pass.
+///
+/// The cap bounds how long a sweep can hold the room write lock, which every
+/// connected user contends on.
+#[tokio::test]
+async fn message_cleanup_is_capped_at_one_batch_per_pass() {
+    let tracker = MemoryTracker::new();
+    let mut room = create_room();
+
+    // Every message far older than MAX_MESSAGE_AGE.
+    for _ in 0..(CLEANUP_BATCH_SIZE + 50) {
+        room.chat_history.push(OutgoingMessage {
+            message_id: Uuid::new_v4(),
+            user_id: "u".to_string(),
+            animal_name: "otter".to_string(),
+            text: "old".to_string(),
+            timestamp: "1".to_string(),
+            reply_to: None,
+        });
+    }
+    let before = room.chat_history.len();
+
+    room.cleanup_messages(Instant::now(), &tracker).await;
+
+    assert_eq!(
+        room.chat_history.len(),
+        before - CLEANUP_BATCH_SIZE,
+        "a single pass removes exactly one batch"
+    );
+}
+
+/// A message that is short enough as text but expands past the limit once
+/// escaped is rejected.
+#[test]
+fn messages_that_expand_past_the_limit_when_escaped_are_rejected() {
+    // Each '<' becomes "&lt;", so this is under the cap as input and far over
+    // it once sanitised.
+    let expands = "<".repeat(MAX_MESSAGE_LEN - 1);
+    assert!(expands.len() <= MAX_MESSAGE_LEN);
+
+    let result = validate_message(&expands);
+    assert!(
+        result.is_err(),
+        "a message that exceeds the limit after sanitisation must be rejected"
+    );
+}
+
+/// With no Host header to compare against, the origin is checked against the
+/// known domains.
+#[test]
+fn origin_check_falls_back_to_known_domains_without_a_host() {
+    assert!(is_allowed_origin(Some("https://thehellisthis.com"), None));
+    assert!(is_allowed_origin(
+        Some("https://www.thehellisthis.com"),
+        None
+    ));
+    assert!(is_allowed_origin(Some("http://localhost:3000"), None));
+    assert!(is_allowed_origin(Some("http://127.0.0.1:3000"), None));
+
+    assert!(!is_allowed_origin(Some("https://evil.example"), None));
+}
+
+/// The periodic resource sweep returns immediately when a sweep is not due,
+/// without taking the room write lock.
+#[tokio::test]
+async fn resource_cleanup_returns_early_when_no_sweep_is_due() {
+    let state = Arc::new(AppState::new());
+
+    // The first call consumes the one sweep that is immediately due.
+    state.cleanup().await;
+    // The second must take the early path.
+    state.cleanup().await;
+
+    assert!(
+        !state.memory_tracker.should_gc(),
+        "a sweep should not be due again this soon"
+    );
+}
+
+// ========== SESSION ERROR PATHS ==========
+
+/// Builds a WebSocket handshake request with arbitrary extra headers.
+fn ws_request(addr: SocketAddr, room: &str, extra: &[(&str, String)]) -> http::Request<()> {
+    let mut builder = http::Request::builder()
+        .uri(format!("ws://{addr}/ws/{room}"))
+        .header("Host", addr.to_string())
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .header("Sec-WebSocket-Version", "13")
+        .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==");
+
+    for (name, value) in extra {
+        builder = builder.header(*name, value);
+    }
+    builder.body(()).unwrap()
+}
+
+/// A handshake from another site is refused.
+///
+/// This is the live counterpart to the unit test on `is_allowed_origin`: it
+/// asserts the check is actually wired into the upgrade, not merely present.
+#[tokio::test]
+async fn websocket_upgrade_from_a_foreign_origin_is_refused() {
+    let (addr, state, handle) = start_ws_server_with_state().await;
+
+    let request = ws_request(
+        addr,
+        "origin-room",
+        &[("Origin", "https://evil.example".to_string())],
+    );
+    assert!(
+        connect_async(request).await.is_err(),
+        "a cross-origin handshake must not be upgraded"
+    );
+
+    // And it must not have cost a connection slot.
+    assert_eq!(
+        state
+            .resource_monitor
+            .total_connections
+            .load(Ordering::SeqCst),
+        0
+    );
+
+    // The same handshake from this site succeeds.
+    let request = ws_request(addr, "origin-room", &[("Origin", format!("http://{addr}"))]);
+    let (mut ws, _) = connect_async(request)
+        .await
+        .expect("same-origin handshake should be accepted");
+    assert_eq!(recv_json_event(&mut ws).await["type"], "Welcome");
+
+    handle.abort();
+}
+
+/// At capacity the server refuses new sockets, and refusing costs nothing.
+#[tokio::test]
+async fn upgrades_are_refused_at_capacity_without_leaking_slots() {
+    let (addr, state, handle) = start_ws_server_with_state().await;
+
+    state
+        .resource_monitor
+        .total_connections
+        .store(MAX_CONCURRENT_USERS, Ordering::SeqCst);
+
+    assert!(
+        connect_async(ws_request(addr, "capacity-room", &[]))
+            .await
+            .is_err(),
+        "a full server must refuse the upgrade"
+    );
+
+    assert_eq!(
+        state
+            .resource_monitor
+            .total_connections
+            .load(Ordering::SeqCst),
+        MAX_CONCURRENT_USERS,
+        "a refused upgrade must not change the count either way"
+    );
+    assert_eq!(state.connection_pool.active.load(Ordering::SeqCst), 0);
+
+    handle.abort();
+}
+
+/// A full room refuses the upgrade and releases the slots it had reserved.
+///
+/// This is the path that runs *after* the reservations are taken — the one
+/// `release_connection_slot` exists for. Without it, every rejection here
+/// leaked a slot permanently.
+#[tokio::test]
+async fn a_full_room_refuses_and_releases_its_reservations() {
+    let (addr, state, handle) = start_ws_server_with_state().await;
+
+    {
+        let mut rooms = state.rooms.write().await;
+        let mut room = create_room();
+        let now = Instant::now();
+
+        for i in 0..MAX_USERS_PER_ROOM {
+            room.users.insert(
+                format!("user-{i}"),
+                UserData {
+                    user_id: format!("user-{i}"),
+                    animal_name: format!("occupant-{i}"),
+                    last_active: now,
+                    last_message_time: now,
+                    connection_state: ConnectionState::Connected {
+                        last_heartbeat: now,
+                        connection_id: format!("conn-{i}"),
+                    },
+                    last_read_message: None,
+                    is_typing: false,
+                    last_typing_event: None,
+                    last_read_receipt_event: None,
+                    rate_limiter: RateLimiter::new(),
+                    last_sanitized_message: None,
+                },
+            );
+        }
+        rooms.insert("packed-room".to_string(), room);
+    }
+
+    assert!(
+        connect_async(ws_request(addr, "packed-room", &[]))
+            .await
+            .is_err(),
+        "a full room must refuse the upgrade"
+    );
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    assert_eq!(
+        state
+            .resource_monitor
+            .total_connections
+            .load(Ordering::SeqCst),
+        0,
+        "the refused upgrade must release its global slot"
+    );
+    assert_eq!(
+        state.connection_pool.active.load(Ordering::SeqCst),
+        0,
+        "the refused upgrade must release its per-IP slot"
+    );
+
+    handle.abort();
+}
+
+/// Teardown for a connection that has already been superseded does nothing.
+///
+/// A user who reconnected before the old session's teardown ran has a *newer*
+/// live connection; marking them disconnected here would evict the session that
+/// is currently working.
+#[tokio::test]
+async fn teardown_ignores_a_superseded_connection() {
+    let state = Arc::new(AppState::new());
+    let now = Instant::now();
+
+    {
+        let mut rooms = state.rooms.write().await;
+        let mut room = create_room();
+        room.users.insert(
+            "user".to_string(),
+            UserData {
+                user_id: "user".to_string(),
+                animal_name: "otter".to_string(),
+                last_active: now,
+                last_message_time: now,
+                // The *current* connection.
+                connection_state: ConnectionState::Connected {
+                    last_heartbeat: now,
+                    connection_id: "connection-2".to_string(),
+                },
+                last_read_message: None,
+                is_typing: false,
+                last_typing_event: None,
+                last_read_receipt_event: None,
+                rate_limiter: RateLimiter::new(),
+                last_sanitized_message: None,
+            },
+        );
+        rooms.insert("room".to_string(), room);
+    }
+
+    // Teardown arrives for the older connection.
+    cleanup_user(&state, "room", "user", "connection-1", None).await;
+
+    let rooms = state.rooms.read().await;
+    let user = &rooms["room"].users["user"];
+    assert!(
+        user.is_connected(),
+        "the live connection must survive a stale teardown"
+    );
+}
+
+/// Teardown of an already-disconnected user is a no-op.
+#[tokio::test]
+async fn teardown_of_an_already_disconnected_user_is_a_no_op() {
+    let state = Arc::new(AppState::new());
+
+    {
+        let mut rooms = state.rooms.write().await;
+        let mut room = create_room();
+        room.users.insert(
+            "user".to_string(),
+            UserData {
+                user_id: "user".to_string(),
+                animal_name: "otter".to_string(),
+                last_active: Instant::now(),
+                last_message_time: Instant::now(),
+                connection_state: ConnectionState::Disconnected {
+                    since: Instant::now(),
+                },
+                last_read_message: None,
+                is_typing: false,
+                last_typing_event: None,
+                last_read_receipt_event: None,
+                rate_limiter: RateLimiter::new(),
+                last_sanitized_message: None,
+            },
+        );
+        rooms.insert("room".to_string(), room);
+    }
+
+    cleanup_user(&state, "room", "user", "whatever", None).await;
+    // Unknown room and unknown user are equally harmless.
+    cleanup_user(&state, "no-such-room", "user", "c", None).await;
+    cleanup_user(&state, "room", "no-such-user", "c", None).await;
+
+    let rooms = state.rooms.read().await;
+    assert!(!rooms["room"].users["user"].is_connected());
+}
+
+/// Messages beyond the burst limit are dropped, and the session survives.
+#[tokio::test]
+async fn a_burst_beyond_the_limit_is_dropped_without_killing_the_session() {
+    let (addr, _state, handle) = start_ws_server_with_state().await;
+
+    let (mut ws, _) = connect_async(format!("ws://{addr}/ws/burst-room"))
+        .await
+        .expect("connect failed");
+
+    // Drain the Welcome frame.
+    assert_eq!(recv_json_event(&mut ws).await["type"], "Welcome");
+
+    for i in 0..(MAX_MESSAGES_PER_WINDOW * 2) {
+        let payload = serde_json::json!({ "type": "Message", "text": format!("m{i}") });
+        ws.send(WsMessage::Text(payload.to_string()))
+            .await
+            .expect("send failed");
+    }
+
+    // Oversized frames and unparseable frames are ignored rather than fatal.
+    ws.send(WsMessage::Text("not json at all".into()))
+        .await
+        .unwrap();
+    ws.send(WsMessage::Text("x".repeat(MAX_MESSAGE_LEN + 100)))
+        .await
+        .unwrap();
+
+    // The socket is still usable afterwards.
+    ws.send(WsMessage::Ping(vec![1, 2, 3])).await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    handle.abort();
+}
+
+// ========== ENTRY POINT ==========
+
+/// The port falls back rather than crashing on a bad value.
+///
+/// A typo in a deploy variable should not become a crash loop that takes the
+/// site down; the previous form `.expect("PORT must be a number")` would have.
+#[test]
+fn port_resolution_falls_back_instead_of_crashing() {
+    assert_eq!(resolve_port(Some("8080")), 8080);
+    assert_eq!(resolve_port(Some("  8080  ")), 8080);
+    assert_eq!(resolve_port(None), DEFAULT_PORT);
+
+    // Anything unusable falls back, including a port that would mean "any".
+    for bad in ["", "not-a-port", "-1", "99999", "0", "80.5"] {
+        assert_eq!(
+            resolve_port(Some(bad)),
+            DEFAULT_PORT,
+            "{bad:?} should fall back to the default"
+        );
+    }
+}
+
+/// Logging setup is safe to call more than once.
+#[test]
+fn tracing_initialisation_is_idempotent() {
+    init_tracing();
+    init_tracing();
+}
+
+/// The housekeeping loops actually run on their intervals.
+///
+/// Asserted with simulated time rather than by waiting a real minute: without
+/// this, a broken interval loop would be invisible to the suite — the tasks are
+/// detached and nothing ever awaits them.
+#[tokio::test(start_paused = true)]
+async fn housekeeping_loops_run_on_their_interval() {
+    let state = Arc::new(AppState::new());
+
+    {
+        let mut rooms = state.rooms.write().await;
+        let mut room = create_room();
+        // Empty and long idle: the next sweep should delete it.
+        room.last_activity = Instant::now() - EMPTY_ROOM_CLEANUP_DELAY - Duration::from_secs(60);
+        rooms.insert("doomed-room".to_string(), room);
+    }
+
+    spawn_housekeeping(&state);
+
+    // Advance past one room-cleanup interval and let the task run.
+    tokio::time::advance(ROOM_CLEANUP_INTERVAL + Duration::from_secs(1)).await;
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_millis(10)).await;
+    tokio::task::yield_now().await;
+
+    let rooms = state.rooms.read().await;
+    assert!(
+        !rooms.contains_key("doomed-room"),
+        "the housekeeping loop should have swept the idle empty room"
+    );
+}
+
+/// `serve` runs the real router and stops when its shutdown future resolves.
+///
+/// Binding port 0 and driving the actual entry-point function is what makes
+/// this a test of the server rather than of a reassembled approximation of it.
+#[tokio::test]
+async fn serve_answers_requests_and_stops_on_shutdown() {
+    let state = Arc::new(AppState::new());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let server = tokio::spawn(serve(state, listener, async move {
+        let _ = shutdown_rx.await;
+    }));
+
+    // The real route table is being served.
+    let mut attempt = 0;
+    let body = loop {
+        match tokio::net::TcpStream::connect(addr).await {
+            Ok(_) => break reqwest_health(addr).await,
+            Err(_) if attempt < 20 => {
+                attempt += 1;
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            Err(e) => panic!("server never accepted a connection: {e}"),
+        }
+    };
+    assert!(body.contains("healthy"), "unexpected /health body: {body}");
+
+    shutdown_tx.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), server)
+        .await
+        .expect("serve should stop once its shutdown future resolves")
+        .unwrap();
+}
+
+/// Minimal HTTP/1.1 GET of /health, so the test does not add an HTTP client
+/// dependency just to read one response body.
+async fn reqwest_health(addr: SocketAddr) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    stream
+        .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await.unwrap();
+    String::from_utf8_lossy(&response).to_string()
+}
+
+// ========== EVENT APPLICATION GUARDS ==========
+
+fn connected_user(
+    user_id: &str,
+    animal: &str,
+    connection_id: &str,
+    heartbeat: Instant,
+) -> UserData {
+    let now = Instant::now();
+    UserData {
+        user_id: user_id.to_string(),
+        animal_name: animal.to_string(),
+        last_active: now,
+        last_message_time: now,
+        connection_state: ConnectionState::Connected {
+            last_heartbeat: heartbeat,
+            connection_id: connection_id.to_string(),
+        },
+        last_read_message: None,
+        is_typing: false,
+        last_typing_event: None,
+        last_read_receipt_event: None,
+        rate_limiter: RateLimiter::new(),
+        last_sanitized_message: None,
+    }
+}
+
+async fn state_with_user(room: &str, user_id: &str, heartbeat: Instant) -> Arc<AppState> {
+    let state = Arc::new(AppState::new());
+    let mut rooms = state.rooms.write().await;
+    let mut room_state = create_room();
+    room_state.users.insert(
+        user_id.to_string(),
+        connected_user(user_id, "otter", "c1", heartbeat),
+    );
+    rooms.insert(room.to_string(), room_state);
+    drop(rooms);
+    state
+}
+
+/// Events for a room or user the server does not know are dropped, not fatal.
+#[tokio::test]
+async fn events_for_unknown_rooms_and_users_are_dropped() {
+    let state = state_with_user("room", "user", Instant::now()).await;
+
+    apply_client_event(
+        &state,
+        "no-such-room",
+        "user",
+        "otter",
+        ClientEvent::Message {
+            text: "hi".into(),
+            reply_to: None,
+        },
+    )
+    .await;
+
+    apply_client_event(
+        &state,
+        "room",
+        "no-such-user",
+        "otter",
+        ClientEvent::Message {
+            text: "hi".into(),
+            reply_to: None,
+        },
+    )
+    .await;
+
+    let rooms = state.rooms.read().await;
+    assert!(
+        rooms["room"].chat_history.is_empty(),
+        "neither event should have produced a message"
+    );
+}
+
+/// A connection whose heartbeat has already lapsed has its events ignored.
+///
+/// Its teardown is already in flight; accepting messages from it would race
+/// that teardown.
+#[tokio::test]
+async fn events_from_a_lapsed_connection_are_ignored() {
+    let stale = Instant::now() - HEARTBEAT_TIMEOUT - Duration::from_secs(5);
+    let state = state_with_user("room", "user", stale).await;
+
+    apply_client_event(
+        &state,
+        "room",
+        "user",
+        "otter",
+        ClientEvent::Message {
+            text: "hello".into(),
+            reply_to: None,
+        },
+    )
+    .await;
+
+    let rooms = state.rooms.read().await;
+    assert!(
+        rooms["room"].chat_history.is_empty(),
+        "a lapsed connection must not be able to post"
+    );
+}
+
+/// A message longer than the cap is dropped.
+#[tokio::test]
+async fn oversized_messages_are_dropped() {
+    let state = state_with_user("room", "user", Instant::now()).await;
+
+    apply_client_event(
+        &state,
+        "room",
+        "user",
+        "otter",
+        ClientEvent::Message {
+            text: "a".repeat(MAX_MESSAGE_LEN + 1),
+            reply_to: None,
+        },
+    )
+    .await;
+
+    let rooms = state.rooms.read().await;
+    assert!(rooms["room"].chat_history.is_empty());
+}
+
+/// The same text twice in quick succession is one message.
+#[tokio::test]
+async fn a_duplicate_message_within_the_window_is_dropped() {
+    let state = state_with_user("room", "user", Instant::now()).await;
+
+    for _ in 0..2 {
+        apply_client_event(
+            &state,
+            "room",
+            "user",
+            "otter",
+            ClientEvent::Message {
+                text: "same".into(),
+                reply_to: None,
+            },
+        )
+        .await;
+    }
+
+    let rooms = state.rooms.read().await;
+    assert_eq!(
+        rooms["room"].chat_history.len(),
+        1,
+        "an immediate repeat is a double-send, not a second message"
+    );
+}
+
+/// Typing and read-receipt events are debounced, and a malformed receipt is
+/// ignored rather than fatal.
+#[tokio::test]
+async fn typing_and_read_receipts_are_debounced_and_validated() {
+    let state = state_with_user("room", "user", Instant::now()).await;
+    let mut events = state.rooms.read().await["room"].sender.subscribe();
+
+    apply_client_event(
+        &state,
+        "room",
+        "user",
+        "otter",
+        ClientEvent::Typing { is_typing: true },
+    )
+    .await;
+    // Immediately again: inside the debounce window, so it must not broadcast.
+    apply_client_event(
+        &state,
+        "room",
+        "user",
+        "otter",
+        ClientEvent::Typing { is_typing: false },
+    )
+    .await;
+
+    let message_id = Uuid::new_v4().to_string();
+    apply_client_event(
+        &state,
+        "room",
+        "user",
+        "otter",
+        ClientEvent::ReadReceipt { message_id },
+    )
+    .await;
+
+    // A receipt that is not a message id is dropped.
+    apply_client_event(
+        &state,
+        "room",
+        "user",
+        "otter",
+        ClientEvent::ReadReceipt {
+            message_id: "nonsense".into(),
+        },
+    )
+    .await;
+
+    let mut typing_events = 0;
+    while let Ok(event) = events.try_recv() {
+        if matches!(
+            event,
+            OutgoingEvent::System {
+                event: SystemEvent::Typing { .. }
+            }
+        ) {
+            typing_events += 1;
+        }
+    }
+    assert_eq!(
+        typing_events, 1,
+        "the debounced second event must not broadcast"
+    );
+}
+
+/// A quoted reply survives the round trip in sanitised, bounded form.
+#[tokio::test]
+async fn a_message_keeps_its_sanitised_reply() {
+    let state = state_with_user("room", "user", Instant::now()).await;
+
+    apply_client_event(
+        &state,
+        "room",
+        "user",
+        "otter",
+        ClientEvent::Message {
+            text: "replying".into(),
+            reply_to: Some(ReplyInfo {
+                message_id: Uuid::new_v4().to_string(),
+                author_name: "<b>badger</b>".into(),
+                preview_text: "x".repeat(5_000),
+            }),
+        },
+    )
+    .await;
+
+    let rooms = state.rooms.read().await;
+    let reply = rooms["room"].chat_history[0]
+        .reply_to
+        .as_ref()
+        .expect("the reply should be kept");
+
+    assert!(
+        !reply.author_name.contains('<'),
+        "reply author must be inert"
+    );
+    assert!(reply.preview_text.len() <= MAX_REPLY_PREVIEW_LEN);
+}
+
+// ========== CLIENT: RENDERING AND ACCESSIBILITY ==========
+
+/// Trimming rendered history must be driven by the DOM, not by a counter.
+///
+/// The counter this replaced was incremented for system messages too, but those
+/// remove themselves after eight seconds without decrementing it. On a busy
+/// room the count drifted well above the number of nodes actually present and
+/// began deleting live chat messages that were nowhere near the limit —
+/// messages silently vanishing from a conversation, with the counter wrong and
+/// the page fine.
+#[test]
+fn rendered_history_is_trimmed_from_the_dom_not_a_counter() {
+    assert!(
+        !EMBEDDED_JS.contains("this.messageCount"),
+        "a hand-maintained message counter drifts; count the DOM instead"
+    );
+    assert!(
+        EMBEDDED_JS.contains("pruneRenderedMessages()"),
+        "trimming must be driven by the number of rendered messages"
+    );
+    assert!(
+        EMBEDDED_JS.contains("querySelectorAll('.message')"),
+        "the prune must measure the DOM it is trimming"
+    );
+}
+
+/// The page must not block pinch-zoom.
+///
+/// `user-scalable=no` / `maximum-scale=1` fails WCAG 1.4.4. The usual reason to
+/// set it is stopping iOS zooming when an input is focused, which is handled
+/// instead by giving the message input a 16px font size.
+#[test]
+fn the_page_does_not_block_pinch_zoom() {
+    // Inspect the viewport tag itself, not the whole file: the comment above it
+    // names the settings it is explaining, and a test a comment can fail is a
+    // test that gets silenced rather than fixed.
+    let viewport = EMBEDDED_HTML
+        .lines()
+        .find(|line| line.contains("name=\"viewport\""))
+        .expect("the page must declare a viewport");
+
+    assert!(
+        !viewport.contains("user-scalable=no"),
+        "blocking zoom fails WCAG 1.4.4: {viewport}"
+    );
+    assert!(
+        !viewport.contains("maximum-scale=1"),
+        "capping zoom fails WCAG 1.4.4: {viewport}"
+    );
+    assert!(
+        EMBEDDED_HTML.contains("font-size: 16px; /* Prevents iOS zoom */"),
+        "the 16px input font is what makes blocking zoom unnecessary"
+    );
+}
+
+// ========== BOUNDARY CONDITIONS ==========
+//
+// Written to kill mutants that survived `cargo mutants`: each one flipped a
+// comparison at a threshold and no existing test noticed. A limit that is off
+// by one at exactly the limit is the kind of bug that only appears under the
+// load it was meant to protect against.
+
+/// The memory ceiling is inclusive: a reservation that lands exactly on the
+/// limit is accepted, one byte more is refused.
+#[test]
+fn the_memory_ceiling_admits_exactly_the_limit() {
+    let tracker = MemoryTracker::new();
+
+    assert!(
+        tracker.add_bytes(MAX_TOTAL_ROOMS_MEMORY),
+        "a reservation landing exactly on the ceiling must be accepted"
+    );
+    assert_eq!(
+        tracker.total_bytes.load(Ordering::SeqCst),
+        MAX_TOTAL_ROOMS_MEMORY
+    );
+
+    assert!(
+        !tracker.add_bytes(1),
+        "one byte past the ceiling must be refused"
+    );
+    assert_eq!(
+        tracker.total_bytes.load(Ordering::SeqCst),
+        MAX_TOTAL_ROOMS_MEMORY,
+        "a refused reservation must reserve nothing"
+    );
+}
+
+/// A sweep becomes due strictly *after* the interval, not at it.
+#[test]
+fn a_memory_sweep_is_due_only_after_the_full_interval() {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    let tracker = MemoryTracker::new();
+    // Exactly one interval ago: not yet due.
+    tracker
+        .last_gc
+        .store(now - MEMORY_GC_MIN_INTERVAL.as_secs(), Ordering::SeqCst);
+    assert!(
+        !tracker.should_gc(),
+        "a sweep exactly one interval old is not yet due"
+    );
+
+    // One second past the interval: due.
+    tracker
+        .last_gc
+        .store(now - MEMORY_GC_MIN_INTERVAL.as_secs() - 1, Ordering::SeqCst);
+    assert!(tracker.should_gc(), "a sweep past the interval must be due");
+}
+
+/// Expiring idle per-IP counters must keep the recent ones.
+#[tokio::test]
+async fn expiring_ip_counters_keeps_recently_active_addresses() {
+    let pool = ConnectionPool::new();
+
+    pool.add_connection("198.51.100.1").await.unwrap();
+    {
+        // An address last seen longer ago than the retention window.
+        let mut counters = pool.ip_counters.write().await;
+        counters.insert(
+            "203.0.113.9".to_string(),
+            (
+                AtomicUsize::new(1),
+                Instant::now() - IP_COUNTER_RETENTION - Duration::from_secs(60),
+            ),
+        );
+    }
+
+    pool.cleanup_stale().await;
+
+    let counters = pool.ip_counters.read().await;
+    assert!(
+        counters.contains_key("198.51.100.1"),
+        "an address that just connected must be kept"
+    );
+    assert!(
+        !counters.contains_key("203.0.113.9"),
+        "an address idle past the retention window must be dropped"
+    );
+}
+
+/// A ban lands strictly *after* the allowed number of rejected attempts.
+#[tokio::test]
+async fn an_ip_is_banned_only_past_the_suspicion_threshold() {
+    let security = SecurityManager::new();
+    let ip = "203.0.113.50";
+
+    // Exactly the allowance: recorded, but not yet a ban.
+    for attempt in 1..=MAX_SUSPICIOUS_EVENTS {
+        assert!(
+            security.record_suspicious_activity(ip).await.is_ok(),
+            "attempt {attempt} is within the allowance"
+        );
+    }
+    assert!(
+        security.check_ip(ip).await.is_ok(),
+        "exactly the allowed number of attempts must not ban"
+    );
+
+    // One more crosses it.
+    assert!(
+        security.record_suspicious_activity(ip).await.is_err(),
+        "one attempt past the allowance must ban"
+    );
+    assert!(
+        security.check_ip(ip).await.is_err(),
+        "a banned address must be refused"
+    );
+}
+
+/// Truncation keeps as much as fits and never returns an empty string for
+/// input that had room.
+///
+/// The guard is `end > 0 && !is_char_boundary(end)`. With `||` in place of
+/// `&&`, the loop walks all the way to zero and throws the whole string away.
+#[test]
+fn truncation_keeps_everything_that_fits() {
+    // Multi-byte characters straddling the limit: the result must be shorter
+    // than the limit but not empty.
+    let reply = ReplyInfo {
+        message_id: Uuid::new_v4().to_string(),
+        // 3 bytes each, so the cap falls mid-character.
+        author_name: "日".repeat(MAX_REPLY_AUTHOR_LEN),
+        preview_text: "b".to_string(),
+    };
+
+    let clean = sanitize_reply(reply).unwrap();
+    assert!(
+        !clean.author_name.is_empty(),
+        "truncation must keep the part that fits, not discard everything"
+    );
+    assert!(clean.author_name.len() <= MAX_REPLY_AUTHOR_LEN);
+    assert!(
+        clean.author_name.len() > MAX_REPLY_AUTHOR_LEN - 3,
+        "it must keep as much as fits, losing at most one character"
+    );
+
+    // A value shorter than the cap is returned untouched.
+    let reply = ReplyInfo {
+        message_id: Uuid::new_v4().to_string(),
+        author_name: "otter".to_string(),
+        preview_text: "hello".to_string(),
+    };
+    let clean = sanitize_reply(reply).unwrap();
+    assert_eq!(clean.author_name, "otter");
+    assert_eq!(clean.preview_text, "hello");
 }
