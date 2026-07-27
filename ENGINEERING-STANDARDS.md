@@ -55,6 +55,7 @@ concrete, executable version of "obsessive engineering quality." Concretely:
 | §9.3 Docs are part of the artifact | `every_section_reference_resolves` |
 | §8 Naming | `animal_roster_is_sorted_unique_and_well_formed`, `the_roster_is_larger_than_a_room_can_ever_be`, `reaction_roster_is_sorted_unique_and_actually_emoji` |
 | §9 Shipped artifact | `router_mounts_every_public_route`, `page_references_the_versioned_script_url`, `every_element_the_client_looks_up_exists_in_the_page`, `the_client_declares_every_screaming_case_constant_it_uses` |
+| §6.10 Removal is a decision | `the_shipped_client_still_contains_everything_it_did`, `the_servers_public_surface_still_exists` |
 | §10.9 Show implies hide | `every_conditional_display_rule_has_a_base_that_hides_it` |
 | §10.8 Rendered classes are styled | `every_class_the_client_renders_is_styled` |
 | §10.6 One rule per selector | `no_css_selector_is_defined_twice`, `the_conversation_is_a_readable_centred_column` |
@@ -911,6 +912,32 @@ a threshold the tests approached from both sides and never landed on. For
 counters that is a test; for durations it needed `cleanup_rooms_at`, which takes
 the instant as a parameter — the same edge-injection as the shutdown signal, and
 still not the injectable clock §9.4 rejects.
+
+### 6.10 Write down what exists, so removing it is a decision
+
+Three regressions in one afternoon had one cause, and it was not any of the
+three: a bulk mechanical edit removed rules it was not aimed at, and **nothing
+knew they were supposed to be there.** A visitor reported one. The other two —
+a hover-target bridge added an hour earlier, and the whole `.room-fading`
+effect — were found by auditing afterwards, which is not a mechanism.
+
+Every sweep written in response caught exactly one *kind* of loss, after it had
+already happened once. That is a ratchet, and it is worth having, but it only
+ever protects against what has already gone wrong.
+
+`scripts/client-inventory.toml` and `config.rs.inventory` are the general form:
+a written record of every element id, stylesheet rule, client method and server
+tunable that exists. Adding is free. **Removal fails the gate**, and the failure
+names the thing by name.
+
+The point is not that removal is forbidden — it is that removal stops being
+something that can happen *by accident*. When the contract fails it is asking a
+question: was that deliberate? If yes, delete the line from the manifest in the
+same commit, and the diff now says out loud what was removed. If no, you have
+just been told about a bug before a visitor was.
+
+A regex over a stylesheet does not know what a rule is for. Neither does a
+reviewer reading a four-thousand-line diff. A list does.
 
 ### 6.7 Assert on structure, never on a substring a comment can contain
 

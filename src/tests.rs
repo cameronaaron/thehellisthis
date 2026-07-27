@@ -18751,3 +18751,160 @@ fn every_conditional_display_rule_has_a_base_that_hides_it() {
          hiding them, so they are visible in every state: {missing:?}"
     );
 }
+
+/// Nothing the shipped client is made of has quietly disappeared.
+///
+/// This is the contract the other client sweeps kept turning out to need. Each
+/// of them catches one *kind* of loss after it has happened once —
+/// `.message-image-faded` losing its box, `.reply-preview` losing the rule that
+/// hid it, `.reaction-bar::before` losing the bridge that made a hover target
+/// reachable. All three came from the same bulk edit over the stylesheet, none
+/// was caught by the gate, and a visitor reported one of them.
+///
+/// The common factor is not any of those classes. It is that **nothing knew
+/// those rules were supposed to be there.** A regex over a stylesheet does not
+/// know what a rule is for, and neither does a reviewer reading a 4000-line
+/// diff.
+///
+/// So the page's parts are written down. `scripts/client-inventory.toml` lists
+/// every element id, every stylesheet rule and every client method that exists
+/// today; this fails when one of them stops existing. Adding things is free —
+/// only removal is a decision, and making it a decision is the whole point.
+///
+/// **When this fails, answer the question rather than silencing it.** If the
+/// removal was an accident, restore the rule. If it was deliberate, delete the
+/// line from the manifest in the same commit. `scripts/client-inventory.sh`
+/// prints both sides of the difference.
+#[test]
+fn the_shipped_client_still_contains_everything_it_did() {
+    const MANIFEST: &str = include_str!("../scripts/client-inventory.toml");
+
+    /// The entries of one `name = [ … ]` list in the manifest.
+    fn listed(manifest: &str, name: &str) -> Vec<String> {
+        let body = manifest
+            .split_once(&format!("{name} = ["))
+            .and_then(|(_, rest)| rest.split_once("\n]"))
+            .map(|(body, _)| body)
+            .unwrap_or_else(|| panic!("the manifest should define `{name}`"));
+
+        body.lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with('\'') || line.starts_with('"'))
+            .map(|line| {
+                let quote = line.chars().next().expect("just checked it is quoted");
+                line.trim_start_matches(quote)
+                    .rsplit_once(quote)
+                    .map(|(value, _)| value.to_string())
+                    .unwrap_or_default()
+            })
+            .collect()
+    }
+
+    let css = embedded_html_without_comments();
+    let sheet = css
+        .split_once("<style>")
+        .map(|(_, rest)| rest)
+        .expect("the page carries its stylesheet");
+
+    let present_selectors: std::collections::HashSet<&str> = sheet
+        .lines()
+        .filter(|line| line.ends_with(" {") && !line.starts_with([' ', '\t', '@']))
+        .map(|line| line.trim_end_matches(" {").trim())
+        .collect();
+
+    let mut gone: Vec<String> = Vec::new();
+
+    for id in listed(MANIFEST, "ids") {
+        if !EMBEDDED_HTML.contains(&format!("id=\"{id}\"")) {
+            gone.push(format!("element id: {id}"));
+        }
+    }
+
+    for selector in listed(MANIFEST, "selectors") {
+        if !present_selectors.contains(selector.as_str()) {
+            gone.push(format!("stylesheet rule: {selector}"));
+        }
+    }
+
+    for method in listed(MANIFEST, "methods") {
+        if !EMBEDDED_JS.contains(&format!("\n    {method}(")) {
+            gone.push(format!("client method: {method}"));
+        }
+    }
+
+    assert!(
+        gone.is_empty(),
+        "these are listed in scripts/client-inventory.toml and are no longer in \
+         the shipped client. Either the removal was an accident — restore it — \
+         or it was deliberate, in which case delete the line from the manifest \
+         in the same commit. `scripts/client-inventory.sh` shows both sides.\n\n{gone:#?}"
+    );
+
+    // A manifest that has quietly emptied catches nothing.
+    assert!(
+        listed(MANIFEST, "selectors").len() > 150
+            && listed(MANIFEST, "ids").len() > 40
+            && listed(MANIFEST, "methods").len() > 50,
+        "the manifest has shrunk to the point of not being a record of anything"
+    );
+}
+
+/// The server's public surface has not quietly shrunk either.
+///
+/// The client manifest exists because a bulk edit removed things nobody knew
+/// were load-bearing. The server has the same exposure and a worse blast
+/// radius: a config constant deleted is a limit that stops being enforced, and
+/// a route unmounted is a page that stops existing — neither of which fails to
+/// compile, because the tests that used them go away in the same edit.
+///
+/// Deliberately coarse. It is not asserting behaviour — every one of these has
+/// its own contract for that — it is asserting *existence*, which is the thing
+/// no other test checks.
+#[test]
+fn the_servers_public_surface_still_exists() {
+    const CONFIG: &str = include_str!("../config.rs.inventory");
+
+    let config_source =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/config.rs"))
+            .expect("config.rs should be readable");
+
+    let mut gone: Vec<&str> = Vec::new();
+    for line in CONFIG.lines() {
+        let name = line.trim();
+        if name.is_empty() || name.starts_with('#') {
+            continue;
+        }
+        if !config_source.contains(&format!("const {name}")) {
+            gone.push(name);
+        }
+    }
+
+    assert!(
+        gone.is_empty(),
+        "these tunables are listed in config.rs.inventory and no longer exist \
+         in config.rs. A deleted limit is a limit that stops being enforced, \
+         and nothing fails to compile because the tests using it went in the \
+         same edit. Restore it, or delete the line here in the same commit: \
+         {gone:?}"
+    );
+
+    // The route table, which `router_mounts_every_public_route` exercises but
+    // does not enumerate.
+    let startup = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/startup.rs"))
+        .expect("startup.rs should be readable");
+    for route in [
+        "/",
+        "/main",
+        "/app.js",
+        "/health",
+        "/metrics",
+        "/robots.txt",
+        "/ws/{room}",
+        "/{room}",
+    ] {
+        assert!(
+            startup.contains(&format!("\"{route}\"")),
+            "the route {route} is no longer mounted"
+        );
+    }
+}

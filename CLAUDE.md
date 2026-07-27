@@ -55,6 +55,14 @@ runs — a green local run means a green CI run.
 **Mutation testing** is a manual sweep, not a gate (a full run takes far longer
 than a commit should wait):
 
+Two inventories record what the shipped artifact is *made of*, so that
+deleting a piece of it fails the gate rather than being noticed by a visitor
+(§6.10):
+
+```bash
+scripts/client-inventory.sh     # what the manifest expects vs what ships
+```
+
 ```bash
 cargo mutants                   # everything
 cargo mutants -f src/room.rs    # one file, while iterating
