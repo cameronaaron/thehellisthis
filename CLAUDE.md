@@ -399,6 +399,20 @@ free in this room (`RoomState::claim_animal`); otherwise the visitor gets a
 fresh assignment. A closed set has no escaping bug and no length to bound. See
 ENGINEERING-STANDARDS.md §5.9.
 
+### 20a. The identity cookies must survive the browser storing them
+
+They are `HttpOnly; SameSite=Strict; Secure`. `Secure` is right in production
+and fatal locally: **a browser will not store a `Secure` cookie received over
+plain http**, and Safari refuses even on localhost. With nothing stored, every
+reconnect mints a fresh identity — so one person whose connection blipped is
+announced to the room as a departure and an arrival, repeatedly. That is what
+"skink left, stinks joined, skink left, stinks joined" is.
+
+`create_user_cookies` takes the request's `Host` and drops `Secure` only for
+loopback, where http is the only thing on offer. Pinned by
+`identity_cookies_are_secure_everywhere_except_loopback` and, end to end, by
+`reconnecting_with_the_handshake_cookies_keeps_the_same_identity`.
+
 ### 21. Every room's history is trimmed by the timer, not only on join
 
 Trimming used to happen on the join path, plus the `main` fade. A room that was

@@ -76,7 +76,9 @@ pub async fn ws_handler(
         .as_deref()
         .map(hash_client_address);
 
-    match ws_handler_inner(state, ip, cookie, room, ws).await {
+    let host = host.unwrap_or_default().to_string();
+
+    match ws_handler_inner(state, ip, cookie, room, ws, &host).await {
         Ok(response) => response.into_response(),
         Err(e) => e.into_response(),
     }
@@ -101,6 +103,7 @@ pub async fn ws_handler_inner(
     cookie: Option<UserCookie>,
     room: String,
     ws: WebSocketUpgrade,
+    host: &str,
 ) -> Result<Response, ChatError> {
     debug!(room = %room, "websocket upgrade requested");
 
@@ -144,7 +147,7 @@ pub async fn ws_handler_inner(
     };
 
     let (user_id_cookie, animal_name_cookie) =
-        create_user_cookies(&final_user_id, &final_animal_name);
+        create_user_cookies(&final_user_id, &final_animal_name, host);
 
     info!(
         user_id = %final_user_id,

@@ -44,6 +44,7 @@ concrete, executable version of "obsessive engineering quality." Concretely:
 | §5.6 Privacy | `client_addresses_are_hashed_not_stored_in_the_clear`, `the_upgrade_path_hashes_the_address_at_the_boundary` |
 | §5.7 No third parties | `the_client_makes_no_third_party_requests`, `the_policy_permits_no_third_party_origins` |
 | §5.8 Trust boundary | `client_address_prefers_the_header_cloudflare_sets`, `worker_forwards_the_client_address` |
+| §5.9a Cookies must be storable | `identity_cookies_are_secure_everywhere_except_loopback`, `reconnecting_with_the_handshake_cookies_keeps_the_same_identity`, `a_reconnect_does_not_announce_a_departure_and_an_arrival`, `without_cookies_every_reconnect_is_a_different_person` |
 | §5.9 Identity is a claim | `a_forged_identity_cookie_cannot_choose_its_own_name_or_id`, `a_cookie_name_never_duplicates_a_name_already_in_the_room`, `a_returning_visitor_keeps_a_roster_name_that_is_free` |
 | §5.10 Saturating admission counters | `releasing_more_than_was_reserved_cannot_wrap_a_counter` |
 | §5.11 Release in a wrapper | `a_session_whose_room_disappeared_still_releases_its_slots` |

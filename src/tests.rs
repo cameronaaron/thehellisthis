@@ -270,7 +270,7 @@ async fn test_cleanup_rooms_removes_inactive() {
 
 #[tokio::test]
 async fn test_create_user_cookies() {
-    let (user_cookie, animal_cookie) = create_user_cookies("id", "lion");
+    let (user_cookie, animal_cookie) = create_user_cookies("id", "lion", "thehellisthis.com");
     assert!(user_cookie.contains("user_id=id"));
     assert!(animal_cookie.contains("animal_name=lion"));
 }
@@ -4118,7 +4118,8 @@ async fn test_validate_message_preserves_safe_html() {
 
 #[tokio::test]
 async fn test_create_user_cookies_format() {
-    let (user_cookie, animal_cookie) = create_user_cookies("test-user-123", "Tiger");
+    let (user_cookie, animal_cookie) =
+        create_user_cookies("test-user-123", "Tiger", "thehellisthis.com");
 
     assert!(user_cookie.contains("user_id=test-user-123"));
     assert!(user_cookie.contains("Path=/"));
@@ -5574,7 +5575,8 @@ async fn test_user_cookie_extraction() {
 
 #[tokio::test]
 async fn test_cookie_creation_format() {
-    let (uid_cookie, name_cookie) = create_user_cookies("test-user-456", "Tiger");
+    let (uid_cookie, name_cookie) =
+        create_user_cookies("test-user-456", "Tiger", "thehellisthis.com");
 
     assert!(uid_cookie.contains("user_id=test-user-456"));
     assert!(uid_cookie.contains("Path=/"));
@@ -5820,7 +5822,8 @@ async fn test_user_count_updates_on_join() {
 #[tokio::test]
 async fn test_cookie_must_be_js_accessible() {
     // CRITICAL: user_id cookie MUST be readable by JavaScript for message alignment
-    let (user_cookie, animal_cookie) = create_user_cookies("js-test-user", "Lion");
+    let (user_cookie, animal_cookie) =
+        create_user_cookies("js-test-user", "Lion", "thehellisthis.com");
 
     // Both identity cookies are HttpOnly. The client is told who it is by the
     // Welcome frame on connect, so it never needs to read document.cookie.
@@ -5846,7 +5849,8 @@ async fn test_cookie_must_be_js_accessible() {
 
 #[tokio::test]
 async fn test_cookie_security_attributes_present() {
-    let (user_cookie, animal_cookie) = create_user_cookies("sec-test", "Tiger");
+    let (user_cookie, animal_cookie) =
+        create_user_cookies("sec-test", "Tiger", "thehellisthis.com");
 
     // Essential security attributes MUST be present
     assert!(
@@ -5878,7 +5882,8 @@ async fn test_cookie_security_attributes_present() {
 
 #[tokio::test]
 async fn test_cookie_max_age_present() {
-    let (user_cookie, animal_cookie) = create_user_cookies("maxage-test", "Bear");
+    let (user_cookie, animal_cookie) =
+        create_user_cookies("maxage-test", "Bear", "thehellisthis.com");
 
     assert!(
         user_cookie.contains("Max-Age="),
@@ -5900,12 +5905,12 @@ async fn test_cookie_max_age_present() {
 #[tokio::test]
 async fn test_cookie_values_properly_encoded() {
     // Test with special characters that might need encoding
-    let (user_cookie, _) = create_user_cookies("user-with-dash", "Lion");
+    let (user_cookie, _) = create_user_cookies("user-with-dash", "Lion", "thehellisthis.com");
     assert!(user_cookie.contains("user_id=user-with-dash"));
 
     // UUID format user_id
     let uuid_str = "550e8400-e29b-41d4-a716-446655440000";
-    let (uuid_cookie, _) = create_user_cookies(uuid_str, "Tiger");
+    let (uuid_cookie, _) = create_user_cookies(uuid_str, "Tiger", "thehellisthis.com");
     assert!(uuid_cookie.contains(&format!("user_id={}", uuid_str)));
 }
 
@@ -5942,7 +5947,7 @@ async fn test_message_contains_user_id_for_alignment() {
 async fn test_message_user_id_matches_cookie_format() {
     // Verify the user_id in messages matches what we'd set in cookies
     let test_user_id = "test-123-abc";
-    let (user_cookie, _) = create_user_cookies(test_user_id, "Lion");
+    let (user_cookie, _) = create_user_cookies(test_user_id, "Lion", "thehellisthis.com");
 
     let _msg = OutgoingMessage {
         message_id: uuid::Uuid::new_v4(),
@@ -8780,7 +8785,8 @@ async fn test_metrics_handler_returns_metrics() {
 
 #[tokio::test]
 async fn test_create_user_cookies_format_detailed() {
-    let (user_id_cookie, animal_name_cookie) = create_user_cookies("test-user-123", "Lion");
+    let (user_id_cookie, animal_name_cookie) =
+        create_user_cookies("test-user-123", "Lion", "thehellisthis.com");
 
     assert!(user_id_cookie.contains("user_id=test-user-123"));
     assert!(user_id_cookie.contains("Path=/"));
@@ -10211,7 +10217,7 @@ async fn test_app_state_shutdown_with_rooms() {
 // Test create_user_cookies output format - covers cookie creation paths
 #[tokio::test]
 async fn test_create_user_cookies_attributes() {
-    let (uid_cookie, animal_cookie) = create_user_cookies("user123", "Lion");
+    let (uid_cookie, animal_cookie) = create_user_cookies("user123", "Lion", "thehellisthis.com");
 
     // Check cookie values contain expected values
     assert!(uid_cookie.contains("user_id=user123"));
@@ -11777,7 +11783,7 @@ fn client_takes_identity_from_welcome_frame_not_cookies() {
         "client must handle the Welcome frame to learn its own identity"
     );
 
-    let (user_cookie, animal_cookie) = create_user_cookies("some-id", "otter");
+    let (user_cookie, animal_cookie) = create_user_cookies("some-id", "otter", "thehellisthis.com");
     assert!(user_cookie.contains("HttpOnly"));
     assert!(animal_cookie.contains("HttpOnly"));
 }
@@ -19247,4 +19253,250 @@ async fn the_session_handles_every_kind_of_client_frame() {
          unparseable and unknown frames are dropped, not stored and not fatal"
     );
     assert!(history[0].text.contains("still here"));
+}
+
+/// Reconnecting keeps your name, and does not announce a stranger arriving.
+///
+/// The reported symptom is a room repeating "skink left / stinks joined" — one
+/// person reconnecting and coming back as somebody else each time. That is what
+/// happens whenever the identity cookie does not make it back: `admit_user`
+/// mints a fresh id, and the room sees a departure and an arrival rather than a
+/// reconnection.
+///
+/// This drives the real server over a real socket, takes the cookies out of the
+/// handshake response the way a browser would, and reconnects with them.
+#[tokio::test]
+async fn reconnecting_with_the_handshake_cookies_keeps_the_same_identity() {
+    let (addr, _state, handle) = start_ws_server_with_state().await;
+
+    let (mut first, response) = connect_async(ws_request(addr, "identity", &[]))
+        .await
+        .expect("the handshake should be accepted");
+
+    // Exactly what a browser stores from the response.
+    let cookies: Vec<String> = response
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .filter_map(|v| v.split(';').next())
+        .map(str::to_string)
+        .collect();
+
+    assert_eq!(
+        cookies.len(),
+        2,
+        "the handshake must set both identity cookies, or a reconnecting \
+         visitor cannot be recognised: {cookies:?}"
+    );
+
+    let welcome = recv_json_event(&mut first).await;
+    assert_eq!(welcome["type"], "Welcome");
+    let original_name = welcome["animal_name"].as_str().unwrap().to_string();
+    let original_id = welcome["user_id"].as_str().unwrap().to_string();
+
+    // The connection drops without a clean close, as a network blip does.
+    drop(first);
+
+    // The browser comes back with what it stored.
+    let header = cookies.join("; ");
+    let (mut second, _) =
+        connect_async(ws_request(addr, "identity", &[("Cookie", header.clone())]))
+            .await
+            .expect("the reconnect should be accepted");
+
+    let welcome = recv_json_event(&mut second).await;
+    assert_eq!(
+        welcome["animal_name"].as_str().unwrap(),
+        original_name,
+        "a reconnecting visitor must come back as themselves — a different name \
+         is what the room reads as one person leaving and another arriving"
+    );
+    assert_eq!(
+        welcome["user_id"].as_str().unwrap(),
+        original_id,
+        "and as the same identity, so their own messages stay theirs"
+    );
+
+    // And again, because the report is of it repeating.
+    drop(second);
+    let (mut third, _) = connect_async(ws_request(addr, "identity", &[("Cookie", header)]))
+        .await
+        .expect("the second reconnect should be accepted");
+    let welcome = recv_json_event(&mut third).await;
+    assert_eq!(welcome["animal_name"].as_str().unwrap(), original_name);
+
+    handle.abort();
+}
+
+/// A reconnecting visitor is not announced as a new arrival to the room.
+///
+/// The other half of the same symptom: even when the name is kept, an onlooker
+/// should not see "left" and "joined" every time somebody's connection blips.
+#[tokio::test]
+async fn a_reconnect_does_not_announce_a_departure_and_an_arrival() {
+    let (addr, state, handle) = start_ws_server_with_state().await;
+
+    // An onlooker who stays put and watches. Its own arrival is in its stream
+    // too — it subscribes before announcing itself, deliberately (§4.2).
+    let (mut watcher, _) = connect_async(ws_request(addr, "watched", &[]))
+        .await
+        .expect("the watcher connects");
+    let watcher_welcome = recv_json_event(&mut watcher).await;
+    let watcher_name = watcher_welcome["animal_name"].as_str().unwrap().to_string();
+
+    let (visitor, response) = connect_async(ws_request(addr, "watched", &[]))
+        .await
+        .expect("the visitor connects");
+    let cookies: Vec<String> = response
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .filter_map(|v| v.split(';').next())
+        .map(str::to_string)
+        .collect();
+    assert_eq!(cookies.len(), 2, "the handshake sets both identity cookies");
+
+    let mut visitor = visitor;
+    let visitor_name = recv_json_event(&mut visitor).await["animal_name"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    drop(visitor);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let (_reconnected, _) = connect_async(ws_request(
+        addr,
+        "watched",
+        &[("Cookie", cookies.join("; "))],
+    ))
+    .await
+    .expect("the visitor reconnects");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let mut arrivals: Vec<String> = Vec::new();
+    let mut departures: Vec<String> = Vec::new();
+    while let Ok(Some(Ok(message))) = timeout(Duration::from_millis(250), watcher.next()).await {
+        let WsMessage::Text(body) = message else {
+            continue;
+        };
+        let event: JsonValue = serde_json::from_str(body.as_str()).unwrap_or_default();
+        if let Some(name) = event.pointer("/event/UserJoined/animal_name") {
+            arrivals.push(name.as_str().unwrap_or_default().to_string());
+        }
+        if let Some(name) = event.pointer("/event/UserLeft/animal_name") {
+            departures.push(name.as_str().unwrap_or_default().to_string());
+        }
+    }
+
+    let strangers: Vec<&String> = arrivals
+        .iter()
+        .filter(|name| **name != visitor_name && **name != watcher_name)
+        .collect();
+
+    assert!(
+        strangers.is_empty(),
+        "reconnecting introduced somebody who was never there: {strangers:?} \
+         (visitor {visitor_name}, watcher {watcher_name}); \
+         arrivals={arrivals:?} departures={departures:?}"
+    );
+
+    drop(state);
+    handle.abort();
+}
+
+/// Without the cookies, a reconnecting visitor *is* a stranger — every time.
+///
+/// This is the reported symptom reproduced: "skink left, stinks joined",
+/// repeating. Each reconnection mints a fresh identity, so the room announces
+/// a departure and an arrival for what is one person whose connection blipped.
+///
+/// The test exists to pin *why*: the cookies are the whole mechanism, so
+/// anything that stops them coming back — a browser refusing to store a
+/// `Secure` cookie over plain http, which is exactly what local development
+/// is — turns every reconnect into a new person.
+#[tokio::test]
+async fn without_cookies_every_reconnect_is_a_different_person() {
+    let (addr, state, handle) = start_ws_server_with_state().await;
+
+    let mut names = Vec::new();
+    for _ in 0..3 {
+        let (mut socket, _) = connect_async(ws_request(addr, "amnesia", &[]))
+            .await
+            .expect("each connection is accepted");
+        names.push(
+            recv_json_event(&mut socket).await["animal_name"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+        );
+        drop(socket);
+        tokio::time::sleep(Duration::from_millis(120)).await;
+    }
+
+    let distinct: std::collections::BTreeSet<&String> = names.iter().collect();
+    assert_eq!(
+        distinct.len(),
+        3,
+        "without cookies each reconnect is a new person — which is the bug as \\
+         experienced, and why the cookies have to reach the server: {names:?}"
+    );
+
+    drop(state);
+    handle.abort();
+}
+
+/// The identity cookies are usable over plain http in local development.
+///
+/// They are `Secure`, which is right in production and fatal locally: a browser
+/// will not store a `Secure` cookie received over plain http. Safari refuses
+/// even on localhost. With nothing stored, every reconnect mints a fresh
+/// identity, and the room fills with "skink left / stinks joined" — one person
+/// whose connection blipped, announced as a parade of strangers.
+///
+/// So `Secure` is set for every host except the loopback ones, where http is
+/// the only thing on offer. That keeps production strict and makes the
+/// mechanism work where it is actually being developed.
+#[test]
+fn identity_cookies_are_secure_everywhere_except_loopback() {
+    for host in [
+        "thehellisthis.com",
+        "www.thehellisthis.com",
+        "thehellisthis.com:443",
+        "some-preview.workers.dev",
+    ] {
+        let (id, name) = create_user_cookies("id", "otter", host);
+        assert!(
+            id.contains("Secure") && name.contains("Secure"),
+            "{host} must get Secure cookies"
+        );
+    }
+
+    for host in [
+        "localhost",
+        "localhost:3000",
+        "127.0.0.1:3000",
+        "[::1]:3000",
+    ] {
+        let (id, name) = create_user_cookies("id", "otter", host);
+        assert!(
+            !id.contains("Secure") && !name.contains("Secure"),
+            "{host} is plain http, and a Secure cookie there is a cookie the \\
+             browser throws away: {id}"
+        );
+    }
+
+    // Everything else about them is unconditional.
+    let (id, name) = create_user_cookies("id", "otter", "localhost");
+    for cookie in [&id, &name] {
+        assert!(
+            cookie.contains("HttpOnly"),
+            "the client must never be able to read these (constraint #2)"
+        );
+        assert!(cookie.contains("SameSite=Strict"));
+        assert!(cookie.contains("Path=/"));
+    }
 }

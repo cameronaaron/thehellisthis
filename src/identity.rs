@@ -68,11 +68,32 @@ where
 /// [`crate::protocol::OutgoingEvent::Welcome`] frame instead of reading
 /// `document.cookie`, so script access buys nothing and only widens what an
 /// XSS through the Markdown pipeline could steal.
-pub fn create_user_cookies(user_id: &str, name: &str) -> (String, String) {
+/// `Secure` is set for every host except the loopback ones.
+///
+/// It belongs in production: without it the first request over http is an
+/// opportunity to strip TLS and read the identity. It is fatal locally, though,
+/// because a browser will not *store* a `Secure` cookie received over plain
+/// http — Safari refuses even on localhost. With nothing stored, every
+/// reconnect mints a fresh identity, and a room fills with "skink left /
+/// stinks joined": one person whose connection blipped, announced as a parade
+/// of strangers.
+///
+/// Loopback is the one place http is the only thing on offer, so it is the one
+/// place the flag comes off.
+fn is_loopback(host: &str) -> bool {
+    let name = host
+        .rsplit_once(':')
+        .map_or(host, |(name, _)| name)
+        .trim_matches(['[', ']']);
+    matches!(name, "localhost" | "127.0.0.1" | "::1")
+}
+
+pub fn create_user_cookies(user_id: &str, name: &str, host: &str) -> (String, String) {
     let max_age = INACTIVE_TIMEOUT.as_secs();
+    let secure = if is_loopback(host) { "" } else { "; Secure" };
 
     (
-        format!("user_id={user_id}; Path=/; Max-Age={max_age}; HttpOnly; SameSite=Strict; Secure"),
-        format!("animal_name={name}; Path=/; Max-Age={max_age}; HttpOnly; SameSite=Strict; Secure"),
+        format!("user_id={user_id}; Path=/; Max-Age={max_age}; HttpOnly; SameSite=Strict{secure}"),
+        format!("animal_name={name}; Path=/; Max-Age={max_age}; HttpOnly; SameSite=Strict{secure}"),
     )
 }
