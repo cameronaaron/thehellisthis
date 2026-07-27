@@ -38,6 +38,17 @@ cargo build --release           # LTO'd binary for the container image
 scripts/coverage.sh             # line-coverage floor (95%), ratchets up only
 ```
 
+Two more that CI deliberately does **not** run, because they depend on real
+elapsed time and a loaded shared runner is where such a test becomes a flake:
+
+```bash
+scripts/slow-tests.sh           # the #[ignore]d time-dependent tests
+scripts/coverage-full.sh        # coverage including them (floor 96%)
+```
+
+Run both before pushing anything that touches the heartbeat, the housekeeping
+loops, or the idle eviction — they cover branches nothing else reaches.
+
 Those five are the gate, and they are exactly what `.github/workflows/ci.yml`
 runs — a green local run means a green CI run.
 

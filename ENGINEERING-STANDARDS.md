@@ -56,6 +56,15 @@ concrete, executable version of "obsessive engineering quality." Concretely:
 | Attachments | `an_attachment_must_be_the_image_type_it_claims_to_be`, `svg_is_not_an_allowed_attachment_type`, `a_rooms_oldest_images_fade_once_it_is_over_its_attachment_budget`, `images_are_re_encoded_rather_than_sent_as_picked` |
 | Reactions | `reacting_twice_with_the_same_emoji_removes_the_reaction`, `reactions_never_outlive_the_messages_they_belong_to`, `a_reaction_must_be_on_the_roster` |
 | §6.1 The gate answers "will this deploy" | `ci_node_version_satisfies_the_toolchain`, `the_workflows_install_with_the_lockfile_that_exists` |
+| Constraint #12 Frontend/backend agreement | `client_attachment_ceiling_matches_the_server`, `client_reaction_roster_matches_the_server`, `the_node_types_match_the_node_ci_installs` |
+| Meta: standards are enforced | `every_test_the_standards_name_exists`, `every_parked_decision_records_how_to_reopen_it`, `every_contract_test_is_documented` |
+| Meta: tests can fail | `no_assertion_in_this_suite_is_a_tautology` |
+| Dead weight | `every_declared_dependency_is_used` |
+| Testability | `shutting_down_announces_departures_and_clears_the_rooms`, `binding_a_port_already_in_use_is_an_error_not_a_panic`, `run_serves_until_it_is_shut_down` |
+| §7 Rooms fade | `a_room_nobody_is_in_is_deleted_and_main_never_is`, `the_client_does_not_reconnect_after_an_idle_eviction`, `client_and_server_agree_on_the_idle_close_code`, `an_idle_user_is_evicted_with_the_close_code_the_client_expects` |
+| Attachment plumbing | `the_base64_prefix_decoder_handles_its_whole_alphabet`, `image_sniffing_recognises_each_allowed_format`, `an_empty_attachment_is_refused`, `a_jpeg_attachment_is_accepted` |
+| Reaction integrity | `a_reaction_for_a_message_that_does_not_exist_is_refused`, `the_message_id_index_never_drifts_from_the_history`, `history_resolves_reactions_for_the_viewer_receiving_it` |
+| Housekeeping runs | `the_housekeeping_loops_run_on_their_own`, `fading_with_nothing_left_to_fade_changes_nothing` |
 | Ratchets | `the_memory_budget_still_closes`, `the_join_path_shares_history_rather_than_copying_it`, `adding_a_message_costs_the_same_whatever_the_history_holds`, `reacting_never_touches_the_history` |
 | Dead webfonts | `the_page_names_no_font_it_does_not_ship_with`, `no_css_content_string_is_an_icon_ligature` |
 
@@ -689,6 +698,30 @@ checks.** The version now lives once, in `cloudflare/package.json` under
 `engines`, `engineStrict` makes the install itself refuse a Node below it, and
 `ci_node_version_satisfies_the_toolchain` asserts the workflows agree — so the
 mismatch fails in the Rust suite, on a laptop, before any of it is pushed.
+
+### 6.1b The claim that rules are enforced is itself a contract
+
+This document opens by asserting that every rule is enforced by a test. That
+claim can rot in two directions, both silently, and both are now checked:
+
+- **Phantom enforcement.** The Enforcing-tests table names a test that has since
+  been renamed or deleted. The row reads exactly the same either way, so a rule
+  with a dead enforcer looks identical to an enforced one.
+  `every_test_the_standards_name_exists`.
+- **Undocumented enforcement.** A contract test exists but nothing in
+  `CLAUDE.md` or this file mentions it, so what it guards and why lives only in
+  the file — one refactor from being lore. `every_contract_test_is_documented`.
+
+Plus the registry's own shape: a watched-lever row without a reopen condition is
+the "decided, then forgotten" failure §9.4 exists to prevent, so the table is
+machine-checked (`every_parked_decision_records_how_to_reopen_it`).
+
+The pattern is ported from the contract suite on `cameronaaron.com`, which runs
+the same three sweeps over a TypeScript project. What travels is not the code —
+none of it — but the idea that **the enforcement mechanism needs enforcing too**,
+and that an exemption must never outlive its reason. `every_declared_dependency_is_used`
+carries the same self-cleaning property: its allow-list of indirectly-used
+crates fails if an entry names a crate that is no longer in `Cargo.toml`.
 
 ### 6.2 A fix and its test are one commit
 

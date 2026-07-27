@@ -2746,8 +2746,26 @@ async fn test_message_with_bold_italic() {
 #[tokio::test]
 async fn test_message_with_lists() {
     let list_msg = "- Item 1\n- Item 2\n- Item 3";
-    let result = validate_message(list_msg).unwrap();
-    assert!(result.contains("<li>") || !result.is_empty());
+
+    // `validate_message` sanitises to decide whether anything survives; it is
+    // not the renderer, so the Markdown is still Markdown here.
+    let guard = validate_message(list_msg).unwrap();
+    assert_eq!(
+        guard, list_msg,
+        "plain Markdown has nothing for the sanitiser to remove"
+    );
+
+    // The rendering is what the room actually stores.
+    let rendered = crate::validation::render_message_html(list_msg);
+    assert_eq!(
+        rendered.matches("<li>").count(),
+        3,
+        "three bullets should render as three list items: {rendered}"
+    );
+    assert!(
+        rendered.contains("<ul>"),
+        "and be wrapped in a list: {rendered}"
+    );
 }
 
 #[tokio::test]
@@ -3361,7 +3379,13 @@ async fn test_websocket_connection_without_room() {
     let url = format!("ws://{}/ws/", addr);
     let result = tokio_tungstenite::connect_async(&url).await;
 
-    assert!(result.is_ok() || result.is_err());
+    // `/ws/` with no room matches no route, so the upgrade is refused. The
+    // assertion that mattered — that it does not *succeed* — was previously
+    // written as `is_ok() || is_err()`, which is true of every Result.
+    assert!(
+        result.is_err(),
+        "an upgrade with no room name must not be accepted"
+    );
 }
 
 #[tokio::test]
@@ -8183,6 +8207,9 @@ async fn test_version_is_set() {
 // constants. They MUST fail if timing values drift apart.
 
 /// The embedded HTML - same source used by the server
+/// This file, for the sweeps that read the suite itself.
+const SELF_SOURCE: &str = include_str!("tests.rs");
+
 const EMBEDDED_HTML: &str = include_str!("../index.html");
 const EMBEDDED_JS: &str = include_str!("../client.js");
 
@@ -9772,11 +9799,21 @@ async fn test_validate_message_single_character() {
 // Test message validation with script tag (gets sanitized)
 #[tokio::test]
 async fn test_validate_message_script_tag_sanitized() {
-    // Script tags get sanitized away by ammonia
+    // A message that is *only* markup sanitises to nothing, and a message that
+    // says nothing is refused. That is the whole reason `validate_message`
+    // sanitises at all — it is the guard, not the renderer (§8 of CLAUDE.md).
     let result = validate_message("<script>alert('xss')</script>");
-    // After sanitization this may become empty, so should fail
-    // Or the text content might remain - either way path is exercised
-    assert!(result.is_err() || result.is_ok());
+    assert!(
+        result.is_err(),
+        "a message that is only a script tag has no content and must be refused"
+    );
+
+    // And the tag never survives into anything that reaches a browser.
+    let rendered = crate::validation::render_message_html("<script>alert('xss')</script>");
+    assert!(
+        !rendered.contains("<script"),
+        "the script tag must not survive rendering: {rendered}"
+    );
 }
 
 // Test typing event with false value - covers typing broadcast
@@ -16113,4 +16150,541 @@ fn a_jpeg_attachment_is_accepted() {
     };
     let clean = sanitize_attachment(jpeg).expect("a real JPEG is accepted");
     assert_eq!(clean.mime, "image/jpeg");
+}
+
+// ========== META-CONTRACTS ==========
+//
+// Ported from the contract suite on cameronaaron.com, adapted to a Rust
+// project. The idea those tests encode is that a standards document's
+// authority rests on one claim — every rule is enforced by a test — and that
+// claim is itself something that can rot silently. So it gets a contract too.
+
+/// Every test named in the standards actually exists.
+///
+/// `ENGINEERING-STANDARDS.md` opens by asserting "every rule here is enforced
+/// by a test in `src/tests.rs`", and its Enforcing-tests table names them one
+/// by one. A rule whose named enforcer has been renamed or deleted is an
+/// unenforced rule wearing an enforced rule's clothes — and the table reads
+/// exactly the same either way.
+#[test]
+fn every_test_the_standards_name_exists() {
+    const STANDARDS: &str = include_str!("../ENGINEERING-STANDARDS.md");
+    const CLAUDE_MD: &str = include_str!("../CLAUDE.md");
+
+    let mut missing: Vec<String> = Vec::new();
+
+    for doc in [STANDARDS, CLAUDE_MD] {
+        // Test names are cited in backticks, and are snake_case identifiers
+        // long enough not to collide with prose or field names.
+        for cited in doc.split('`').skip(1).step_by(2) {
+            let looks_like_a_test = cited.len() > 12
+                && cited.contains('_')
+                && !cited.contains(' ')
+                && !cited.contains("::")
+                && !cited.contains('(')
+                && !cited.contains('.')
+                && cited
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+
+            // Only names that read like assertions, not constants (which are
+            // SCREAMING_CASE and already excluded) or field names.
+            if !looks_like_a_test {
+                continue;
+            }
+
+            let defined = SELF_SOURCE.contains(&format!("fn {cited}("));
+            let is_a_test_name = cited.starts_with("test_")
+                || cited.contains("_must_")
+                || cited.contains("_is_")
+                || cited.contains("_are_")
+                || cited.contains("_never_")
+                || cited.contains("_cannot_")
+                || cited.contains("_does_not_")
+                || cited.contains("_matches_")
+                || cited.contains("_releases_")
+                || cited.contains("_exists_")
+                || cited.contains("_still_")
+                || cited.contains("_keeps_")
+                || cited.contains("_holds_")
+                || cited.contains("_fade")
+                || cited.contains("_roster_");
+
+            if is_a_test_name && !defined && !missing.contains(&cited.to_string()) {
+                missing.push(cited.to_string());
+            }
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "the docs name these tests, but nothing defines them — either the test \
+         was renamed and the doc not updated, or the rule is unenforced: {missing:?}"
+    );
+}
+
+/// Every watched-levers row carries a reopen condition.
+///
+/// §9.4's table is the mechanism that keeps a parked decision from fossilising
+/// into lore. A row with no reopen condition is exactly the "decided, then
+/// forgotten" failure the registry exists to prevent, so the table's *shape* is
+/// checked rather than trusted.
+#[test]
+fn every_parked_decision_records_how_to_reopen_it() {
+    const STANDARDS: &str = include_str!("../ENGINEERING-STANDARDS.md");
+
+    let table = STANDARDS
+        .split_once("| Lever | Status | Reopen when |")
+        .map(|(_, rest)| rest)
+        .expect("§9.4 should contain the watched-levers table");
+
+    let mut incomplete: Vec<String> = Vec::new();
+    let mut rows = 0;
+
+    for line in table.lines() {
+        let line = line.trim();
+        if !line.starts_with('|') {
+            if rows > 0 {
+                break; // end of the table
+            }
+            continue;
+        }
+        // The header separator.
+        if line.starts_with("| ---") {
+            continue;
+        }
+
+        let cells: Vec<&str> = line.trim_matches('|').split('|').map(str::trim).collect();
+        if cells.len() < 3 {
+            continue;
+        }
+        rows += 1;
+
+        let (lever, status, reopen) = (cells[0], cells[1], cells[2]);
+        if reopen.len() < 20 || status.len() < 10 || lever.is_empty() {
+            incomplete.push(lever.to_string());
+        }
+    }
+
+    assert!(
+        rows >= 8,
+        "the registry should not have shrunk; found {rows} rows"
+    );
+    assert!(
+        incomplete.is_empty(),
+        "these watched-levers rows lack a real status or reopen condition, which \
+         is how a parked decision becomes lore: {incomplete:?}"
+    );
+}
+
+/// No assertion in this file is one that cannot fail.
+///
+/// A test that cannot fail is worse than no test: it reports coverage it does
+/// not provide (§6.4). The recognisable forms are tautologies over a value's
+/// own shape — `is_ok() || is_err()`, `x == x`, `assert!(true)` — which pass
+/// whatever the code does.
+#[test]
+fn no_assertion_in_this_suite_is_a_tautology() {
+    // Each form is stored in halves and joined at run time, so the file never
+    // literally contains the pattern it forbids. Written whole, this sweep
+    // failed on its own definition — §6.7, for the third time in this suite.
+    const TAUTOLOGY_HALVES: &[(&str, &str)] = &[
+        ("is_ok() ", "|| result.is_err()"),
+        ("is_err() ", "|| result.is_ok()"),
+        ("assert!(", "true)"),
+        ("assert_eq!(", "true, true)"),
+        ("assert!(1 ", "== 1)"),
+    ];
+
+    let needles: Vec<String> = TAUTOLOGY_HALVES
+        .iter()
+        .map(|(head, tail)| format!("{head}{tail}"))
+        .collect();
+
+    let mut found: Vec<String> = Vec::new();
+    for (number, line) in SELF_SOURCE.lines().enumerate() {
+        let code = line.split("//").next().unwrap_or(line);
+        if !code.contains("assert") {
+            continue;
+        }
+        for needle in &needles {
+            if code.contains(needle.as_str()) {
+                found.push(format!("line {}: {}", number + 1, code.trim()));
+            }
+        }
+    }
+
+    assert!(
+        found.is_empty(),
+        "these assertions cannot fail, so they test nothing: {found:#?}"
+    );
+}
+
+/// Every crate declared in `Cargo.toml` is actually used.
+///
+/// A dependency nobody imports is install time, build time and supply-chain
+/// surface for nothing — and the freshness and audit sweeps have to keep
+/// tracking it. Four such crates were deleted from this project once already
+/// (`metrics`, `metrics-exporter-prometheus`, `async-trait`, `hyper`); this is
+/// what stops the fifth.
+#[test]
+fn every_declared_dependency_is_used() {
+    const CARGO_TOML: &str = include_str!("../Cargo.toml");
+
+    // Crates a build consumes without an `use` of its own.
+    const KNOWN_INDIRECT: &[(&str, &str)] = &[
+        ("axum-server", "used as `axum_server::Server` in main.rs"),
+        (
+            "tower",
+            "test-only: `tower::util::ServiceExt` for `oneshot`",
+        ),
+        (
+            "url",
+            "test-only: parsing WebSocket URLs in the integration tests",
+        ),
+    ];
+
+    let sources = [
+        include_str!("../src/main.rs"),
+        include_str!("../src/room.rs"),
+        include_str!("../src/session.rs"),
+        include_str!("../src/state.rs"),
+        include_str!("../src/limits.rs"),
+        include_str!("../src/routes.rs"),
+        include_str!("../src/validation.rs"),
+        include_str!("../src/protocol.rs"),
+        include_str!("../src/identity.rs"),
+        include_str!("../src/security.rs"),
+        include_str!("../src/cleanup.rs"),
+        include_str!("../src/error.rs"),
+        include_str!("../src/config.rs"),
+        include_str!("../src/animals.rs"),
+        include_str!("../src/emoji.rs"),
+        SELF_SOURCE,
+    ]
+    .join("\n");
+
+    let mut unused: Vec<String> = Vec::new();
+
+    for line in CARGO_TOML.lines() {
+        let line = line.trim();
+        if line.starts_with('#') || line.starts_with('[') || !line.contains('=') {
+            continue;
+        }
+        let Some((name, _)) = line.split_once('=') else {
+            continue;
+        };
+        let name = name.trim();
+        // Only dependency lines: keys of the package table are not crates.
+        if !line.contains('"') && !line.contains('{') {
+            continue;
+        }
+        if [
+            "name",
+            "version",
+            "edition",
+            "rust-version",
+            "description",
+            "license",
+            "publish",
+            "lto",
+            "codegen-units",
+            "strip",
+            "panic",
+        ]
+        .contains(&name)
+        {
+            continue;
+        }
+
+        let ident = name.replace('-', "_");
+        let referenced = sources.contains(&format!("{ident}::"))
+            || sources.contains(&format!("use {ident}"))
+            || sources.contains(&format!("extern crate {ident}"));
+
+        if !referenced && !KNOWN_INDIRECT.iter().any(|(k, _)| *k == name) {
+            unused.push(name.to_string());
+        }
+    }
+
+    assert!(
+        unused.is_empty(),
+        "these crates are declared but never referenced — delete them or record \
+         why they are needed indirectly: {unused:?}"
+    );
+
+    // Self-cleaning, the way the reference suite's pinned-with-reason list is:
+    // an exemption must not outlive its reason.
+    for (name, reason) in KNOWN_INDIRECT {
+        assert!(
+            CARGO_TOML.contains(name),
+            "`{name}` is exempted as an indirect dependency ({reason}) but is no \
+             longer in Cargo.toml — delete the exemption"
+        );
+    }
+}
+
+// ========== SLOW TESTS: REAL TIME, LOCAL ONLY ==========
+//
+// `#[ignore]`, so `cargo test` — which is what CI runs — skips them. They are
+// run by `scripts/slow-tests.sh` and included in `scripts/coverage-full.sh`.
+//
+// They are here because the alternative was worse. The branches below only
+// happen after a real interval elapses, and the two ways to reach them without
+// waiting are both rejected: an injectable clock (§9.4 — the indirection costs
+// more than it buys, and kills four mutants that differ only at an exact
+// threshold), or asserting on timing, which §6.4 rules out as flaky. Waiting a
+// few seconds on a laptop is neither.
+
+/// The idle eviction actually fires, and closes with the code the client reads.
+///
+/// This is the branch that stopped rooms fading, and until now nothing executed
+/// it — the fix was asserted through the client's handling of the code and the
+/// server's constant, but never by watching the server send it. Backdating the
+/// user's `last_message_time` reaches it in one heartbeat tick rather than the
+/// ten minutes the constant describes.
+#[tokio::test]
+#[ignore = "waits for a real heartbeat interval; run via scripts/slow-tests.sh"]
+async fn an_idle_user_is_evicted_with_the_close_code_the_client_expects() {
+    let (addr, state, handle) = start_ws_server_with_state().await;
+
+    let (mut ws, _) = connect_async(ws_request(addr, "idle-room", &[]))
+        .await
+        .expect("the handshake should be accepted");
+    assert_eq!(recv_json_event(&mut ws).await["type"], "Welcome");
+
+    // Make this user look like somebody who has said nothing for a long time.
+    {
+        let mut rooms = state.rooms.write().await;
+        let room = rooms.get_mut("idle-room").expect("the room exists");
+        for user in room.users.values_mut() {
+            user.last_message_time =
+                Instant::now() - USER_IDLE_MESSAGE_TIMEOUT - Duration::from_secs(5);
+        }
+    }
+
+    // The heartbeat task checks on its own interval; wait for one tick.
+    let close = timeout(HEARTBEAT_INTERVAL * 3, async {
+        loop {
+            match ws.next().await {
+                Some(Ok(WsMessage::Close(frame))) => return frame,
+                Some(Ok(_)) => continue,
+                other => panic!("socket ended without a close frame: {other:?}"),
+            }
+        }
+    })
+    .await
+    .expect("an idle user should be evicted within a few heartbeats");
+
+    let frame = close.expect("the eviction must carry a close frame, not a bare close");
+    assert_eq!(
+        u16::from(frame.code),
+        IDLE_CLOSE_CODE,
+        "the eviction must use the code the client checks for; without it the \
+         client reconnects and the room never empties"
+    );
+
+    handle.abort();
+}
+
+/// The housekeeping loops actually run on their interval.
+///
+/// `spawn_housekeeping` detaches two tasks with no join handle. If either ever
+/// stopped being spawned — or panicked on its first pass — nothing would notice:
+/// rooms would simply never be deleted and memory never swept, which is
+/// precisely the symptom that took an afternoon to track down once already.
+#[tokio::test]
+#[ignore = "waits for a real housekeeping interval; run via scripts/slow-tests.sh"]
+async fn the_housekeeping_loops_run_on_their_own() {
+    let state = Arc::new(AppState::new());
+
+    {
+        let mut rooms = state.rooms.write().await;
+        let mut doomed = create_room();
+        let mut gone = connected_user("u1", "otter", "c1", Instant::now());
+        gone.connection_state = ConnectionState::Disconnected {
+            since: Instant::now(),
+        };
+        doomed.users.insert("u1".to_string(), gone);
+        doomed.last_activity = Instant::now() - EMPTY_ROOM_CLEANUP_DELAY - Duration::from_secs(60);
+        rooms.insert("swept".to_string(), doomed);
+    }
+
+    spawn_housekeeping(&state);
+
+    let deleted = timeout(ROOM_CLEANUP_INTERVAL * 2, async {
+        loop {
+            if !state.rooms.read().await.contains_key("swept") {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await;
+
+    assert!(
+        deleted.is_ok(),
+        "the room housekeeping loop must delete an abandoned room on its own, \
+         without anybody calling `cleanup_rooms`"
+    );
+}
+
+/// The shutdown announcement, without waiting for a signal.
+///
+/// `shutdown_signal` blocks on a real SIGINT, which a test cannot deliver
+/// without killing the test runner — so the part that matters is split out and
+/// tested directly. Cloudflare stops containers with SIGINT, and this is what
+/// turns a routine scale-down into "user left" rather than a silent drop.
+#[tokio::test]
+async fn shutting_down_announces_departures_and_clears_the_rooms() {
+    let state = Arc::new(AppState::new());
+    let mut receiver;
+    {
+        let mut rooms = state.rooms.write().await;
+        let mut room = create_room();
+        room.users.insert(
+            "u1".to_string(),
+            connected_user("u1", "otter", "c1", Instant::now()),
+        );
+        receiver = room.sender.subscribe();
+        rooms.insert("closing".to_string(), room);
+    }
+
+    crate::announce_shutdown(&state).await;
+
+    let event = receiver
+        .try_recv()
+        .expect("a departure should be announced");
+    assert!(
+        matches!(
+            event,
+            OutgoingEvent::System {
+                event: SystemEvent::UserLeft { .. }
+            }
+        ),
+        "connected users should be told they are leaving, got {event:?}"
+    );
+    assert!(
+        state.rooms.read().await.is_empty(),
+        "shutdown drops every room"
+    );
+}
+
+/// Binding reports failure rather than panicking, and `run` propagates it.
+///
+/// The container sets `PORT`; a port already in use is the one thing that goes
+/// wrong at startup, and it is the difference between a container that starts
+/// and one that crash-loops with nothing useful in the log.
+#[tokio::test]
+async fn binding_a_port_already_in_use_is_an_error_not_a_panic() {
+    // Hold the same address `bind_listener` uses. Holding `127.0.0.1:port`
+    // instead does not conflict with `0.0.0.0:port` — the first version of this
+    // test did exactly that, so the bind succeeded, `run` went on to serve, and
+    // the test hung waiting for a SIGINT that was never coming.
+    let occupied = TcpListener::bind("0.0.0.0:0").await.unwrap();
+    let port = occupied.local_addr().unwrap().port();
+
+    let result = crate::bind_listener(port).await;
+
+    assert!(
+        result.is_err(),
+        "binding an occupied port must return an error for `main` to report,          not panic and not succeed"
+    );
+
+    // Released, the same port binds cleanly — so the failure was the conflict
+    // rather than anything about the port itself.
+    drop(occupied);
+    assert!(crate::bind_listener(port).await.is_ok());
+}
+
+/// `run` serves on the port it was given, and stops when told to.
+#[tokio::test]
+async fn run_serves_until_it_is_shut_down() {
+    let state = Arc::new(AppState::new());
+
+    // Port 0 lets the OS choose, but then `run` owns the listener and the test
+    // cannot learn the port — so bind first to find a free one, release it, and
+    // hand the number over.
+    let scout = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = scout.local_addr().unwrap().port();
+    drop(scout);
+
+    let serving = tokio::spawn({
+        let state = state.clone();
+        async move { crate::run(state, port).await }
+    });
+
+    // The server is up once it answers.
+    let mut healthy = false;
+    for _ in 0..50 {
+        if tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_ok()
+        {
+            healthy = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        healthy,
+        "`run` should be listening on the port it was given"
+    );
+
+    serving.abort();
+}
+
+/// Every contract test is documented somewhere a future session will look.
+///
+/// The other half of the phantom-enforcement problem: a sweep can exist and
+/// guard something real while nothing says what or why, so the reasoning lives
+/// only in the file and is one refactor from being lore. Ported from the
+/// standards-enforcement contract on `cameronaaron.com`.
+#[test]
+fn every_contract_test_is_documented() {
+    const STANDARDS: &str = include_str!("../ENGINEERING-STANDARDS.md");
+    const CLAUDE_MD: &str = include_str!("../CLAUDE.md");
+    let docs = format!("{STANDARDS}\n{CLAUDE_MD}");
+
+    // The sweeps: tests whose names read as a rule about the whole codebase
+    // rather than an example of one behaviour.
+    const MARKERS: &[&str] = &[
+        "every_",
+        "no_",
+        "the_client_",
+        "the_page_",
+        "the_workflows_",
+        "client_",
+    ];
+
+    let mut undocumented: Vec<&str> = Vec::new();
+
+    for line in SELF_SOURCE.lines() {
+        let line = line.trim();
+        let Some(rest) = line
+            .strip_prefix("async fn ")
+            .or_else(|| line.strip_prefix("fn "))
+        else {
+            continue;
+        };
+        let Some((name, _)) = rest.split_once('(') else {
+            continue;
+        };
+        if !MARKERS.iter().any(|m| name.starts_with(m)) {
+            continue;
+        }
+        // Helpers are not contracts.
+        if name.ends_with("_source") || name.contains("without_comments") {
+            continue;
+        }
+        if !docs.contains(name) {
+            undocumented.push(name);
+        }
+    }
+
+    assert!(
+        undocumented.is_empty(),
+        "these sweeps guard something but nothing documents what or why; add \
+         them to the Enforcing-tests table: {undocumented:?}"
+    );
 }

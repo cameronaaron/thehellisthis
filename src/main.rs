@@ -159,30 +159,55 @@ async fn shutdown_signal(state: Arc<AppState>) {
         std::future::pending::<()>().await;
     }
 
+    announce_shutdown(&state).await;
+}
+
+/// What happens once the stop signal has arrived.
+///
+/// Split from the waiting so it can be tested: `shutdown_signal` blocks on a
+/// real SIGINT, which a test cannot deliver without killing the test runner,
+/// but everything that matters — announcing the departures — is here and takes
+/// no signal at all. The two remaining lines up there are the wait itself.
+async fn announce_shutdown(state: &Arc<AppState>) {
     info!("shutdown signal received");
     state.shutdown().await;
+}
+
+/// Binds the listening socket for `port`.
+///
+/// Separate from [`run`] so the failure path is reachable from a test: binding
+/// a port already in use is the one thing that goes wrong here, and it is the
+/// difference between a container that starts and one that crash-loops.
+async fn bind_listener(port: u16) -> std::io::Result<tokio::net::TcpListener> {
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    info!(%addr, version = VERSION, "infinite-chat listening");
+    Ok(listener)
+}
+
+/// Everything `main` does, minus the process.
+///
+/// `main` cannot be called from a test — `#[tokio::main]` turns it into the
+/// program's entry point — so anything left inside it is code no test can ever
+/// reach. What remains up there is the runtime, `std::process::exit`, and the
+/// signal wait; the rest is here.
+async fn run(state: Arc<AppState>, port: u16) -> std::io::Result<()> {
+    spawn_housekeeping(&state);
+    let listener = bind_listener(port).await?;
+    serve(state.clone(), listener, shutdown_signal(state)).await;
+    Ok(())
 }
 
 #[tokio::main]
 async fn main() {
     init_tracing();
 
-    let state = Arc::new(AppState::new());
-    spawn_housekeeping(&state);
-
     let port = resolve_port(std::env::var("PORT").ok().as_deref());
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
 
-    let listener = match tokio::net::TcpListener::bind(addr).await {
-        Ok(listener) => listener,
-        Err(e) => {
-            error!(error = %e, %addr, "failed to bind");
-            std::process::exit(1);
-        }
-    };
-
-    info!(%addr, version = VERSION, "infinite-chat listening");
-    serve(state.clone(), listener, shutdown_signal(state)).await;
+    if let Err(e) = run(Arc::new(AppState::new()), port).await {
+        error!(error = %e, port, "failed to bind");
+        std::process::exit(1);
+    }
 }
 
 /// Test-only helper for generating room names that look like the real ones.
