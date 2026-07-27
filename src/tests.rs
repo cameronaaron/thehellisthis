@@ -13362,3 +13362,82 @@ fn the_upgrade_path_hashes_the_address_at_the_boundary() {
         "the client address must never be written to a log line"
     );
 }
+
+/// The client makes no third-party requests, and the policy says so.
+///
+/// The page used to pull its typeface and icon font from Google, which meant
+/// every visitor's browser announced their address and the room they were
+/// opening to a third party — on a site whose entire premise is that you get an
+/// animal name instead of an account. Icons are an inline SVG sprite and text
+/// uses the system stack, so there is nothing left to fetch.
+#[test]
+fn the_client_makes_no_third_party_requests() {
+    // Match on the URL as it would actually be *fetched* — inside a src/href
+    // attribute or a url() — rather than anywhere in the file. The comments
+    // explaining why these origins were removed necessarily name them, and a
+    // test that a comment can fail is a test that gets silenced rather than
+    // fixed.
+    let fetched = |source: &str, origin: &str| {
+        [
+            format!("src=\"https://{origin}"),
+            format!("href=\"https://{origin}"),
+            format!("url(https://{origin}"),
+            format!("//{origin}/"),
+        ]
+        .iter()
+        .any(|pattern| source.contains(pattern.as_str()))
+    };
+
+    for (name, source) in [("index.html", EMBEDDED_HTML), ("client.js", EMBEDDED_JS)] {
+        for origin in [
+            "fonts.googleapis.com",
+            "fonts.gstatic.com",
+            "unpkg.com",
+            "cdn.jsdelivr.net",
+            "www.googletagmanager.com",
+            "www.google-analytics.com",
+        ] {
+            assert!(
+                !fetched(source, origin),
+                "{name} must not fetch from the third-party origin {origin}"
+            );
+        }
+    }
+
+    // Icons are local sprite references, not a downloaded font.
+    assert!(
+        EMBEDDED_HTML.contains("<use href=\"#i-"),
+        "icons should be inline sprite references"
+    );
+    assert!(
+        !EMBEDDED_HTML.contains("class=\"material-icons-round\""),
+        "the icon font should be gone entirely"
+    );
+}
+
+/// With no third-party assets, the policy can forbid outside origins outright.
+#[tokio::test]
+async fn the_policy_permits_no_third_party_origins() {
+    let app = build_router(Arc::new(AppState::new()));
+    let response = app
+        .oneshot(Request::builder().uri("/main").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    let csp = response
+        .headers()
+        .get("content-security-policy")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+
+    assert!(
+        !csp.contains("https://"),
+        "the policy should name no external origin: {csp}"
+    );
+    assert!(
+        csp.contains("font-src 'none'"),
+        "nothing should be loadable as a font: {csp}"
+    );
+}

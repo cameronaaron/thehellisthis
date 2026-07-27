@@ -164,17 +164,21 @@ class ChatApp {
     }
     
     updateMuteButton() {
-        const icon = this.muteBtn.querySelector('.material-icons-round');
-        if (this.isMuted) {
-            this.muteBtn.classList.add('muted');
-            this.muteBtn.title = 'Unmute notifications';
-            this.muteBtn.setAttribute('aria-label', 'Unmute notification sounds');
-            icon.textContent = 'volume_off';
-        } else {
-            this.muteBtn.classList.remove('muted');
-            this.muteBtn.title = 'Mute notifications';
-            this.muteBtn.setAttribute('aria-label', 'Mute notification sounds');
-            icon.textContent = 'volume_up';
+        // The icons are sprite references, not font ligatures: swap what the
+        // <use> points at rather than the element's text.
+        const use = this.muteBtn.querySelector('.icon use');
+        const muted = this.isMuted;
+
+        this.muteBtn.classList.toggle('muted', muted);
+        this.muteBtn.title = muted ? 'Unmute notifications' : 'Mute notifications';
+        this.muteBtn.setAttribute(
+            'aria-label',
+            muted ? 'Unmute notification sounds' : 'Mute notification sounds'
+        );
+        this.muteBtn.setAttribute('aria-pressed', String(muted));
+
+        if (use) {
+            use.setAttribute('href', muted ? '#i-volume-off' : '#i-volume-on');
         }
     }
     
@@ -459,7 +463,7 @@ class ChatApp {
         const replyBtn = document.createElement('button');
         replyBtn.className = 'reply-btn';
         replyBtn.setAttribute('aria-label', 'Reply to this message');
-        replyBtn.innerHTML = '<span class="material-icons-round">reply</span>';
+        replyBtn.innerHTML = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-reply"/></svg>';
         replyBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             this.startReply(msg.message_id, msg.animal_name, msg.text);
@@ -471,7 +475,7 @@ class ChatApp {
             const repliedTo = document.createElement('div');
             repliedTo.className = 'replied-to';
             repliedTo.innerHTML = `
-                <div class="replied-to-icon"><span class="material-icons-round">reply</span></div>
+                <div class="replied-to-icon"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-reply"/></svg></div>
                 <div class="replied-to-content">
                     <div class="replied-to-author">${this.escapeHtml(msg.reply_to.author_name || 'Unknown')}</div>
                     <div class="replied-to-text">${this.escapeHtml(msg.reply_to.preview_text || '')}</div>
@@ -953,7 +957,7 @@ class ChatApp {
         
         const warning = document.createElement('div');
         warning.className = 'fade-warning';
-        warning.innerHTML = '<span class="material-icons-round" style="vertical-align:middle;margin-right:8px">hourglass_bottom</span>Room fading soon... say something!';
+        warning.innerHTML = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-hourglass"/></svg>Room fading soon... say something!';
         document.body.appendChild(warning);
         
         setTimeout(() => {

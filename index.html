@@ -22,12 +22,17 @@
 <title>thehellisthis</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect fill='%231a73e8' rx='20' width='100' height='100'/%3E%3Cpath fill='%23fff' d='M30 35h40c2.8 0 5 2.2 5 5v20c0 2.8-2.2 5-5 5H55l-10 10v-10H30c-2.8 0-5-2.2-5-5V40c0-2.8 2.2-5 5-5z'/%3E%3C/svg%3E">
 <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect fill='%231a73e8' rx='20' width='100' height='100'/%3E%3Cpath fill='%23fff' d='M30 35h40c2.8 0 5 2.2 5 5v20c0 2.8-2.2 5-5 5H55l-10 10v-10H30c-2.8 0-5-2.2-5-5V40c0-2.8 2.2-5 5-5z'/%3E%3C/svg%3E">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;600&family=Roboto:wght@400;500&display=swap" rel="stylesheet">
-<link href="https://fonts.googleapis.com/icon?family=Material+Icons+Round" rel="stylesheet">
 <style>
 :root {
+    /* System stacks rather than webfonts. The page used to pull Google Sans,
+       Roboto and Material Icons from fonts.googleapis.com, which meant every
+       visitor's browser announced their address and the room they were opening
+       to a third party — on a site whose whole premise is that you get an
+       animal name instead of an account. It also blocked first render on two
+       cross-origin round trips. */
+    --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, 'Helvetica Neue', Arial, sans-serif;
+    --font-display: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, 'Helvetica Neue', Arial, sans-serif;
+
     --primary: #0b57d0;
     --primary-hover: #0842a0;
     --primary-pressed: #062e6f;
@@ -122,6 +127,27 @@
     }
 }
 
+/* The sprite itself is never rendered; only its <symbol>s are referenced. */
+.icon-sprite {
+    display: none;
+}
+
+/* Stroke-drawn icons inheriting the current text colour. Sized in `em` so the
+   font-size rules that positioned the old icon font continue to apply. */
+.icon {
+    width: 1em;
+    height: 1em;
+    flex: none;
+    display: inline-block;
+    vertical-align: middle;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    overflow: visible;
+}
+
 * {
     box-sizing: border-box;
     margin: 0;
@@ -143,7 +169,7 @@ html, body {
 }
 
 body {
-    font-family: 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-family: var(--font-sans);
     font-size: 14px;
     background: var(--surface-dim);
     color: var(--on-surface);
@@ -205,12 +231,12 @@ body {
     transition: transform var(--transition-medium);
 }
 
-.logo-icon .material-icons-round {
+.logo-icon .icon {
     font-size: 24px;
 }
 
 h1 {
-    font-family: 'Google Sans', sans-serif;
+    font-family: var(--font-display);
     font-size: 22px;
     font-weight: 400;
     color: var(--on-surface);
@@ -231,7 +257,7 @@ h1 {
     border-radius: var(--radius-full);
     font-size: 14px;
     font-weight: 500;
-    font-family: 'Google Sans', sans-serif;
+    font-family: var(--font-display);
     display: flex;
     align-items: center;
     gap: 6px;
@@ -251,7 +277,7 @@ h1 {
     border-radius: var(--radius-full);
     font-size: 14px;
     font-weight: 500;
-    font-family: 'Google Sans', sans-serif;
+    font-family: var(--font-display);
     background: var(--surface-container-high);
     color: var(--on-surface-variant);
     transition: all var(--transition-short);
@@ -302,7 +328,7 @@ h1 {
     border-radius: var(--radius-full);
     font-size: 13px;
     font-weight: 500;
-    font-family: 'Google Sans', sans-serif;
+    font-family: var(--font-display);
     background: var(--surface-container-high);
     color: var(--on-surface-variant);
     transition: all var(--transition-medium);
@@ -406,7 +432,7 @@ h1 {
     color: var(--error);
 }
 
-.mute-btn .material-icons-round {
+.mute-btn .icon {
     font-size: 20px;
 }
 
@@ -447,7 +473,7 @@ h1 {
     color: var(--on-primary-container);
 }
 
-.message .reply-btn .material-icons-round {
+.message .reply-btn .icon {
     font-size: 16px;
 }
 
@@ -491,7 +517,7 @@ h1 {
     flex-shrink: 0;
 }
 
-.reply-preview-icon .material-icons-round {
+.reply-preview-icon .icon {
     font-size: 20px;
 }
 
@@ -536,7 +562,7 @@ h1 {
     color: var(--error);
 }
 
-.reply-preview-close .material-icons-round {
+.reply-preview-close .icon {
     font-size: 18px;
 }
 
@@ -572,7 +598,7 @@ h1 {
     opacity: 0.7;
 }
 
-.replied-to-icon .material-icons-round {
+.replied-to-icon .icon {
     font-size: 14px;
 }
 
@@ -676,7 +702,7 @@ h1 {
     padding: 12px 24px;
     border-radius: var(--radius-full);
     font-weight: 500;
-    font-family: 'Google Sans', sans-serif;
+    font-family: var(--font-display);
     box-shadow: var(--shadow-3);
     z-index: 1000;
     animation: fade-warning-in 0.3s ease-out;
@@ -695,7 +721,7 @@ h1 {
 #userCount {
     font-size: 14px;
     font-weight: 500;
-    font-family: 'Google Sans', sans-serif;
+    font-family: var(--font-display);
     color: var(--on-surface-variant);
     display: inline-flex;
     align-items: center;
@@ -705,7 +731,7 @@ h1 {
     border-radius: var(--radius-full);
 }
 
-#userCount .material-icons-round {
+#userCount .icon {
     font-size: 18px;
 }
 
@@ -773,7 +799,7 @@ h1 {
     text-align: center;
     color: var(--on-surface-variant);
     font-size: 16px;
-    font-family: 'Google Sans', sans-serif;
+    font-family: var(--font-display);
     position: absolute;
     left: 50%;
     top: 50%;
@@ -1045,7 +1071,7 @@ h1 {
     -webkit-tap-highlight-color: transparent;
 }
 
-.send-button .material-icons-round {
+.send-button .icon {
     font-size: 24px;
     transition: transform var(--transition-short);
 }
@@ -1061,7 +1087,7 @@ h1 {
     box-shadow: var(--shadow-2);
 }
 
-.send-button:active:not(:disabled) .material-icons-round {
+.send-button:active:not(:disabled) .icon {
     transform: translateX(2px);
 }
 
@@ -1091,7 +1117,7 @@ h1 {
         height: 36px;
     }
     
-    .logo-icon .material-icons-round {
+    .logo-icon .icon {
         font-size: 20px;
     }
     
@@ -1123,7 +1149,7 @@ h1 {
         font-size: 20px;
     }
     
-    .welcome-title .material-icons-round {
+    .welcome-title .icon {
         font-size: 24px;
     }
     
@@ -1155,7 +1181,7 @@ h1 {
         border-radius: var(--radius-md);
     }
     
-    .send-button .material-icons-round {
+    .send-button .icon {
         font-size: 22px;
     }
     
@@ -1220,7 +1246,7 @@ h1 {
 }
 
 .welcome-title {
-    font-family: 'Google Sans', sans-serif;
+    font-family: var(--font-display);
     font-size: 24px;
     font-weight: 400;
     color: var(--on-primary-container);
@@ -1230,7 +1256,7 @@ h1 {
     gap: 8px;
 }
 
-.welcome-title .material-icons-round {
+.welcome-title .icon {
     font-size: 28px;
 }
 
@@ -1269,7 +1295,7 @@ h1 {
     color: var(--on-surface);
     font-size: 14px;
     font-weight: 500;
-    font-family: 'Google Sans', sans-serif;
+    font-family: var(--font-display);
     cursor: pointer;
     border: none;
     box-shadow: var(--shadow-1);
@@ -1287,7 +1313,7 @@ h1 {
     box-shadow: var(--shadow-1);
 }
 
-.welcome-chip .material-icons-round {
+.welcome-chip .icon {
     font-size: 20px;
     color: var(--primary);
 }
@@ -1362,22 +1388,38 @@ h1 {
 </style>
 </head>
 <body>
+<svg xmlns="http://www.w3.org/2000/svg" class="icon-sprite" aria-hidden="true" focusable="false"><defs>
+<g id="i-chat"><path d="M20 15a2 2 0 0 1-2 2H8l-4 4V5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2z"/></g>
+<g id="i-explore"><circle cx="12" cy="12" r="9"/><path d="M16 8l-2 6-6 2 2-6z"/></g>
+<g id="i-group"><path d="M17 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9.5" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></g>
+<g id="i-heart"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 0 0-7.8 7.8l1.1 1L12 21l7.7-7.6 1.1-1a5.5 5.5 0 0 0 0-7.8z"/></g>
+<g id="i-add"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></g>
+<g id="i-share"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/></g>
+<g id="i-close"><path d="M18 6L6 18M6 6l12 12"/></g>
+<g id="i-sparkle"><path d="M12 3l2.2 6.8L21 12l-6.8 2.2L12 21l-2.2-6.8L3 12l6.8-2.2z"/></g>
+<g id="i-reply"><path d="M9 17l-5-5 5-5"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></g>
+<g id="i-send"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4z"/></g>
+<g id="i-volume-on"><path d="M11 5L6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></g>
+<g id="i-volume-off"><path d="M11 5L6 9H2v6h4l5 4z"/><path d="M23 9l-6 6M17 9l6 6"/></g>
+<g id="i-hourglass"><path d="M6 2h12M6 22h12M6 2v5l6 5 6-5V2M6 22v-5l6-5 6 5v5"/></g>
+</defs></svg>
+
 
 <header class="app-bar">
     <a class="brand" href="/" title="Go to main room">
         <div class="logo-icon">
-            <span class="material-icons-round">forum</span>
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-chat"/></svg>
         </div>
         <h1>thehellisthis</h1>
     </a>
     <div class="room-info">
         <span class="room-badge" id="roomName">main</span>
         <a class="nav-link" href="#" id="exploreLink">
-            <span class="material-icons-round" style="font-size:18px;vertical-align:middle;margin-right:4px">explore</span>
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" style="font-size:18px;vertical-align:middle;margin-right:4px"><use href="#i-explore"/></svg>
             Explore
         </a>
         <span id="userCount">
-            <span class="material-icons-round">group</span>
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-group"/></svg>
             <span id="userCountNum">0</span>
         </span>
         <div class="status-chip connected" id="statusChip">
@@ -1385,11 +1427,11 @@ h1 {
             <span id="statusText">Connected</span>
         </div>
         <div class="room-heartbeat active" id="roomHeartbeat">
-            <span class="material-icons-round heart-icon">favorite</span>
+            <svg class="icon heart-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-heart"/></svg>
             <span class="room-lifespan" id="roomLifespan">0m alive</span>
         </div>
         <button class="mute-btn" id="muteBtn" aria-label="Toggle notification sounds" title="Mute notifications">
-            <span class="material-icons-round">volume_up</span>
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-volume-on"/></svg>
         </button>
     </div>
 </header>
@@ -1397,7 +1439,7 @@ h1 {
 <div class="header-bar" id="welcomeBanner">
     <div class="welcome-content">
         <h2 class="welcome-title">
-            <span class="material-icons-round">auto_awesome</span>
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-sparkle"/></svg>
             Welcome to a social art experiment by Cameron Aaron
         </h2>
         <p class="instructions">
@@ -1405,15 +1447,15 @@ h1 {
         </p>
         <div class="welcome-chips">
             <button class="welcome-chip" id="createRoomBtn">
-                <span class="material-icons-round">add_circle</span>
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-add"/></svg>
                 Create Room
             </button>
             <button class="welcome-chip" id="shareRoomBtn">
-                <span class="material-icons-round">share</span>
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-share"/></svg>
                 Share Room
             </button>
             <button class="welcome-chip" id="dismissBanner">
-                <span class="material-icons-round">close</span>
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-close"/></svg>
                 Dismiss
             </button>
         </div>
@@ -1433,14 +1475,14 @@ h1 {
 
 <div id="replyPreview" class="reply-preview">
     <div class="reply-preview-icon">
-        <span class="material-icons-round">reply</span>
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-reply"/></svg>
     </div>
     <div class="reply-preview-content">
         <div class="reply-preview-author" id="replyPreviewAuthor">Replying to</div>
         <div class="reply-preview-text" id="replyPreviewText">Message text...</div>
     </div>
     <button class="reply-preview-close" id="replyPreviewClose" aria-label="Cancel reply">
-        <span class="material-icons-round">close</span>
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-close"/></svg>
     </button>
 </div>
 
@@ -1461,7 +1503,7 @@ h1 {
         </div>
     </div>
     <button class="send-button" id="sendBtn" aria-label="Send message" type="button">
-        <span class="material-icons-round">send</span>
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-send"/></svg>
     </button>
 </footer>
 

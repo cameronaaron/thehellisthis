@@ -21,12 +21,17 @@ use tower_http::set_header::SetResponseHeaderLayer;
 /// `'unsafe-inline'` remains for **styles**, where the client sets a few inline
 /// `style` attributes and the exposure is CSS, not execution.
 ///
-/// `style-src`/`font-src` allow Google Fonts because the page loads its
-/// typeface and icon font from there; everything else is same-origin.
+/// Every other directive is `'self'` or `'none'`. There are no third-party
+/// origins at all: the page used to load its typeface and icon font from
+/// Google, which both widened this policy and told a third party the address of
+/// every visitor and the room they opened. Icons are now an inline SVG sprite
+/// and text uses the system stack, so `font-src 'none'` is achievable rather
+/// than aspirational — the browser is told, in the policy itself, that this
+/// page has no business talking to anyone else.
 const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; \
      script-src 'self'; \
-     style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; \
-     font-src 'self' https://fonts.gstatic.com; \
+     style-src 'self' 'unsafe-inline'; \
+     font-src 'none'; \
      img-src 'self' data:; \
      connect-src 'self' ws: wss:; \
      frame-ancestors 'none'; \
