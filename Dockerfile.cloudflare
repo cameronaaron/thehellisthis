@@ -15,7 +15,7 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock* ./
 COPY src ./src
 COPY index.html ./index.html
-COPY robots.txt ./robots.txt
+COPY client.js ./client.js
 
 # Build release binary with optimizations
 RUN cargo build --release
@@ -29,10 +29,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Copy binary and static assets
+# The binary is the only artifact: index.html, client.js and robots.txt are all
+# embedded into it at compile time (include_str! / a literal in
+# robots_txt_handler), which is the entire reason to include_str! them rather
+# than read from disk — this image has exactly one thing that can be out of
+# date with itself. Copying them here too would be dead weight that could
+# mislead someone into thinking editing them post-build changes what is served.
 COPY --from=builder /app/target/release/infinite-chat /app/infinite-chat
-COPY index.html ./index.html
-COPY robots.txt ./robots.txt
 
 # Cloudflare Containers expects port 3000 by default
 ENV PORT=3000
