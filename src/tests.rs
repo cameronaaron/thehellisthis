@@ -13159,3 +13159,26 @@ fn truncation_keeps_everything_that_fits() {
     assert_eq!(clean.author_name, "otter");
     assert_eq!(clean.preview_text, "hello");
 }
+
+// ========== DEPLOY WORKFLOW ==========
+
+/// The deploy workflow must not pass wrangler a flag it does not recognise.
+///
+/// `wrangler deploy --no-cache` shipped for a long time: the installed
+/// wrangler version has no such flag, so it printed its full --help text and
+/// exited 1 on every deploy. That failure looks identical to a missing-secret
+/// auth failure in the Actions log, and cost real time to tell apart from one
+/// the day both were true at once.
+#[test]
+fn deploy_workflow_does_not_pass_wrangler_an_unrecognised_flag() {
+    const DEPLOY_WORKFLOW: &str = include_str!("../.github/workflows/deploy.yml");
+
+    assert!(
+        !DEPLOY_WORKFLOW.contains("wrangler deploy --no-cache"),
+        "wrangler deploy in the pinned version does not support --no-cache"
+    );
+    assert!(
+        DEPLOY_WORKFLOW.contains("wrangler deploy"),
+        "the deploy step must still actually deploy"
+    );
+}

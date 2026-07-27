@@ -36,4 +36,10 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: npx wrangler deploy --no-cache
+        # --no-cache is not a flag `wrangler deploy` recognises in the pinned
+        # wrangler version (it dumps the full --help text and exits 1, which
+        # looks identical to an auth failure and cost real time to tell apart
+        # from one). The container image build already has no persistent cache
+        # to invalidate in a fresh runner, so there is nothing this flag would
+        # have bought even if it existed.
+        run: npx wrangler deploy
