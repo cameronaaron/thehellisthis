@@ -1,0 +1,17 @@
+# The toolchain this project builds with.
+#
+# Pinned so `cargo build` uses the same compiler everywhere — a laptop, CI, and
+# the container image — rather than whatever each happened to have installed.
+# The MSRV in Cargo.toml is a *floor* for anyone consuming this crate; this is
+# what actually gets used here.
+#
+# `stable` rather than a version number, so the pin does not itself go stale:
+# rustup resolves it to the current release, and Dependabot never had to know
+# about it. Kept honest by `cargo clippy -- -D warnings`, which is where a new
+# release's new lints show up first (raising the MSRV to 1.88 turned on
+# let-chain suggestions and produced 49 of them in one go).
+#
+# Not nightly. See ENGINEERING-STANDARDS.md §9.4 for why.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]

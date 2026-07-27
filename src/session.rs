@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
-use axum::extract::ws::{Message, WebSocket};
+use axum::extract::ws::{CloseFrame, Message, WebSocket};
 use axum::{
     extract::{ConnectInfo, Path, State, WebSocketUpgrade},
     response::{IntoResponse, Response},
@@ -25,9 +25,10 @@ use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
 
 use crate::config::{
-    DUPLICATE_MESSAGE_WINDOW, HEARTBEAT_INTERVAL, HEARTBEAT_TIMEOUT, MAX_MESSAGE_LEN,
-    MAX_MESSAGES_PER_ROOM, MAX_PAYLOAD_SIZE, MAX_ROOM_NAME_LEN, REACTION_MIN_INTERVAL,
-    READ_RECEIPT_MIN_INTERVAL, TYPING_EVENT_MIN_INTERVAL, USER_IDLE_MESSAGE_TIMEOUT,
+    DUPLICATE_MESSAGE_WINDOW, HEARTBEAT_INTERVAL, HEARTBEAT_TIMEOUT, IDLE_CLOSE_CODE,
+    MAX_MESSAGE_LEN, MAX_MESSAGES_PER_ROOM, MAX_PAYLOAD_SIZE, MAX_ROOM_NAME_LEN,
+    REACTION_MIN_INTERVAL, READ_RECEIPT_MIN_INTERVAL, TYPING_EVENT_MIN_INTERVAL,
+    USER_IDLE_MESSAGE_TIMEOUT,
 };
 use crate::emoji::is_reaction_emoji;
 use crate::error::ChatError;
@@ -536,7 +537,15 @@ async fn run_session(
                         "disconnecting idle user"
                     );
                     let mut tx = ws_tx.lock().await;
-                    let _ = tx.send(Message::Close(None)).await;
+                    // With a code, so the client knows this was a decision
+                    // rather than a dropped connection and does not reconnect
+                    // straight back into the room it was just removed from.
+                    let _ = tx
+                        .send(Message::Close(Some(CloseFrame {
+                            code: IDLE_CLOSE_CODE,
+                            reason: "idle".into(),
+                        })))
+                        .await;
                     break;
                 }
             }

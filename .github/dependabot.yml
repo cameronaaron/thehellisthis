@@ -1,0 +1,54 @@
+# Keeping dependencies current, automatically.
+#
+# Doing this by hand does not work: it was done by hand, and seventeen of the
+# twenty direct crates had drifted behind — one of them onto a version with a
+# published advisory (RUSTSEC-2026-0009). A weekly audit that only runs when
+# somebody remembers is not a control.
+#
+# Every update opens a pull request, which runs the full gate: fmt, clippy with
+# warnings as errors, the whole suite, the release build, the coverage floor,
+# `cargo audit` and `pnpm audit`. Nothing merges because it is newer — it merges
+# because the gate that guards `main` passed on it (§6.1).
+version: 2
+
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    # One PR for everything that moved, rather than twenty. A dependency bump is
+    # only interesting when it breaks something, and then the whole set wants
+    # reverting together anyway.
+    groups:
+      rust-dependencies:
+        patterns: ["*"]
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "build"
+
+  - package-ecosystem: npm
+    # Dependabot reads pnpm-lock.yaml under the `npm` ecosystem.
+    directory: /cloudflare
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      worker-toolchain:
+        patterns: ["*"]
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "build"
+
+  # The actions themselves go stale too, and a pinned action is a dependency
+  # with credentials in its environment.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "build"

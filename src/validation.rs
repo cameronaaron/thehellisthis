@@ -164,7 +164,7 @@ pub fn render_message_html(text: &str) -> String {
 ///
 /// Returns `None` if the payload is not valid standard base64, which is itself
 /// part of the check: a payload that will not decode is not an image.
-fn decode_base64_prefix(data: &str, want: usize) -> Option<Vec<u8>> {
+pub(crate) fn decode_base64_prefix(data: &str, want: usize) -> Option<Vec<u8>> {
     const fn sextet(c: u8) -> Option<u8> {
         match c {
             b'A'..=b'Z' => Some(c - b'A'),
@@ -205,7 +205,7 @@ fn decode_base64_prefix(data: &str, want: usize) -> Option<Vec<u8>> {
 /// The declared MIME type is a claim by the client and is not evidence of
 /// anything. Checking the bytes is what makes the allow-list mean something:
 /// without it, "this is a `image/png`" is a sentence the sender wrote.
-fn sniff_image_mime(bytes: &[u8]) -> Option<&'static str> {
+pub(crate) fn sniff_image_mime(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
         return Some("image/png");
     }

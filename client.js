@@ -86,6 +86,13 @@ const REACTION_EMOJI = [
 /// `client_attachment_ceiling_matches_the_server` fails if they drift.
 const MAX_ATTACHMENT_BYTES = 131072;
 
+/// The close code the server uses when it removes a user for being quiet.
+///
+/// Must equal `IDLE_CLOSE_CODE` in `src/config.rs`. Without the agreement the
+/// client cannot tell an eviction from a dropped connection and reconnects into
+/// the room it was just removed from, which is what stopped rooms fading.
+const IDLE_CLOSE_CODE = 4001;
+
 /// Search keywords, so typing "fire" finds 🔥 without shipping a full
 /// annotation database. Only the emoji people actually search for by name.
 const EMOJI_KEYWORDS = {
@@ -159,6 +166,7 @@ class ChatApp {
         // Composer extras
         this.pendingAttachment = null;
         this.reactionTarget = null;
+        this.evictedForIdle = false;
         this.unreadCount = 0;
         this.dragDepth = 0;
         this.lightboxReturnFocus = null;
@@ -411,7 +419,7 @@ class ChatApp {
             this.ws = new WebSocket(wsURL);
             
             this.ws.onopen = () => this.handleWebSocketOpen();
-            this.ws.onclose = () => this.handleWebSocketClose();
+            this.ws.onclose = (e) => this.handleWebSocketClose(e);
             this.ws.onerror = (e) => this.handleWebSocketError(e);
             this.ws.onmessage = (e) => this.handleWebSocketMessage(e);
         } catch (e) {
@@ -437,14 +445,56 @@ class ChatApp {
         this.input.focus();
     }
     
-    handleWebSocketClose() {
-        console.log('WebSocket disconnected');
+    /// Handles the socket closing.
+    ///
+    /// The close *code* decides whether to come back. Reconnecting is right for
+    /// a dropped connection and wrong for an eviction: the server removes a
+    /// user who has said nothing for ten minutes so the room can empty and
+    /// eventually fade, and a client that reconnects immediately puts them
+    /// straight back, so the room never spends a moment empty and never fades.
+    /// This handler used to take no argument at all, so it could not tell the
+    /// two apart and always reconnected — one open tab kept a room alive
+    /// forever.
+    handleWebSocketClose(event) {
+        console.log('WebSocket disconnected', event && event.code);
         if (this.heartbeatTimeoutId) clearTimeout(this.heartbeatTimeoutId);
         this.connected = false;
         this.updateConnectionStatus('disconnected');
         this.sendButton.disabled = true;
         this.input.disabled = true;
+
+        if (event && event.code === IDLE_CLOSE_CODE) {
+            this.handleIdleEviction();
+            return;
+        }
+
         this.tryReconnect();
+    }
+
+    /// Stops reconnecting after an idle eviction, and offers the way back.
+    ///
+    /// Not a dead end: the room is left as it was and any deliberate action —
+    /// typing, or pressing the button — rejoins. What it does not do is rejoin
+    /// on its own, which is the whole difference between a room that can empty
+    /// and one that cannot.
+    handleIdleEviction() {
+        this.evictedForIdle = true;
+        this.reconnectAttempts = 0;
+        this.updateConnectionStatus('idle');
+        this.addSystemMessage('You went quiet, so the room let you go. Say something to rejoin.', 'info');
+
+        // The input stays usable; using it is what brings the socket back.
+        this.input.disabled = false;
+        this.sendButton.disabled = false;
+    }
+
+    /// Reconnects after an idle eviction, on the user's initiative.
+    rejoinAfterIdle() {
+        if (!this.evictedForIdle || this.connected) return false;
+        this.evictedForIdle = false;
+        this.addSystemMessage('Rejoining...', 'info');
+        this.connect();
+        return true;
     }
     
     handleWebSocketError(error) {
@@ -1427,6 +1477,10 @@ class ChatApp {
     }
     
     handleInputKeydown(e) {
+        // Any deliberate keystroke after an idle eviction is a request to come
+        // back; the message itself is still typed and sent as normal.
+        this.rejoinAfterIdle();
+
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
             this.sendMessage();
@@ -1465,6 +1519,12 @@ class ChatApp {
     }
     
     sendMessage() {
+        if (this.rejoinAfterIdle()) {
+            // The socket is still opening; the text stays in the box and the
+            // next press sends it.
+            return;
+        }
+
         const text = this.input.value.trim();
 
         // An image on its own is a message. The server agrees: text is only

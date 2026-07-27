@@ -200,6 +200,24 @@ pub(crate) const EMPTY_ROOM_CLEANUP_DELAY: Duration = Duration::from_secs(600);
 /// A user who has sent nothing for this long is disconnected.
 pub(crate) const USER_IDLE_MESSAGE_TIMEOUT: Duration = Duration::from_secs(600);
 
+/// WebSocket close code for "you were disconnected for being quiet".
+///
+/// In the 4000-4999 range, which the protocol reserves for the application.
+/// The code is the whole point: without it the client cannot tell an idle
+/// eviction from a dropped connection, and its reconnect logic — correctly,
+/// for a dropped connection — immediately reconnects.
+///
+/// That is what stopped rooms ever fading. Evicting the user for idleness set
+/// `has_connected_users` to false for the instant it took the browser to come
+/// back, so the room never spent `EMPTY_ROOM_CLEANUP_DELAY` empty and was never
+/// deleted. One tab left open on a room kept it alive for the life of the
+/// process, and the scarcity that is the entire product (§7) quietly stopped
+/// happening.
+///
+/// `index.html`/`client.js` must use the same number; constraint #12, pinned by
+/// `client_and_server_agree_on_the_idle_close_code`.
+pub(crate) const IDLE_CLOSE_CODE: u16 = 4001;
+
 /// `main` is never deleted, so it fades instead: once idle this long its
 /// history is trimmed to [`MAIN_ROOM_FADE_KEEP`].
 pub(crate) const MAIN_ROOM_FADE_IDLE: Duration = Duration::from_secs(600);

@@ -15867,3 +15867,250 @@ async fn the_message_id_index_never_drifts_from_the_history() {
     room.cleanup_messages(Instant::now(), &tracker).await;
     assert_eq!(room.message_ids, expected(&room), "after age cleanup");
 }
+
+/// Constraint #12 — the client and server agree on the idle close code.
+///
+/// The number is the entire mechanism. If the client's copy drifts it stops
+/// recognising the eviction, reconnects into the room it was just removed from,
+/// and rooms silently stop fading again — with no error anywhere, because
+/// reconnecting is exactly the right response to every *other* close.
+#[test]
+fn client_and_server_agree_on_the_idle_close_code() {
+    assert!(
+        EMBEDDED_JS.contains(&format!("const IDLE_CLOSE_CODE = {IDLE_CLOSE_CODE};")),
+        "client.js must declare IDLE_CLOSE_CODE = {IDLE_CLOSE_CODE} to match config.rs"
+    );
+
+    // 4000-4999 is the range the protocol reserves for the application; a code
+    // outside it is either reserved or rejected by the browser.
+    assert!(
+        (4000..=4999).contains(&IDLE_CLOSE_CODE),
+        "an application close code must be in 4000-4999, not {IDLE_CLOSE_CODE}"
+    );
+}
+
+/// §7 — the client does not undo the eviction that lets a room empty.
+///
+/// The server removes a user who has said nothing for ten minutes so the room
+/// can empty and eventually fade. That only works if the client stays away.
+/// `onclose` took no argument at all, so it could not see the code, and
+/// `tryReconnect` ran on every close — one tab left open kept a room alive for
+/// the life of the process, and rooms never faded.
+#[test]
+fn the_client_does_not_reconnect_after_an_idle_eviction() {
+    let js = EMBEDDED_JS;
+
+    assert!(
+        js.contains("this.ws.onclose = (e) => this.handleWebSocketClose(e);"),
+        "the close handler must receive the event, or it cannot read the code"
+    );
+    assert!(
+        js.contains("event.code === IDLE_CLOSE_CODE"),
+        "the close handler must branch on the eviction code"
+    );
+
+    // The eviction branch must return before reaching the reconnect.
+    let handler = js
+        .split_once("handleWebSocketClose(event) {")
+        .and_then(|(_, rest)| rest.split_once("\n    }"))
+        .map(|(body, _)| body)
+        .expect("client.js should define handleWebSocketClose");
+
+    let eviction = handler
+        .find("IDLE_CLOSE_CODE")
+        .expect("the handler should check the eviction code");
+    let reconnect = handler
+        .find("this.tryReconnect()")
+        .expect("the handler should still reconnect for ordinary closes");
+
+    assert!(
+        eviction < reconnect,
+        "the eviction check must come before the reconnect, or the client \
+         reconnects anyway"
+    );
+    assert!(
+        js.contains("rejoinAfterIdle"),
+        "an evicted user must still have a way back"
+    );
+}
+
+/// §7 — a room with nobody in it is deleted.
+///
+/// The mechanic the whole product rests on, asserted end to end over
+/// `cleanup_rooms` rather than over one of its branches: a room whose users
+/// have all disconnected and which has been quiet for the grace period is gone,
+/// while `main` and a room somebody is still in are not.
+#[tokio::test]
+async fn a_room_nobody_is_in_is_deleted_and_main_never_is() {
+    let state = Arc::new(AppState::new());
+    let long_ago = Instant::now() - EMPTY_ROOM_CLEANUP_DELAY - Duration::from_secs(60);
+
+    {
+        let mut rooms = state.rooms.write().await;
+
+        // Everyone left, and it has been quiet since.
+        let mut abandoned = create_room();
+        let mut gone = connected_user("u1", "otter", "c1", Instant::now());
+        gone.connection_state = ConnectionState::Disconnected {
+            since: Instant::now(),
+        };
+        abandoned.users.insert("u1".to_string(), gone);
+        abandoned.last_activity = long_ago;
+        rooms.insert("abandoned".to_string(), abandoned);
+
+        // Somebody is still here, quiet or not.
+        let mut occupied = create_room();
+        occupied.users.insert(
+            "u2".to_string(),
+            connected_user("u2", "badger", "c2", Instant::now()),
+        );
+        occupied.last_activity = long_ago;
+        rooms.insert("occupied".to_string(), occupied);
+
+        // `main` is permanent even when empty and silent.
+        let mut main = create_room();
+        main.last_activity = long_ago;
+        rooms.insert(MAIN_ROOM.to_string(), main);
+    }
+
+    cleanup_rooms(&state).await;
+
+    let rooms = state.rooms.read().await;
+    assert!(
+        !rooms.contains_key("abandoned"),
+        "a room nobody is in, quiet past the grace period, must be deleted — \
+         this is the scarcity the product is made of (§7)"
+    );
+    assert!(
+        rooms.contains_key("occupied"),
+        "a room somebody is still in must survive however quiet it is"
+    );
+    assert!(
+        rooms.contains_key(MAIN_ROOM),
+        "`main` is never deleted (constraint #3)"
+    );
+}
+
+/// The base64 prefix decoder, over its whole contract.
+///
+/// Tested directly rather than through an attachment because the interesting
+/// inputs cannot be reached that way: an image's first twelve bytes are its
+/// magic number, so `+` and `/` — the two characters a hand-rolled decoder is
+/// most likely to forget — never appear that early in a PNG or a GIF. A decoder
+/// that silently mishandled them would reject real images for no reason the
+/// user could see, and only for *some* images.
+#[test]
+fn the_base64_prefix_decoder_handles_its_whole_alphabet() {
+    use crate::validation::decode_base64_prefix;
+
+    // Every sextet value 0-63 appears across this alphabet, including + and /.
+    let alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let decoded = decode_base64_prefix(alphabet, 48).expect("the standard alphabet must decode");
+    assert_eq!(decoded.len(), 48, "64 base64 characters carry 48 bytes");
+
+    // `+` and `/` specifically: "+/+/" decodes to 0xFB 0xEF 0xBE.
+    assert_eq!(
+        decode_base64_prefix("+/+/", 3),
+        Some(vec![0xFB, 0xFF, 0xBF]),
+        "'+' is 62 and '/' is 63"
+    );
+
+    // Padding ends the payload rather than decoding as data.
+    assert_eq!(decode_base64_prefix("QQ==", 12), Some(vec![0x41]));
+
+    // Running out before `want` bytes yields what there was, not a failure —
+    // a short payload is not a malformed one, it just is not an image.
+    let short = decode_base64_prefix("QUJD", 12).expect("valid base64");
+    assert_eq!(short, b"ABC");
+
+    // Anything outside the alphabet is a refusal.
+    for bad in ["!!!!", "abc def", "AB*D", "café"] {
+        assert_eq!(
+            decode_base64_prefix(bad, 12),
+            None,
+            "{bad:?} is not base64 and must be refused"
+        );
+    }
+
+    // Exactly `want` bytes stops early rather than walking the whole payload —
+    // the reason this reads a prefix at all.
+    let long = "A".repeat(100_000);
+    assert_eq!(decode_base64_prefix(&long, 4).map(|v| v.len()), Some(4));
+}
+
+/// Every format on the allow-list is recognised from its own bytes, and
+/// near-misses are not.
+#[test]
+fn image_sniffing_recognises_each_allowed_format() {
+    use crate::validation::sniff_image_mime;
+
+    assert_eq!(
+        sniff_image_mime(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]),
+        Some("image/png")
+    );
+    assert_eq!(
+        sniff_image_mime(&[0xFF, 0xD8, 0xFF, 0xE0]),
+        Some("image/jpeg")
+    );
+    assert_eq!(sniff_image_mime(b"GIF87a...."), Some("image/gif"));
+    assert_eq!(sniff_image_mime(b"GIF89a...."), Some("image/gif"));
+    assert_eq!(
+        sniff_image_mime(b"RIFF\0\0\0\0WEBPVP8 "),
+        Some("image/webp")
+    );
+
+    // Every format on the allow-list must actually be sniffable, or it is on a
+    // list of things that can never be accepted.
+    let sniffable = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+    for mime in ALLOWED_ATTACHMENT_MIMES {
+        assert!(
+            sniffable.contains(mime),
+            "{mime} is allowed but `sniff_image_mime` can never return it, so \
+             no payload of that type could ever be accepted"
+        );
+    }
+
+    for not_an_image in [
+        &b"RIFF\0\0\0\0WAVEfmt "[..], // RIFF, but not WEBP
+        &b"\x89PNGxxxx"[..],          // PNG magic truncated
+        &b"GIF88a"[..],               // not a real GIF version
+        &b"<svg xmlns="[..],          // a document
+        &b"hello world!"[..],
+        &b""[..],
+        &b"RIFF"[..], // too short to hold the WEBP tag
+    ] {
+        assert_eq!(
+            sniff_image_mime(not_an_image),
+            None,
+            "{not_an_image:?} must not be recognised as an image"
+        );
+    }
+}
+
+/// An attachment with no payload is refused before anything walks it.
+#[test]
+fn an_empty_attachment_is_refused() {
+    let empty = Attachment {
+        mime: "image/png".to_string(),
+        data: String::new(),
+        width: 10,
+        height: 10,
+        faded: false,
+    };
+    assert!(sanitize_attachment(empty).is_err());
+}
+
+/// A JPEG is accepted, and its stored type comes from its bytes.
+#[test]
+fn a_jpeg_attachment_is_accepted() {
+    // A minimal JFIF header, base64-encoded.
+    let jpeg = Attachment {
+        mime: "image/jpeg".to_string(),
+        data: "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==".to_string(),
+        width: 1,
+        height: 1,
+        faded: false,
+    };
+    let clean = sanitize_attachment(jpeg).expect("a real JPEG is accepted");
+    assert_eq!(clean.mime, "image/jpeg");
+}
