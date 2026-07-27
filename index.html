@@ -1793,6 +1793,13 @@ class ChatApp {
     
     handleServerEvent(data) {
         switch (data.type) {
+            case 'Welcome':
+                // First frame on every connection: who we are. Everything that
+                // distinguishes "my message" from "someone else's" depends on
+                // this arriving before history, which the server guarantees.
+                this.myUserId = data.user_id;
+                this.myAnimalName = data.animal_name;
+                break;
             case 'Message':
                 this.handleIncomingMessage(data.message);
                 break;
@@ -1832,30 +1839,11 @@ class ChatApp {
             this.recentMessageCount = 1;
         }
         
-        // Get user_id from cookie for comparison (handles reconnect before UserJoined)
-        let cookieUserId = this.myUserId;
-        if (!cookieUserId) {
-            const cookies = document.cookie.split(';').map(c => c.trim());
-            const userIdCookie = cookies.find(c => c.startsWith('user_id='));
-            if (userIdCookie) {
-                cookieUserId = userIdCookie.split('=')[1];
-            }
-        }
-        
-        // Detect if this message is from us
-        const isSent = (cookieUserId && msg.user_id === cookieUserId);
-        
-        // Set our identity if we found a match
-        if (isSent && !this.myUserId) {
-            this.myUserId = cookieUserId;
-            this.myAnimalName = msg.animal_name;
-        }
-        
-        // Also set animal name if we know user_id but not animal name
-        if (this.myUserId && msg.user_id === this.myUserId && !this.myAnimalName) {
-            this.myAnimalName = msg.animal_name;
-        }
-        
+        // Identity comes from the Welcome frame, which the server sends before
+        // any history. The cookies are HttpOnly, so document.cookie is empty by
+        // design — never reintroduce a read of it here.
+        const isSent = Boolean(this.myUserId) && msg.user_id === this.myUserId;
+
         this.renderMessage(msg, isSent, isCombo && this.recentMessageCount >= 2);
         
         // Auto-scroll if user is at bottom
@@ -1968,10 +1956,10 @@ class ChatApp {
         if (!event) return;
         
         if (event.UserJoined) {
-            if (!this.myUserId) {
-                this.myUserId = event.UserJoined.user_id;
-                this.myAnimalName = event.UserJoined.animal_name;
-                // Welcome message for the user themselves
+            // Compare against the identity the server gave us rather than
+            // assuming the first join we see is our own — with two people
+            // connecting at once, that assumption picked the wrong user.
+            if (event.UserJoined.user_id === this.myUserId) {
                 this.addSystemMessage(`You joined as ${this.escapeHtml(event.UserJoined.animal_name)} 🎉`, 'success');
             } else {
                 this.addSystemMessage(`${this.escapeHtml(event.UserJoined.animal_name)} joined`, 'success');

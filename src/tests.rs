@@ -1,18 +1,42 @@
 // src/tests.rs
 
-use crate::*;
+// Explicit per-module imports rather than a single `use crate::*`: when a test
+// fails, the import list is what tells you which part of the server it belongs
+// to, and third-party types are named here rather than inherited from whatever
+// `main.rs` happened to import.
+use crate::animals::ANIMAL_NAMES;
+use crate::cleanup::cleanup_rooms;
+use crate::config::*;
+use crate::error::ChatError;
+use crate::identity::{OptionalUserCookie, create_user_cookies};
+use crate::limits::{ConnectionPool, MemoryTracker, RateLimiter, ResourceMonitor, SecurityManager};
+use crate::protocol::{ClientEvent, OutgoingEvent, OutgoingMessage, ReplyInfo, SystemEvent};
+use crate::room::{ConnectionState, RoomState, UserData, create_room, user_idle_for_too_long};
+use crate::routes::{
+    health_handler, main_room_handler, metrics_handler, robots_txt_handler, room_handler,
+    root_redirect,
+};
+use crate::session::{cleanup_user, ws_handler};
+use crate::state::AppState;
+use crate::validation::{extract_client_ip, validate_input, validate_message};
+use crate::{build_router, generate_random_room_name};
+
+use axum::extract::{ConnectInfo, State};
+use axum::response::IntoResponse;
 use axum::{
-    body::{to_bytes, Body},
+    Router,
+    body::{Body, to_bytes},
     http::{Request, StatusCode},
     routing::get,
-    Router,
 };
 use futures::future::join_all;
 use futures::{SinkExt, StreamExt};
+use http::HeaderMap;
 use serde_json::Value as JsonValue;
 use std::net::SocketAddr;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
 use tokio::sync::Barrier;
@@ -20,6 +44,7 @@ use tokio::time::timeout;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tower::util::ServiceExt;
+use uuid::Uuid;
 
 #[tokio::test]
 async fn test_root_redirect() {
@@ -358,7 +383,7 @@ async fn test_preserve_messages_trims_and_updates_tracker() {
             animal_name: "Lion".to_string(),
             text: "<p>Test</p>".to_string(),
             timestamp: "1000".to_string(),
-        reply_to: None,
+            reply_to: None,
         };
         let msg_size = msg.estimate_size();
         tracker.add_bytes(msg_size);
@@ -387,7 +412,7 @@ async fn test_trim_to_max_messages_limits_history() {
             animal_name: "Lion".to_string(),
             text: "<p>Test</p>".to_string(),
             timestamp: "1000".to_string(),
-        reply_to: None,
+            reply_to: None,
         };
         let size = msg.estimate_size();
         tracker.add_bytes(size);
@@ -526,7 +551,7 @@ async fn test_cleanup_messages_by_age() {
         animal_name: "Lion".to_string(),
         text: "<p>Old</p>".to_string(),
         timestamp: old_timestamp,
-            reply_to: None,
+        reply_to: None,
     };
 
     // Fresh message
@@ -777,7 +802,7 @@ async fn test_concurrent_message_additions() {
                 animal_name: "Lion".to_string(),
                 text: "<p>Test</p>".to_string(),
                 timestamp: "1000".to_string(),
-        reply_to: None,
+                reply_to: None,
             };
             room_clone.lock().await.add_message(msg, &tracker_clone);
         }));
@@ -3517,13 +3542,6 @@ async fn test_chat_error_into_response_room_full() {
 }
 
 #[tokio::test]
-async fn test_chat_error_into_response_rate_limited() {
-    let error = ChatError::RateLimited;
-    let response = error.into_response();
-    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
-}
-
-#[tokio::test]
 async fn test_chat_error_into_response_rate_limit_error() {
     let error = ChatError::RateLimitError("Too fast".to_string());
     let response = error.into_response();
@@ -3545,24 +3563,10 @@ async fn test_chat_error_into_response_resource_limit() {
 }
 
 #[tokio::test]
-async fn test_chat_error_into_response_connection_error() {
-    let error = ChatError::ConnectionError("Timeout".to_string());
-    let response = error.into_response();
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-}
-
-#[tokio::test]
 async fn test_chat_error_into_response_security_error() {
     let error = ChatError::SecurityError("Banned".to_string());
     let response = error.into_response();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
-}
-
-#[tokio::test]
-async fn test_chat_error_into_response_room_error() {
-    let error = ChatError::RoomError("Room closed".to_string());
-    let response = error.into_response();
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
@@ -4055,20 +4059,21 @@ async fn test_create_user_cookies_format() {
     assert!(user_cookie.contains("user_id=test-user-123"));
     assert!(user_cookie.contains("Path=/"));
     assert!(user_cookie.contains("SameSite=Strict"));
-    // NOTE: HttpOnly intentionally NOT set so JavaScript can read cookies for message alignment
+    // HttpOnly is required: the client learns its own identity from the
+    // Welcome frame, so script access to these cookies buys nothing and only
+    // widens what an XSS through the Markdown pipeline could steal.
     assert!(
-        !user_cookie.contains("HttpOnly"),
-        "user_id cookie should NOT have HttpOnly to allow JS access"
+        user_cookie.contains("HttpOnly"),
+        "user_id cookie must be HttpOnly"
     );
     assert!(user_cookie.contains("Secure"));
 
     assert!(animal_cookie.contains("animal_name=Tiger"));
     assert!(animal_cookie.contains("Path=/"));
     assert!(animal_cookie.contains("SameSite=Strict"));
-    // NOTE: HttpOnly intentionally NOT set so JavaScript can read cookies for message alignment
     assert!(
-        !animal_cookie.contains("HttpOnly"),
-        "animal_name cookie should NOT have HttpOnly to allow JS access"
+        animal_cookie.contains("HttpOnly"),
+        "animal_name cookie must be HttpOnly"
     );
     assert!(animal_cookie.contains("Secure"));
 }
@@ -4472,7 +4477,7 @@ async fn test_room_state_preserve_messages() {
             animal_name: "Tiger".to_string(),
             text: format!("Message {}", i),
             timestamp: "1234567890".to_string(),
-        reply_to: None,
+            reply_to: None,
         };
         room_state.add_message(msg, &memory_tracker);
     }
@@ -4497,7 +4502,7 @@ async fn test_room_state_trim_messages_over_limit() {
             animal_name: "Tiger".to_string(),
             text: format!("Message {}", i),
             timestamp: "1234567890".to_string(),
-        reply_to: None,
+            reply_to: None,
         };
         room_state.add_message(msg, &memory_tracker);
     }
@@ -4909,7 +4914,7 @@ async fn test_trigger_cleanup_when_memory_high() {
             animal_name: "Tiger".to_string(),
             text: format!("Message {}", i),
             timestamp: "1234567890".to_string(),
-        reply_to: None,
+            reply_to: None,
         };
         room_state.chat_history.push(msg);
     }
@@ -4937,7 +4942,7 @@ async fn test_trigger_cleanup_when_memory_low() {
             animal_name: "Tiger".to_string(),
             text: format!("Message {}", i),
             timestamp: "1234567890".to_string(),
-        reply_to: None,
+            reply_to: None,
         };
         room_state.chat_history.push(msg);
     }
@@ -5492,20 +5497,18 @@ async fn test_cookie_creation_format() {
     assert!(uid_cookie.contains("user_id=test-user-456"));
     assert!(uid_cookie.contains("Path=/"));
     assert!(uid_cookie.contains("SameSite=Strict"));
-    // NOTE: HttpOnly intentionally NOT set so JavaScript can read cookies for message alignment
     assert!(
-        !uid_cookie.contains("HttpOnly"),
-        "user_id cookie should NOT have HttpOnly to allow JS access"
+        uid_cookie.contains("HttpOnly"),
+        "user_id cookie must be HttpOnly"
     );
     assert!(uid_cookie.contains("Secure"));
 
     assert!(name_cookie.contains("animal_name=Tiger"));
     assert!(name_cookie.contains("Path=/"));
     assert!(name_cookie.contains("SameSite=Strict"));
-    // NOTE: HttpOnly intentionally NOT set so JavaScript can read cookies for message alignment
     assert!(
-        !name_cookie.contains("HttpOnly"),
-        "animal_name cookie should NOT have HttpOnly to allow JS access"
+        name_cookie.contains("HttpOnly"),
+        "animal_name cookie must be HttpOnly"
     );
     assert!(name_cookie.contains("Secure"));
 }
@@ -5738,14 +5741,18 @@ async fn test_user_count_updates_on_join() {
 #[tokio::test]
 async fn test_cookie_must_be_js_accessible() {
     // CRITICAL: user_id cookie MUST be readable by JavaScript for message alignment
-    // HttpOnly flag prevents JS access - ensure it's NOT present
     let (user_cookie, animal_cookie) = create_user_cookies("js-test-user", "Lion");
 
-    // Verify NO HttpOnly flag (allows document.cookie access)
-    assert!(!user_cookie.contains("HttpOnly"), 
-        "CRITICAL: user_id cookie must NOT have HttpOnly - JavaScript needs to read it for message alignment!");
-    assert!(!animal_cookie.contains("HttpOnly"),
-        "CRITICAL: animal_name cookie must NOT have HttpOnly - JavaScript needs to read it for display!");
+    // Both identity cookies are HttpOnly. The client is told who it is by the
+    // Welcome frame on connect, so it never needs to read document.cookie.
+    assert!(
+        user_cookie.contains("HttpOnly"),
+        "user_id cookie must be HttpOnly"
+    );
+    assert!(
+        animal_cookie.contains("HttpOnly"),
+        "animal_name cookie must be HttpOnly"
+    );
 
     // Still must have security attributes
     assert!(
@@ -6442,14 +6449,6 @@ async fn test_system_event_contains_required_fields() {
 }
 
 #[tokio::test]
-async fn test_rate_limit_error_response() {
-    // Test that rate limit errors are properly converted to responses
-    let error = ChatError::RateLimited;
-    let response = error.into_response();
-    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
-}
-
-#[tokio::test]
 async fn test_room_full_error_response() {
     let error = ChatError::RoomFull;
     let response = error.into_response();
@@ -6461,13 +6460,6 @@ async fn test_invalid_message_error_response() {
     let error = ChatError::InvalidMessage("Test error".to_string());
     let response = error.into_response();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-}
-
-#[tokio::test]
-async fn test_connection_error_response() {
-    let error = ChatError::ConnectionError("Connection failed".to_string());
-    let response = error.into_response();
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }
 
 #[tokio::test]
@@ -6764,7 +6756,7 @@ async fn test_room_state_last_activity_updates() {
             animal_name: "Lion".to_string(),
             text: "<p>Test</p>".to_string(),
             timestamp: "1000".to_string(),
-        reply_to: None,
+            reply_to: None,
         },
         &tracker,
     );
@@ -7234,7 +7226,7 @@ async fn test_claim_no_disk_persistence() {
                 animal_name: "Lion".to_string(),
                 text: "<p>Hello</p>".to_string(),
                 timestamp: "12345".to_string(),
-        reply_to: None,
+                reply_to: None,
             }],
             users: std::collections::HashMap::new(),
             available_animals: std::collections::VecDeque::new(),
@@ -7473,7 +7465,11 @@ async fn test_main_room_message_fade_logic() {
     // The logic in cleanup_rooms uses this threshold
     let ten_minutes = EMPTY_ROOM_CLEANUP_DELAY;
 
-    assert_eq!(ten_minutes.as_secs(), 600, "Main room fades after 10 minutes");
+    assert_eq!(
+        ten_minutes.as_secs(),
+        600,
+        "Main room fades after 10 minutes"
+    );
 }
 
 #[tokio::test]
@@ -7561,7 +7557,7 @@ async fn test_max_payload_size_constant() {
 
 #[tokio::test]
 async fn test_sanitize_timeout_constant() {
-    assert_eq!(SANITIZE_TIMEOUT.as_millis(), 50);
+    assert_eq!(DUPLICATE_MESSAGE_WINDOW.as_millis(), 50);
 }
 
 #[tokio::test]
@@ -7609,13 +7605,6 @@ async fn test_chat_error_room_full_status() {
 }
 
 #[tokio::test]
-async fn test_chat_error_rate_limited_status() {
-    let error = ChatError::RateLimited;
-    let response = error.into_response();
-    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
-}
-
-#[tokio::test]
 async fn test_chat_error_invalid_message_status() {
     let error = ChatError::InvalidMessage("test".to_string());
     let response = error.into_response();
@@ -7630,24 +7619,10 @@ async fn test_chat_error_resource_limit_status() {
 }
 
 #[tokio::test]
-async fn test_chat_error_connection_error_status() {
-    let error = ChatError::ConnectionError("test".to_string());
-    let response = error.into_response();
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-}
-
-#[tokio::test]
 async fn test_chat_error_security_error_status() {
     let error = ChatError::SecurityError("test".to_string());
     let response = error.into_response();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
-}
-
-#[tokio::test]
-async fn test_chat_error_room_error_status() {
-    let error = ChatError::RoomError("test".to_string());
-    let response = error.into_response();
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
@@ -8133,10 +8108,12 @@ async fn test_frontend_timeout_text_matches_backend_constant() {
     );
 
     // Frontend must say "ten minute" (not "one minute", "30 seconds", etc.)
-    assert!(EMBEDDED_HTML.contains("go silent for ten minute"),
+    assert!(
+        EMBEDDED_HTML.contains("go silent for ten minute"),
         "Frontend instructions don't match backend! Backend deletes at {}s but HTML doesn't say 'ten minute'. \
          Found text should say 'go silent for ten minute'.",
-        cleanup_seconds);
+        cleanup_seconds
+    );
 
     // Must NOT contain the old incorrect text
     assert!(
@@ -8491,22 +8468,36 @@ async fn test_message_estimate_size_with_reply() {
 #[tokio::test]
 async fn test_memory_tracker_should_gc_timing() {
     let tracker = MemoryTracker::new();
-    
-    // First call should return true (always GC on first check after 300s threshold)
-    // Since we can't easily manipulate time, just verify the method exists and returns bool
-    let result = tracker.should_gc();
-    // Result depends on timing, but method should work
-    assert!(result == true || result == false);
+
+    // A fresh tracker has never swept (last_gc == 0), and "now" is unix epoch
+    // seconds, so the first call is always due.
+    assert!(
+        tracker.should_gc(),
+        "a tracker that has never swept must be due for one"
+    );
+
+    // ...and having swept, it records the time and refuses to sweep again
+    // until MEMORY_GC_MIN_INTERVAL has passed. This is the property that keeps
+    // the housekeeping loop from taking the room write lock every 60 seconds.
+    assert!(
+        !tracker.should_gc(),
+        "should_gc must rate-limit itself to one sweep per MEMORY_GC_MIN_INTERVAL"
+    );
+    assert_ne!(
+        tracker.last_gc.load(Ordering::SeqCst),
+        0,
+        "should_gc must record when it last swept"
+    );
 }
 
 #[tokio::test]
 async fn test_memory_tracker_remove_bytes_underflow_protection() {
     let tracker = MemoryTracker::new();
-    
+
     // Add some bytes
     tracker.add_bytes(100);
     assert_eq!(tracker.total_bytes.load(Ordering::Relaxed), 100);
-    
+
     // Remove more than we have - should not underflow
     tracker.remove_bytes(200);
     assert_eq!(tracker.total_bytes.load(Ordering::Relaxed), 0);
@@ -8515,13 +8506,13 @@ async fn test_memory_tracker_remove_bytes_underflow_protection() {
 #[tokio::test]
 async fn test_connection_pool_cleanup_old_entries() {
     let pool = ConnectionPool::new();
-    
+
     // Add a connection
     pool.add_connection("192.168.1.1").await.unwrap();
-    
+
     // Should be able to accept more
     assert!(pool.can_accept("192.168.1.1").await);
-    
+
     // Remove it
     pool.remove_connection("192.168.1.1").await;
 }
@@ -8530,10 +8521,12 @@ async fn test_connection_pool_cleanup_old_entries() {
 async fn test_room_state_add_message_drops_when_memory_exceeded() {
     let mut room = create_room();
     let tracker = MemoryTracker::new();
-    
+
     // Fill up to near the limit
-    tracker.total_bytes.store(MAX_TOTAL_ROOMS_MEMORY - 100, Ordering::SeqCst);
-    
+    tracker
+        .total_bytes
+        .store(MAX_TOTAL_ROOMS_MEMORY - 100, Ordering::SeqCst);
+
     let msg = OutgoingMessage {
         message_id: uuid::Uuid::new_v4(),
         user_id: "user1".to_string(),
@@ -8542,7 +8535,7 @@ async fn test_room_state_add_message_drops_when_memory_exceeded() {
         timestamp: "1000".to_string(),
         reply_to: None,
     };
-    
+
     // This should trigger pruning or dropping
     room.add_message(msg, &tracker);
 }
@@ -8551,15 +8544,15 @@ async fn test_room_state_add_message_drops_when_memory_exceeded() {
 async fn test_validate_input_edge_cases() {
     // Empty string
     assert!(validate_input("", 50).is_err());
-    
+
     // Exactly at max length
     let max_str: String = "a".repeat(50);
     assert!(validate_input(&max_str, 50).is_ok());
-    
+
     // One over max length
     let over_str: String = "a".repeat(51);
     assert!(validate_input(&over_str, 50).is_err());
-    
+
     // Invalid characters
     assert!(validate_input("test<script>", 50).is_err());
     assert!(validate_input("test>alert", 50).is_err());
@@ -8572,18 +8565,33 @@ async fn test_room_handler_reserved_paths() {
         .route("/{room}", get(room_handler))
         .with_state(app_state);
 
-    let reserved = ["robots.txt", "sitemap.xml", "favicon.ico", "main", "admin", "api", "health", "metrics", "ws"];
-    
+    let reserved = [
+        "robots.txt",
+        "sitemap.xml",
+        "favicon.ico",
+        "main",
+        "admin",
+        "api",
+        "health",
+        "metrics",
+        "ws",
+    ];
+
     for path in reserved.iter() {
         let req = Request::builder()
             .uri(format!("/{}", path))
             .body(Body::empty())
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
-        let body = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body_str = String::from_utf8_lossy(&body);
-        assert!(body_str.contains("Invalid") || body_str.contains("<!DOCTYPE"), 
-            "Reserved path {} should be handled specially", path);
+        assert!(
+            body_str.contains("Invalid") || body_str.contains("<!DOCTYPE"),
+            "Reserved path {} should be handled specially",
+            path
+        );
     }
 }
 
@@ -8600,8 +8608,10 @@ async fn test_health_handler_returns_ok() {
         .unwrap();
     let res = app.oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
-    
-    let body = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let body_str = String::from_utf8_lossy(&body);
     assert!(body_str.contains("ok") || body_str.contains("healthy"));
 }
@@ -8619,7 +8629,7 @@ async fn test_metrics_handler_returns_metrics() {
         .unwrap();
     let res = app.oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
-    
+
     // Check content type header
     let content_type = res.headers().get("content-type").unwrap();
     assert!(content_type.to_str().unwrap().contains("text/plain"));
@@ -8628,12 +8638,12 @@ async fn test_metrics_handler_returns_metrics() {
 #[tokio::test]
 async fn test_create_user_cookies_format_detailed() {
     let (user_id_cookie, animal_name_cookie) = create_user_cookies("test-user-123", "Lion");
-    
+
     assert!(user_id_cookie.contains("user_id=test-user-123"));
     assert!(user_id_cookie.contains("Path=/"));
     assert!(user_id_cookie.contains("SameSite=Strict"));
     assert!(user_id_cookie.contains("Secure"));
-    
+
     assert!(animal_name_cookie.contains("animal_name=Lion"));
     assert!(animal_name_cookie.contains("Path=/"));
     assert!(animal_name_cookie.contains("SameSite=Strict"));
@@ -8644,7 +8654,7 @@ async fn test_create_user_cookies_format_detailed() {
 async fn test_room_state_trim_to_max_messages() {
     let mut room = create_room();
     let tracker = MemoryTracker::new();
-    
+
     // Add more than MAX_MESSAGES_PER_ROOM
     for i in 0..MAX_MESSAGES_PER_ROOM + 50 {
         let msg = OutgoingMessage {
@@ -8657,7 +8667,7 @@ async fn test_room_state_trim_to_max_messages() {
         };
         room.chat_history.push(msg);
     }
-    
+
     room.trim_to_max_messages(&tracker);
     assert!(room.chat_history.len() <= MAX_MESSAGES_PER_ROOM);
 }
@@ -8666,15 +8676,15 @@ async fn test_room_state_trim_to_max_messages() {
 async fn test_security_manager_ban_and_unban() {
     let manager = SecurityManager::new();
     let ip = "10.0.0.1";
-    
+
     // Not banned initially
     assert!(manager.check_ip(ip).await.is_ok());
-    
+
     // Record many suspicious activities to trigger ban
     for _ in 0..15 {
         let _ = manager.record_suspicious_activity(ip).await;
     }
-    
+
     // Should be banned now (check_ip returns error for banned IPs)
     assert!(manager.check_ip(ip).await.is_err());
 }
@@ -8683,17 +8693,17 @@ async fn test_security_manager_ban_and_unban() {
 #[tokio::test]
 async fn test_cookie_reconnection_existing_user_in_room() {
     let (addr, _state) = start_ws_server().await;
-    
+
     // First connection - get assigned a user_id and animal_name
     let url = format!("ws://{}/ws/reconnect-test-room", addr);
     let (mut ws1, response1) = tokio_tungstenite::connect_async(&url)
         .await
         .expect("First connect failed");
-    
+
     // Extract cookies from response
     let mut user_id_cookie = String::new();
     let mut animal_name_cookie = String::new();
-    
+
     for (name, value) in response1.headers() {
         if name == "set-cookie" {
             let cookie_str = value.to_str().unwrap_or("");
@@ -8714,17 +8724,23 @@ async fn test_cookie_reconnection_existing_user_in_room() {
             }
         }
     }
-    
+
     // Close first connection but keep the room alive by not fully disconnecting
     ws1.close(None).await.ok();
-    
+
     // Wait a moment
     tokio::time::sleep(Duration::from_millis(100)).await;
-    
+
     // Reconnect with the same cookies
     let request = http::Request::builder()
         .uri(&url)
-        .header("Cookie", format!("user_id={}; animal_name={}", user_id_cookie, animal_name_cookie))
+        .header(
+            "Cookie",
+            format!(
+                "user_id={}; animal_name={}",
+                user_id_cookie, animal_name_cookie
+            ),
+        )
         .header("Host", addr.to_string())
         .header("Connection", "Upgrade")
         .header("Upgrade", "websocket")
@@ -8732,24 +8748,23 @@ async fn test_cookie_reconnection_existing_user_in_room() {
         .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
         .body(())
         .unwrap();
-    
+
     let (mut ws2, _response2) = tokio_tungstenite::connect_async(request)
         .await
         .expect("Reconnect failed");
-    
+
     // Receive events - should get reconnect token
     let mut got_token = false;
     for _ in 0..10 {
-        if let Ok(Some(msg)) = tokio::time::timeout(Duration::from_millis(500), ws2.next()).await {
-            if let Ok(WsMessage::Text(text)) = msg {
-                if text.contains("ReconnectToken") {
-                    got_token = true;
-                    break;
-                }
-            }
+        if let Ok(Some(Ok(WsMessage::Text(text)))) =
+            tokio::time::timeout(Duration::from_millis(500), ws2.next()).await
+            && text.contains("ReconnectToken")
+        {
+            got_token = true;
+            break;
         }
     }
-    
+
     assert!(got_token, "Should receive reconnect token on reconnection");
     ws2.close(None).await.ok();
 }
@@ -8759,7 +8774,7 @@ async fn test_cookie_reconnection_existing_user_in_room() {
 async fn test_cookie_with_nonexistent_user_id() {
     let (addr, _state) = start_ws_server().await;
     let url = format!("ws://{}/ws/nonexistent-user-room", addr);
-    
+
     // Connect with a fake user_id cookie that doesn't exist in the room
     let request = http::Request::builder()
         .uri(&url)
@@ -8771,25 +8786,27 @@ async fn test_cookie_with_nonexistent_user_id() {
         .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
         .body(())
         .unwrap();
-    
+
     let (mut ws, _response) = tokio_tungstenite::connect_async(request)
         .await
         .expect("Connect with fake cookie failed");
-    
+
     // Should still connect and get a reconnect token (new user created)
     let mut got_token = false;
     for _ in 0..10 {
-        if let Ok(Some(msg)) = tokio::time::timeout(Duration::from_millis(500), ws.next()).await {
-            if let Ok(WsMessage::Text(text)) = msg {
-                if text.contains("ReconnectToken") {
-                    got_token = true;
-                    break;
-                }
-            }
+        if let Ok(Some(Ok(WsMessage::Text(text)))) =
+            tokio::time::timeout(Duration::from_millis(500), ws.next()).await
+            && text.contains("ReconnectToken")
+        {
+            got_token = true;
+            break;
         }
     }
-    
-    assert!(got_token, "Should receive reconnect token with new user created");
+
+    assert!(
+        got_token,
+        "Should receive reconnect token with new user created"
+    );
     ws.close(None).await.ok();
 }
 
@@ -8797,22 +8814,19 @@ async fn test_cookie_with_nonexistent_user_id() {
 #[tokio::test]
 async fn test_room_deleted_during_connection() {
     let app_state = Arc::new(AppState::new());
-    
+
     // Create a room then immediately delete it to test the edge case
     {
         let mut rooms = app_state.rooms.write().await;
-        rooms.insert(
-            "temp-room".to_string(),
-            create_room(),
-        );
+        rooms.insert("temp-room".to_string(), create_room());
     }
-    
+
     // Delete the room
     {
         let mut rooms = app_state.rooms.write().await;
         rooms.remove("temp-room");
     }
-    
+
     // Verify room is gone
     let rooms = app_state.rooms.read().await;
     assert!(!rooms.contains_key("temp-room"));
@@ -8822,12 +8836,12 @@ async fn test_room_deleted_during_connection() {
 #[tokio::test]
 async fn test_user_removed_during_message_processing() {
     let app_state = Arc::new(AppState::new());
-    
+
     // Create room with a user
     {
         let mut rooms = app_state.rooms.write().await;
         let mut room_state = create_room();
-        
+
         let user_id = "test-user-123".to_string();
         room_state.users.insert(
             user_id.clone(),
@@ -8848,10 +8862,10 @@ async fn test_user_removed_during_message_processing() {
                 last_sanitized_message: None,
             },
         );
-        
+
         rooms.insert("user-removed-room".to_string(), room_state);
     }
-    
+
     // Now remove the user to simulate race condition
     {
         let mut rooms = app_state.rooms.write().await;
@@ -8859,7 +8873,7 @@ async fn test_user_removed_during_message_processing() {
             room_state.users.remove("test-user-123");
         }
     }
-    
+
     // Verify user is gone
     let rooms = app_state.rooms.read().await;
     if let Some(room_state) = rooms.get("user-removed-room") {
@@ -8871,16 +8885,16 @@ async fn test_user_removed_during_message_processing() {
 #[tokio::test]
 async fn test_message_rejected_after_heartbeat_timeout() {
     let app_state = Arc::new(AppState::new());
-    
+
     // Create room with a user that has an old heartbeat
     {
         let mut rooms = app_state.rooms.write().await;
         let mut room_state = create_room();
-        
+
         let user_id = "timeout-user".to_string();
         // Set last_heartbeat to be older than HEARTBEAT_TIMEOUT
         let old_heartbeat = Instant::now() - Duration::from_secs(30);
-        
+
         room_state.users.insert(
             user_id.clone(),
             UserData {
@@ -8900,17 +8914,20 @@ async fn test_message_rejected_after_heartbeat_timeout() {
                 last_sanitized_message: None,
             },
         );
-        
+
         rooms.insert("heartbeat-test-room".to_string(), room_state);
     }
-    
+
     // Verify the user has timed out heartbeat
     let rooms = app_state.rooms.read().await;
     if let Some(room_state) = rooms.get("heartbeat-test-room") {
         if let Some(user) = room_state.users.get("timeout-user") {
             if let ConnectionState::Connected { last_heartbeat, .. } = user.connection_state {
                 let elapsed = Instant::now().duration_since(last_heartbeat);
-                assert!(elapsed > HEARTBEAT_TIMEOUT, "Heartbeat should have timed out");
+                assert!(
+                    elapsed > HEARTBEAT_TIMEOUT,
+                    "Heartbeat should have timed out"
+                );
             }
         }
     }
@@ -8920,15 +8937,15 @@ async fn test_message_rejected_after_heartbeat_timeout() {
 #[tokio::test]
 async fn test_typing_event_debounce_interval() {
     let app_state = Arc::new(AppState::new());
-    
+
     {
         let mut rooms = app_state.rooms.write().await;
         let mut room_state = create_room();
-        
+
         let user_id = "typing-user".to_string();
         // Set last_typing_event to be very recent
         let recent_time = Instant::now();
-        
+
         room_state.users.insert(
             user_id.clone(),
             UserData {
@@ -8948,10 +8965,10 @@ async fn test_typing_event_debounce_interval() {
                 last_sanitized_message: None,
             },
         );
-        
+
         rooms.insert("typing-debounce-room".to_string(), room_state);
     }
-    
+
     // Verify the debounce would trigger
     let rooms = app_state.rooms.read().await;
     if let Some(room_state) = rooms.get("typing-debounce-room") {
@@ -8959,7 +8976,10 @@ async fn test_typing_event_debounce_interval() {
             if let Some(last_typing) = user.last_typing_event {
                 let elapsed = Instant::now().duration_since(last_typing);
                 // Should be less than the debounce interval since we just set it
-                assert!(elapsed < TYPING_EVENT_MIN_INTERVAL, "Typing event should be debounced");
+                assert!(
+                    elapsed < TYPING_EVENT_MIN_INTERVAL,
+                    "Typing event should be debounced"
+                );
             }
         }
     }
@@ -8969,14 +8989,14 @@ async fn test_typing_event_debounce_interval() {
 #[tokio::test]
 async fn test_read_receipt_debounce_interval() {
     let app_state = Arc::new(AppState::new());
-    
+
     {
         let mut rooms = app_state.rooms.write().await;
         let mut room_state = create_room();
-        
+
         let user_id = "receipt-user".to_string();
         let recent_time = Instant::now();
-        
+
         room_state.users.insert(
             user_id.clone(),
             UserData {
@@ -8996,17 +9016,20 @@ async fn test_read_receipt_debounce_interval() {
                 last_sanitized_message: None,
             },
         );
-        
+
         rooms.insert("receipt-debounce-room".to_string(), room_state);
     }
-    
+
     // Verify the debounce would trigger
     let rooms = app_state.rooms.read().await;
     if let Some(room_state) = rooms.get("receipt-debounce-room") {
         if let Some(user) = room_state.users.get("receipt-user") {
             if let Some(last_receipt) = user.last_read_receipt_event {
                 let elapsed = Instant::now().duration_since(last_receipt);
-                assert!(elapsed < READ_RECEIPT_MIN_INTERVAL, "Read receipt should be debounced");
+                assert!(
+                    elapsed < READ_RECEIPT_MIN_INTERVAL,
+                    "Read receipt should be debounced"
+                );
             }
         }
     }
@@ -9016,21 +9039,18 @@ async fn test_read_receipt_debounce_interval() {
 #[tokio::test]
 async fn test_room_deleted_during_event_processing() {
     let app_state = Arc::new(AppState::new());
-    
+
     // Create then immediately delete a room
     {
         let mut rooms = app_state.rooms.write().await;
-        rooms.insert(
-            "deleted-during-process".to_string(),
-            create_room(),
-        );
+        rooms.insert("deleted-during-process".to_string(), create_room());
     }
-    
+
     {
         let mut rooms = app_state.rooms.write().await;
         rooms.remove("deleted-during-process");
     }
-    
+
     // Verify room is gone
     let rooms = app_state.rooms.read().await;
     assert!(!rooms.contains_key("deleted-during-process"));
@@ -9041,27 +9061,32 @@ async fn test_room_deleted_during_event_processing() {
 async fn test_invalid_uuid_in_read_receipt_via_ws() {
     let (addr, _state) = start_ws_server().await;
     let url = format!("ws://{}/ws/invalid-uuid-room", addr);
-    
+
     let (mut ws, _) = tokio_tungstenite::connect_async(&url)
         .await
         .expect("Connect failed");
-    
+
     // Drain initial messages
     for _ in 0..5 {
-        tokio::time::timeout(Duration::from_millis(100), ws.next()).await.ok();
+        tokio::time::timeout(Duration::from_millis(100), ws.next())
+            .await
+            .ok();
     }
-    
+
     // Send read receipt with invalid UUID
     let invalid_receipt = r#"{"type":"ReadReceipt","message_id":"not-a-valid-uuid"}"#;
     ws.send(WsMessage::Text(invalid_receipt.into())).await.ok();
-    
+
     // Wait a moment - server should log warning but not crash
     tokio::time::sleep(Duration::from_millis(100)).await;
-    
+
     // Connection should still be alive
-    let ping_result = ws.send(WsMessage::Ping(vec![1, 2, 3].into())).await;
-    assert!(ping_result.is_ok(), "Connection should still be alive after invalid UUID");
-    
+    let ping_result = ws.send(WsMessage::Ping(vec![1, 2, 3])).await;
+    assert!(
+        ping_result.is_ok(),
+        "Connection should still be alive after invalid UUID"
+    );
+
     ws.close(None).await.ok();
 }
 
@@ -9070,29 +9095,34 @@ async fn test_invalid_uuid_in_read_receipt_via_ws() {
 async fn test_rate_limit_exceeded_via_ws() {
     let (addr, _state) = start_ws_server().await;
     let url = format!("ws://{}/ws/rate-limit-room", addr);
-    
+
     let (mut ws, _) = tokio_tungstenite::connect_async(&url)
         .await
         .expect("Connect failed");
-    
+
     // Drain initial messages
     for _ in 0..5 {
-        tokio::time::timeout(Duration::from_millis(100), ws.next()).await.ok();
+        tokio::time::timeout(Duration::from_millis(100), ws.next())
+            .await
+            .ok();
     }
-    
+
     // Send many messages rapidly to trigger rate limit
     for i in 0..50 {
         let msg = format!(r#"{{"type":"Message","text":"Spam message {}"}}"#, i);
-        ws.send(WsMessage::Text(msg.into())).await.ok();
+        ws.send(WsMessage::Text(msg)).await.ok();
     }
-    
+
     // Wait a moment
     tokio::time::sleep(Duration::from_millis(200)).await;
-    
+
     // Connection should still be alive
-    let ping_result = ws.send(WsMessage::Ping(vec![1, 2, 3].into())).await;
-    assert!(ping_result.is_ok(), "Connection should still be alive after rate limiting");
-    
+    let ping_result = ws.send(WsMessage::Ping(vec![1, 2, 3])).await;
+    assert!(
+        ping_result.is_ok(),
+        "Connection should still be alive after rate limiting"
+    );
+
     ws.close(None).await.ok();
 }
 
@@ -9101,28 +9131,33 @@ async fn test_rate_limit_exceeded_via_ws() {
 async fn test_duplicate_message_prevention_via_ws() {
     let (addr, _state) = start_ws_server().await;
     let url = format!("ws://{}/ws/duplicate-msg-room", addr);
-    
+
     let (mut ws, _) = tokio_tungstenite::connect_async(&url)
         .await
         .expect("Connect failed");
-    
+
     // Drain initial messages
     for _ in 0..5 {
-        tokio::time::timeout(Duration::from_millis(100), ws.next()).await.ok();
+        tokio::time::timeout(Duration::from_millis(100), ws.next())
+            .await
+            .ok();
     }
-    
+
     // Send the same message twice rapidly
     let msg = r#"{"type":"Message","text":"Duplicate test message"}"#;
     ws.send(WsMessage::Text(msg.into())).await.ok();
     ws.send(WsMessage::Text(msg.into())).await.ok();
-    
+
     // Wait a moment
     tokio::time::sleep(Duration::from_millis(100)).await;
-    
+
     // Connection should still be alive
-    let ping_result = ws.send(WsMessage::Ping(vec![1, 2, 3].into())).await;
-    assert!(ping_result.is_ok(), "Connection should still be alive after duplicate detection");
-    
+    let ping_result = ws.send(WsMessage::Ping(vec![1, 2, 3])).await;
+    assert!(
+        ping_result.is_ok(),
+        "Connection should still be alive after duplicate detection"
+    );
+
     ws.close(None).await.ok();
 }
 
@@ -9131,28 +9166,33 @@ async fn test_duplicate_message_prevention_via_ws() {
 async fn test_message_too_long_via_ws() {
     let (addr, _state) = start_ws_server().await;
     let url = format!("ws://{}/ws/long-msg-room", addr);
-    
+
     let (mut ws, _) = tokio_tungstenite::connect_async(&url)
         .await
         .expect("Connect failed");
-    
+
     // Drain initial messages
     for _ in 0..5 {
-        tokio::time::timeout(Duration::from_millis(100), ws.next()).await.ok();
+        tokio::time::timeout(Duration::from_millis(100), ws.next())
+            .await
+            .ok();
     }
-    
+
     // Send a message that exceeds MAX_MESSAGE_LEN
     let long_text = "x".repeat(MAX_MESSAGE_LEN + 100);
     let msg = format!(r#"{{"type":"Message","text":"{}"}}"#, long_text);
-    ws.send(WsMessage::Text(msg.into())).await.ok();
-    
+    ws.send(WsMessage::Text(msg)).await.ok();
+
     // Wait a moment
     tokio::time::sleep(Duration::from_millis(100)).await;
-    
+
     // Connection should still be alive
-    let ping_result = ws.send(WsMessage::Ping(vec![1, 2, 3].into())).await;
-    assert!(ping_result.is_ok(), "Connection should still be alive after rejecting long message");
-    
+    let ping_result = ws.send(WsMessage::Ping(vec![1, 2, 3])).await;
+    assert!(
+        ping_result.is_ok(),
+        "Connection should still be alive after rejecting long message"
+    );
+
     ws.close(None).await.ok();
 }
 
@@ -9161,26 +9201,33 @@ async fn test_message_too_long_via_ws() {
 async fn test_binary_message_handling() {
     let (addr, _state) = start_ws_server().await;
     let url = format!("ws://{}/ws/binary-test-room", addr);
-    
+
     let (mut ws, _) = tokio_tungstenite::connect_async(&url)
         .await
         .expect("Connect failed");
-    
+
     // Drain initial messages
     for _ in 0..5 {
-        tokio::time::timeout(Duration::from_millis(100), ws.next()).await.ok();
+        tokio::time::timeout(Duration::from_millis(100), ws.next())
+            .await
+            .ok();
     }
-    
+
     // Send binary data - should be ignored
-    ws.send(WsMessage::Binary(vec![0, 1, 2, 3, 4, 5].into())).await.ok();
-    
+    ws.send(WsMessage::Binary(vec![0, 1, 2, 3, 4, 5]))
+        .await
+        .ok();
+
     // Wait a moment
     tokio::time::sleep(Duration::from_millis(100)).await;
-    
+
     // Connection should still be alive
-    let ping_result = ws.send(WsMessage::Ping(vec![1, 2, 3].into())).await;
-    assert!(ping_result.is_ok(), "Connection should still be alive after binary message");
-    
+    let ping_result = ws.send(WsMessage::Ping(vec![1, 2, 3])).await;
+    assert!(
+        ping_result.is_ok(),
+        "Connection should still be alive after binary message"
+    );
+
     ws.close(None).await.ok();
 }
 
@@ -9189,28 +9236,39 @@ async fn test_binary_message_handling() {
 async fn test_malformed_json_handling() {
     let (addr, _state) = start_ws_server().await;
     let url = format!("ws://{}/ws/malformed-json-room", addr);
-    
+
     let (mut ws, _) = tokio_tungstenite::connect_async(&url)
         .await
         .expect("Connect failed");
-    
+
     // Drain initial messages
     for _ in 0..5 {
-        tokio::time::timeout(Duration::from_millis(100), ws.next()).await.ok();
+        tokio::time::timeout(Duration::from_millis(100), ws.next())
+            .await
+            .ok();
     }
-    
+
     // Send malformed JSON
-    ws.send(WsMessage::Text("{not valid json}".into())).await.ok();
-    ws.send(WsMessage::Text("just plain text".into())).await.ok();
-    ws.send(WsMessage::Text(r#"{"type":"Unknown"}"#.into())).await.ok();
-    
+    ws.send(WsMessage::Text("{not valid json}".into()))
+        .await
+        .ok();
+    ws.send(WsMessage::Text("just plain text".into()))
+        .await
+        .ok();
+    ws.send(WsMessage::Text(r#"{"type":"Unknown"}"#.into()))
+        .await
+        .ok();
+
     // Wait a moment
     tokio::time::sleep(Duration::from_millis(100)).await;
-    
+
     // Connection should still be alive
-    let ping_result = ws.send(WsMessage::Ping(vec![1, 2, 3].into())).await;
-    assert!(ping_result.is_ok(), "Connection should still be alive after malformed JSON");
-    
+    let ping_result = ws.send(WsMessage::Ping(vec![1, 2, 3])).await;
+    assert!(
+        ping_result.is_ok(),
+        "Connection should still be alive after malformed JSON"
+    );
+
     ws.close(None).await.ok();
 }
 
@@ -9219,11 +9277,14 @@ async fn test_malformed_json_handling() {
 async fn test_cookie_with_unknown_cookie_names() {
     let (addr, _state) = start_ws_server().await;
     let url = format!("ws://{}/ws/unknown-cookie-room", addr);
-    
+
     // Connect with extra unknown cookies alongside valid ones
     let request = http::Request::builder()
         .uri(&url)
-        .header("Cookie", "user_id=test123; animal_name=Lion; random_cookie=value; session=abc; tracking=xyz")
+        .header(
+            "Cookie",
+            "user_id=test123; animal_name=Lion; random_cookie=value; session=abc; tracking=xyz",
+        )
         .header("Host", addr.to_string())
         .header("Connection", "Upgrade")
         .header("Upgrade", "websocket")
@@ -9231,25 +9292,27 @@ async fn test_cookie_with_unknown_cookie_names() {
         .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
         .body(())
         .unwrap();
-    
+
     let (mut ws, _response) = tokio_tungstenite::connect_async(request)
         .await
         .expect("Connect with unknown cookies failed");
-    
+
     // Should still connect and work
     let mut got_token = false;
     for _ in 0..10 {
-        if let Ok(Some(msg)) = tokio::time::timeout(Duration::from_millis(500), ws.next()).await {
-            if let Ok(WsMessage::Text(text)) = msg {
-                if text.contains("ReconnectToken") {
-                    got_token = true;
-                    break;
-                }
-            }
+        if let Ok(Some(Ok(WsMessage::Text(text)))) =
+            tokio::time::timeout(Duration::from_millis(500), ws.next()).await
+            && text.contains("ReconnectToken")
+        {
+            got_token = true;
+            break;
         }
     }
-    
-    assert!(got_token, "Should receive reconnect token even with unknown cookies");
+
+    assert!(
+        got_token,
+        "Should receive reconnect token even with unknown cookies"
+    );
     ws.close(None).await.ok();
 }
 
@@ -9257,26 +9320,22 @@ async fn test_cookie_with_unknown_cookie_names() {
 #[tokio::test]
 async fn test_memory_tracker_concurrent_add_at_limit() {
     let tracker = MemoryTracker::new();
-    
+
     // Add bytes up to near the limit
     let near_limit = MAX_TOTAL_ROOMS_MEMORY - 1000;
     assert!(tracker.add_bytes(near_limit));
-    
+
     // Try to add more bytes concurrently
     let tracker1 = Arc::new(tracker);
     let tracker2 = tracker1.clone();
-    
-    let handle1 = tokio::spawn(async move {
-        tracker1.add_bytes(500)
-    });
-    
-    let handle2 = tokio::spawn(async move {
-        tracker2.add_bytes(500)
-    });
-    
+
+    let handle1 = tokio::spawn(async move { tracker1.add_bytes(500) });
+
+    let handle2 = tokio::spawn(async move { tracker2.add_bytes(500) });
+
     let result1 = handle1.await.unwrap();
     let result2 = handle2.await.unwrap();
-    
+
     // At least one should succeed, the other might fail due to limit
     assert!(result1 || result2, "At least one add should succeed");
 }
@@ -9285,17 +9344,17 @@ async fn test_memory_tracker_concurrent_add_at_limit() {
 #[tokio::test]
 async fn test_add_message_dropped_when_memory_exceeded() {
     let app_state = Arc::new(AppState::new());
-    
+
     // Fill up the memory tracker
     let fill_amount = MAX_TOTAL_ROOMS_MEMORY - 100;
     app_state.memory_tracker.add_bytes(fill_amount);
-    
+
     // Create a room
     {
         let mut rooms = app_state.rooms.write().await;
         rooms.insert("memory-test".to_string(), create_room());
     }
-    
+
     // Try to add a large message that would exceed the limit
     {
         let mut rooms = app_state.rooms.write().await;
@@ -9308,10 +9367,10 @@ async fn test_add_message_dropped_when_memory_exceeded() {
                 timestamp: "12345".to_string(),
                 reply_to: None,
             };
-            
+
             let initial_history_len = room_state.chat_history.len();
             room_state.add_message(large_msg, &app_state.memory_tracker);
-            
+
             // Message may or may not be added depending on pruning
             // The important thing is the code path was exercised
             assert!(room_state.chat_history.len() >= initial_history_len);
@@ -9323,11 +9382,11 @@ async fn test_add_message_dropped_when_memory_exceeded() {
 #[tokio::test]
 async fn test_broadcast_user_count_with_disconnected_users() {
     let app_state = Arc::new(AppState::new());
-    
+
     {
         let mut rooms = app_state.rooms.write().await;
         let mut room_state = create_room();
-        
+
         // Add a connected user
         room_state.users.insert(
             "connected-user".to_string(),
@@ -9348,7 +9407,7 @@ async fn test_broadcast_user_count_with_disconnected_users() {
                 last_sanitized_message: None,
             },
         );
-        
+
         // Add a disconnected user
         room_state.users.insert(
             "disconnected-user".to_string(),
@@ -9357,7 +9416,9 @@ async fn test_broadcast_user_count_with_disconnected_users() {
                 animal_name: "Tiger".to_string(),
                 last_active: Instant::now(),
                 last_message_time: Instant::now(),
-                connection_state: ConnectionState::Disconnected { since: Instant::now() },
+                connection_state: ConnectionState::Disconnected {
+                    since: Instant::now(),
+                },
                 last_read_message: None,
                 is_typing: false,
                 last_typing_event: None,
@@ -9366,13 +9427,13 @@ async fn test_broadcast_user_count_with_disconnected_users() {
                 last_sanitized_message: None,
             },
         );
-        
+
         // Broadcast should only count the connected user
         room_state.broadcast_user_count();
-        
+
         rooms.insert("disconnected-test".to_string(), room_state);
     }
-    
+
     // The connected count should be 1, not 2
     let rooms = app_state.rooms.read().await;
     let room = rooms.get("disconnected-test").unwrap();
@@ -9392,7 +9453,7 @@ async fn test_validate_input_empty_string() {
 #[tokio::test]
 async fn test_cleanup_user_nonexistent_room() {
     let app_state = Arc::new(AppState::new());
-    
+
     // Try to cleanup a user in a room that doesn't exist
     cleanup_user(
         &app_state,
@@ -9400,8 +9461,9 @@ async fn test_cleanup_user_nonexistent_room() {
         "fake-user",
         "fake-connection",
         Some("127.0.0.1"),
-    ).await;
-    
+    )
+    .await;
+
     // Should not panic or error
     let rooms = app_state.rooms.read().await;
     assert!(!rooms.contains_key("nonexistent-room"));
@@ -9411,13 +9473,13 @@ async fn test_cleanup_user_nonexistent_room() {
 #[tokio::test]
 async fn test_cleanup_user_nonexistent_user() {
     let app_state = Arc::new(AppState::new());
-    
+
     // Create a room without the user
     {
         let mut rooms = app_state.rooms.write().await;
         rooms.insert("existing-room".to_string(), create_room());
     }
-    
+
     // Try to cleanup a user that doesn't exist in the room
     cleanup_user(
         &app_state,
@@ -9425,8 +9487,9 @@ async fn test_cleanup_user_nonexistent_user() {
         "nonexistent-user",
         "fake-connection",
         Some("127.0.0.1"),
-    ).await;
-    
+    )
+    .await;
+
     // Should not panic or error
     let rooms = app_state.rooms.read().await;
     assert!(rooms.contains_key("existing-room"));
@@ -9437,19 +9500,19 @@ async fn test_cleanup_user_nonexistent_user() {
 async fn test_security_manager_banned_ip_check_paths() {
     let manager = SecurityManager::new();
     let ip = "192.168.1.100";
-    
+
     // Not banned initially
     assert!(manager.check_ip(ip).await.is_ok());
-    
+
     // Record suspicious activities to trigger ban
     for _ in 0..12 {
         let _ = manager.record_suspicious_activity(ip).await;
     }
-    
+
     // Should be banned now
     let result = manager.check_ip(ip).await;
     assert!(result.is_err());
-    
+
     // Check the error type
     if let Err(ChatError::SecurityError(_)) = result {
         // Expected error type
@@ -9462,12 +9525,12 @@ async fn test_security_manager_banned_ip_check_paths() {
 #[tokio::test]
 async fn test_cleanup_rooms_with_messages_no_users() {
     let app_state = Arc::new(AppState::new());
-    
+
     // Create a room with messages but no users
     {
         let mut rooms = app_state.rooms.write().await;
         let mut room_state = create_room();
-        
+
         // Add a message
         room_state.chat_history.push(OutgoingMessage {
             message_id: uuid::Uuid::new_v4(),
@@ -9477,16 +9540,17 @@ async fn test_cleanup_rooms_with_messages_no_users() {
             timestamp: "12345".to_string(),
             reply_to: None,
         });
-        
+
         // Set last_activity to be old enough for cleanup
-        room_state.last_activity = Instant::now() - EMPTY_ROOM_CLEANUP_DELAY - Duration::from_secs(10);
-        
+        room_state.last_activity =
+            Instant::now() - EMPTY_ROOM_CLEANUP_DELAY - Duration::from_secs(10);
+
         rooms.insert("old-room-with-messages".to_string(), room_state);
     }
-    
+
     // Run cleanup
     cleanup_rooms(&app_state).await;
-    
+
     // Room should be cleaned up since it has no connected users
     let rooms = app_state.rooms.read().await;
     assert!(!rooms.contains_key("old-room-with-messages"));
@@ -9497,7 +9561,7 @@ async fn test_cleanup_rooms_with_messages_no_users() {
 async fn test_prune_old_messages_with_existing_messages() {
     let tracker = MemoryTracker::new();
     let mut room = create_room();
-    
+
     // Add several messages
     for i in 0..10 {
         room.chat_history.push(OutgoingMessage {
@@ -9509,14 +9573,15 @@ async fn test_prune_old_messages_with_existing_messages() {
             reply_to: None,
         });
         tracker.add_bytes(100);
-        room.total_memory_bytes.fetch_add(100, std::sync::atomic::Ordering::SeqCst);
+        room.total_memory_bytes
+            .fetch_add(100, std::sync::atomic::Ordering::SeqCst);
     }
-    
+
     let initial_len = room.chat_history.len();
-    
+
     // Prune messages
     room.prune_old_messages(500, &tracker);
-    
+
     // Should have removed some messages
     assert!(room.chat_history.len() < initial_len);
 }
@@ -9526,58 +9591,64 @@ async fn test_prune_old_messages_with_existing_messages() {
 async fn test_pong_message_received() {
     let (addr, _state) = start_ws_server().await;
     let url = format!("ws://{}/ws/pong-test-room", addr);
-    
+
     let (mut ws, _) = tokio_tungstenite::connect_async(&url)
         .await
         .expect("Connect failed");
-    
+
     // Drain initial messages
     for _ in 0..5 {
-        tokio::time::timeout(Duration::from_millis(100), ws.next()).await.ok();
+        tokio::time::timeout(Duration::from_millis(100), ws.next())
+            .await
+            .ok();
     }
-    
+
     // Send ping and wait for pong
-    ws.send(WsMessage::Ping(vec![1, 2, 3].into())).await.unwrap();
-    
+    ws.send(WsMessage::Ping(vec![1, 2, 3])).await.unwrap();
+
     // We should receive a pong response
     let mut received_pong = false;
     for _ in 0..10 {
-        if let Ok(Some(msg)) = tokio::time::timeout(Duration::from_millis(500), ws.next()).await {
-            if let Ok(WsMessage::Pong(_)) = msg {
-                received_pong = true;
-                break;
-            }
+        if let Ok(Some(Ok(WsMessage::Pong(_)))) =
+            tokio::time::timeout(Duration::from_millis(500), ws.next()).await
+        {
+            received_pong = true;
+            break;
         }
     }
-    
+
     assert!(received_pong, "Should receive pong response");
     ws.close(None).await.ok();
 }
 
-// Test close frame handling - covers lines 1851-1853  
+// Test close frame handling - covers lines 1851-1853
 #[tokio::test]
 async fn test_close_frame_initiates_cleanup() {
     let (addr, _state) = start_ws_server().await;
     let url = format!("ws://{}/ws/close-test-room", addr);
-    
+
     let (mut ws, _) = tokio_tungstenite::connect_async(&url)
         .await
         .expect("Connect failed");
-    
+
     // Drain initial messages
     for _ in 0..5 {
-        tokio::time::timeout(Duration::from_millis(100), ws.next()).await.ok();
+        tokio::time::timeout(Duration::from_millis(100), ws.next())
+            .await
+            .ok();
     }
-    
+
     // Send close frame
     ws.close(Some(tokio_tungstenite::tungstenite::protocol::CloseFrame {
         code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Normal,
         reason: "Test close".into(),
-    })).await.ok();
-    
+    }))
+    .await
+    .ok();
+
     // Wait for cleanup
     tokio::time::sleep(Duration::from_millis(100)).await;
-    
+
     // Connection should be closed
 }
 
@@ -9603,28 +9674,38 @@ async fn test_validate_message_script_tag_sanitized() {
 async fn test_typing_stop_event_via_ws() {
     let (addr, _state) = start_ws_server().await;
     let url = format!("ws://{}/ws/typing-stop-room", addr);
-    
+
     let (mut ws, _) = tokio_tungstenite::connect_async(&url)
         .await
         .expect("Connect failed");
-    
+
     // Drain initial messages
     for _ in 0..5 {
-        tokio::time::timeout(Duration::from_millis(100), ws.next()).await.ok();
+        tokio::time::timeout(Duration::from_millis(100), ws.next())
+            .await
+            .ok();
     }
-    
+
     // Send typing start then stop
-    ws.send(WsMessage::Text(r#"{"type":"Typing","is_typing":true}"#.into())).await.ok();
+    ws.send(WsMessage::Text(
+        r#"{"type":"Typing","is_typing":true}"#.into(),
+    ))
+    .await
+    .ok();
     tokio::time::sleep(Duration::from_millis(100)).await;
-    ws.send(WsMessage::Text(r#"{"type":"Typing","is_typing":false}"#.into())).await.ok();
-    
+    ws.send(WsMessage::Text(
+        r#"{"type":"Typing","is_typing":false}"#.into(),
+    ))
+    .await
+    .ok();
+
     // Wait a moment
     tokio::time::sleep(Duration::from_millis(100)).await;
-    
+
     // Connection should still be alive
-    let ping_result = ws.send(WsMessage::Ping(vec![1, 2, 3].into())).await;
+    let ping_result = ws.send(WsMessage::Ping(vec![1, 2, 3])).await;
     assert!(ping_result.is_ok());
-    
+
     ws.close(None).await.ok();
 }
 
@@ -9633,54 +9714,55 @@ async fn test_typing_stop_event_via_ws() {
 async fn test_message_with_reply_via_ws() {
     let (addr, _state) = start_ws_server().await;
     let url = format!("ws://{}/ws/reply-test-room", addr);
-    
+
     let (mut ws, _) = tokio_tungstenite::connect_async(&url)
         .await
         .expect("Connect failed");
-    
+
     // Drain initial messages
     for _ in 0..5 {
-        tokio::time::timeout(Duration::from_millis(100), ws.next()).await.ok();
+        tokio::time::timeout(Duration::from_millis(100), ws.next())
+            .await
+            .ok();
     }
-    
+
     // Send a message with reply_to
     let msg = r#"{"type":"Message","text":"This is a reply","reply_to":{"message_id":"12345","author_name":"Someone","preview_text":"Original message"}}"#;
     ws.send(WsMessage::Text(msg.into())).await.ok();
-    
+
     // Wait a moment
     tokio::time::sleep(Duration::from_millis(100)).await;
-    
+
     // Should receive the message back (it gets broadcast to all including sender)
     let mut received_reply = false;
     for _ in 0..10 {
-        if let Ok(Some(msg)) = tokio::time::timeout(Duration::from_millis(500), ws.next()).await {
-            if let Ok(WsMessage::Text(text)) = msg {
-                if text.contains("This is a reply") {
-                    received_reply = true;
-                    break;
-                }
-            }
+        if let Ok(Some(Ok(WsMessage::Text(text)))) =
+            tokio::time::timeout(Duration::from_millis(500), ws.next()).await
+            && text.contains("This is a reply")
+        {
+            received_reply = true;
+            break;
         }
     }
-    
+
     assert!(received_reply, "Should receive message with reply");
     ws.close(None).await.ok();
 }
 
-// Test RateLimiter window reset - covers lines 92-95 
+// Test RateLimiter window reset - covers lines 92-95
 #[tokio::test]
 async fn test_rate_limiter_window_reset_on_message() {
     let mut limiter = RateLimiter::new();
-    
+
     // Exhaust the limiter
     for _ in 0..MAX_MESSAGES_PER_WINDOW {
         assert!(limiter.can_send_message());
     }
     assert!(!limiter.can_send_message()); // Should be rate limited now
-    
+
     // Simulate window passing by directly modifying (in tests module we have access)
     limiter.window_start = Instant::now() - RATE_LIMIT_WINDOW - Duration::from_secs(1);
-    
+
     // Should be able to send again after window reset
     assert!(limiter.can_send_message());
 }
@@ -9689,15 +9771,15 @@ async fn test_rate_limiter_window_reset_on_message() {
 #[tokio::test]
 async fn test_rate_limiter_join_room_limit() {
     let mut limiter = RateLimiter::new();
-    
+
     // Should allow joining up to limit
     for _ in 0..MAX_ROOM_JOIN_ATTEMPTS {
         assert!(limiter.can_join_room());
     }
-    
+
     // Should reject after limit
     assert!(!limiter.can_join_room());
-    
+
     // After window reset should allow again
     limiter.window_start = Instant::now() - RATE_LIMIT_WINDOW - Duration::from_secs(1);
     assert!(limiter.can_join_room());
@@ -9707,17 +9789,21 @@ async fn test_rate_limiter_join_room_limit() {
 #[tokio::test]
 async fn test_resource_monitor_limits() {
     let monitor = ResourceMonitor::new();
-    
+
     // At initial state should accept
     assert!(monitor.can_accept_connection());
-    
+
     // Simulate hitting connection limit
-    monitor.total_connections.store(MAX_CONCURRENT_USERS, Ordering::SeqCst);
+    monitor
+        .total_connections
+        .store(MAX_CONCURRENT_USERS, Ordering::SeqCst);
     assert!(!monitor.can_accept_connection());
-    
+
     // Reset connections but hit memory limit
     monitor.total_connections.store(0, Ordering::SeqCst);
-    monitor.total_memory.store(MAX_TOTAL_ROOMS_MEMORY, Ordering::SeqCst);
+    monitor
+        .total_memory
+        .store(MAX_TOTAL_ROOMS_MEMORY, Ordering::SeqCst);
     assert!(!monitor.can_accept_connection());
 }
 
@@ -9727,7 +9813,7 @@ async fn test_user_cookie_edge_cases() {
     // Test basic cookie extraction via WebSocket
     let (addr, _state) = start_ws_server().await;
     let url = format!("ws://{}/ws/cookie-edge-room", addr);
-    
+
     // Connect with edge case cookie values
     let request = http::Request::builder()
         .uri(&url)
@@ -9739,9 +9825,9 @@ async fn test_user_cookie_edge_cases() {
         .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
         .body(())
         .unwrap();
-    
+
     let result = tokio_tungstenite::connect_async(request).await;
-    
+
     // Should either connect or reject - both are valid behaviors
     match result {
         Ok((mut ws, _)) => {
@@ -9759,18 +9845,18 @@ async fn test_user_cookie_edge_cases() {
 async fn test_connection_pool_at_limit() {
     let pool = ConnectionPool::new();
     let ip = "192.168.1.50";
-    
+
     // Add connections up to limit
     for _ in 0..MAX_CONCURRENT_CONNECTIONS_PER_IP {
         assert!(pool.add_connection(ip).await.is_ok());
     }
-    
+
     // Should reject additional connections
     assert!(pool.add_connection(ip).await.is_err());
-    
+
     // Remove one connection
     pool.remove_connection(ip).await;
-    
+
     // Should now accept again
     assert!(pool.add_connection(ip).await.is_ok());
 }
@@ -9779,30 +9865,33 @@ async fn test_connection_pool_at_limit() {
 #[tokio::test]
 async fn test_memory_tracker_high_usage() {
     let tracker = MemoryTracker::new();
-    
+
     // Add bytes to just below limit
     let threshold = (MAX_TOTAL_ROOMS_MEMORY as f64 * 0.75) as usize;
     assert!(tracker.add_bytes(threshold));
-    
+
     // Check should_gc behavior
     // Force last_gc to be old
     tracker.last_gc.store(0, Ordering::SeqCst);
-    
+
     // should_gc should return true when last_gc is old
     let needs_gc = tracker.should_gc();
-    assert!(needs_gc, "Should need GC when last_gc is old and memory is high");
+    assert!(
+        needs_gc,
+        "Should need GC when last_gc is old and memory is high"
+    );
 }
 
 // Test RoomState with max users - covers lines 574-587
 #[tokio::test]
 async fn test_room_max_users() {
     let app_state = Arc::new(AppState::new());
-    
+
     // Create a room and add several users
     {
         let mut rooms = app_state.rooms.write().await;
         let mut room_state = create_room();
-        
+
         // Add users (use a reasonable number, not MAX_CONCURRENT_USERS which is 400)
         for i in 0..10 {
             room_state.users.insert(
@@ -9825,10 +9914,10 @@ async fn test_room_max_users() {
                 },
             );
         }
-        
+
         rooms.insert("user-room".to_string(), room_state);
     }
-    
+
     // Room should have 10 users
     let rooms = app_state.rooms.read().await;
     let room = rooms.get("user-room").unwrap();
@@ -9839,12 +9928,10 @@ async fn test_room_max_users() {
 #[tokio::test]
 async fn test_room_broadcast_to_multiple_receivers() {
     let room_state = create_room();
-    
+
     // Create multiple receivers
-    let mut receivers: Vec<_> = (0..5)
-        .map(|_| room_state.sender.subscribe())
-        .collect();
-    
+    let mut receivers: Vec<_> = (0..5).map(|_| room_state.sender.subscribe()).collect();
+
     // Broadcast a message
     let event = OutgoingEvent::System {
         event: SystemEvent::UserJoined {
@@ -9853,7 +9940,7 @@ async fn test_room_broadcast_to_multiple_receivers() {
         },
     };
     let _ = room_state.sender.send(event.clone());
-    
+
     // All receivers should get the message
     for receiver in &mut receivers {
         let received = receiver.try_recv();
@@ -9866,7 +9953,7 @@ async fn test_room_broadcast_to_multiple_receivers() {
 async fn test_add_message_at_max_capacity() {
     let tracker = MemoryTracker::new();
     let mut room = create_room();
-    
+
     // Fill room to MAX_MESSAGES_PER_ROOM
     for i in 0..MAX_MESSAGES_PER_ROOM {
         room.chat_history.push(OutgoingMessage {
@@ -9878,7 +9965,7 @@ async fn test_add_message_at_max_capacity() {
             reply_to: None,
         });
     }
-    
+
     // Add one more message
     let new_msg = OutgoingMessage {
         message_id: uuid::Uuid::new_v4(),
@@ -9888,12 +9975,12 @@ async fn test_add_message_at_max_capacity() {
         timestamp: "999999".to_string(),
         reply_to: None,
     };
-    
+
     room.add_message(new_msg.clone(), &tracker);
-    
+
     // After adding, history might temporarily exceed limit before next prune
     // The important thing is the code path was exercised
-    assert!(room.chat_history.len() > 0);
+    assert!(!room.chat_history.is_empty());
     // Last message should be the new one
     assert_eq!(room.chat_history.last().unwrap().text, "New message");
 }
@@ -9905,10 +9992,10 @@ async fn test_validate_input_valid_cases() {
     assert!(validate_input("test-room", 50).is_ok());
     assert!(validate_input("room123", 50).is_ok());
     assert!(validate_input("my_room_name", 50).is_ok());
-    
+
     // Minimum length
     assert!(validate_input("abc", 50).is_ok());
-    
+
     // Maximum length
     let max_name = "a".repeat(50);
     assert!(validate_input(&max_name, 50).is_ok());
@@ -9920,15 +10007,15 @@ async fn test_validate_input_invalid_cases() {
     // Too long
     let too_long = "a".repeat(51);
     assert!(validate_input(&too_long, 50).is_err());
-    
+
     // Invalid characters
     assert!(validate_input("room@name", 50).is_err());
     assert!(validate_input("room name", 50).is_err());
-    
+
     // Empty
     assert!(validate_input("", 50).is_err());
-    
-    // Special characters  
+
+    // Special characters
     assert!(validate_input("room.name", 50).is_err());
     assert!(validate_input("room/name", 50).is_err());
 }
@@ -9937,10 +10024,10 @@ async fn test_validate_input_invalid_cases() {
 #[tokio::test]
 async fn test_app_state_shutdown_empty() {
     let state = Arc::new(AppState::new());
-    
+
     // Should not panic with empty state
     state.shutdown().await;
-    
+
     // Rooms should be empty after shutdown
     let rooms = state.rooms.read().await;
     assert!(rooms.is_empty());
@@ -9950,17 +10037,17 @@ async fn test_app_state_shutdown_empty() {
 #[tokio::test]
 async fn test_app_state_shutdown_with_rooms() {
     let state = Arc::new(AppState::new());
-    
+
     // Create some rooms
     {
         let mut rooms = state.rooms.write().await;
         rooms.insert("room1".to_string(), create_room());
         rooms.insert("room2".to_string(), create_room());
     }
-    
+
     // Shutdown should broadcast to all rooms
     state.shutdown().await;
-    
+
     // Rooms should be empty
     let rooms = state.rooms.read().await;
     assert!(rooms.is_empty());
@@ -9970,11 +10057,11 @@ async fn test_app_state_shutdown_with_rooms() {
 #[tokio::test]
 async fn test_create_user_cookies_attributes() {
     let (uid_cookie, animal_cookie) = create_user_cookies("user123", "Lion");
-    
+
     // Check cookie values contain expected values
     assert!(uid_cookie.contains("user_id=user123"));
     assert!(animal_cookie.contains("animal_name=Lion"));
-    
+
     // Check cookie attributes - the actual implementation uses SameSite=Strict; Secure
     assert!(uid_cookie.contains("SameSite=Strict"));
     assert!(uid_cookie.contains("Secure"));
@@ -9986,13 +10073,13 @@ async fn test_create_user_cookies_attributes() {
 #[tokio::test]
 async fn test_assign_animal_empty_pool() {
     let mut room = create_room();
-    
+
     // Clear the animal pool
     room.available_animals.clear();
-    
+
     // Should still assign an animal (generates fallback)
     let animal = room.assign_animal();
-    
+
     // Should return some animal name
     assert!(!animal.is_empty());
 }
@@ -10001,17 +10088,17 @@ async fn test_assign_animal_empty_pool() {
 #[tokio::test]
 async fn test_animal_pool_manipulation() {
     let mut room = create_room();
-    
+
     // Take an animal
     let animal = room.assign_animal();
     let count_after_assign = room.available_animals.len();
-    
+
     // The pool should have one less animal after assignment
     assert!(!animal.is_empty());
-    
+
     // Directly add animal back to pool (simulating return)
     room.available_animals.push_back(animal.clone());
-    
+
     // Pool should have one more animal
     assert_eq!(room.available_animals.len(), count_after_assign + 1);
 }
@@ -10021,27 +10108,29 @@ async fn test_animal_pool_manipulation() {
 async fn test_ws_oversized_payload() {
     let (addr, _state) = start_ws_server().await;
     let url = format!("ws://{}/ws/payload-test-room", addr);
-    
+
     let (mut ws, _) = tokio_tungstenite::connect_async(&url)
         .await
         .expect("Connect failed");
-    
+
     // Drain initial messages
     for _ in 0..5 {
-        tokio::time::timeout(Duration::from_millis(100), ws.next()).await.ok();
+        tokio::time::timeout(Duration::from_millis(100), ws.next())
+            .await
+            .ok();
     }
-    
+
     // Send oversized payload (MAX_PAYLOAD_SIZE is 64KB)
     let large_payload = format!(r#"{{"type":"Message","text":"{}"}}"#, "x".repeat(70000));
-    ws.send(WsMessage::Text(large_payload.into())).await.ok();
-    
+    ws.send(WsMessage::Text(large_payload)).await.ok();
+
     // Wait a moment - the message should be ignored
     tokio::time::sleep(Duration::from_millis(200)).await;
-    
+
     // Connection should still be alive (message was just ignored)
-    let ping_result = ws.send(WsMessage::Ping(vec![1, 2, 3].into())).await;
+    let ping_result = ws.send(WsMessage::Ping(vec![1, 2, 3])).await;
     assert!(ping_result.is_ok());
-    
+
     ws.close(None).await.ok();
 }
 
@@ -10050,26 +10139,30 @@ async fn test_ws_oversized_payload() {
 async fn test_ws_empty_text_message() {
     let (addr, _state) = start_ws_server().await;
     let url = format!("ws://{}/ws/empty-text-room", addr);
-    
+
     let (mut ws, _) = tokio_tungstenite::connect_async(&url)
         .await
         .expect("Connect failed");
-    
+
     // Drain initial messages
     for _ in 0..5 {
-        tokio::time::timeout(Duration::from_millis(100), ws.next()).await.ok();
+        tokio::time::timeout(Duration::from_millis(100), ws.next())
+            .await
+            .ok();
     }
-    
+
     // Send message with empty text
-    ws.send(WsMessage::Text(r#"{"type":"Message","text":""}"#.into())).await.ok();
-    
+    ws.send(WsMessage::Text(r#"{"type":"Message","text":""}"#.into()))
+        .await
+        .ok();
+
     // Wait a moment
     tokio::time::sleep(Duration::from_millis(200)).await;
-    
+
     // Connection should still be alive
-    let ping_result = ws.send(WsMessage::Ping(vec![1, 2, 3].into())).await;
+    let ping_result = ws.send(WsMessage::Ping(vec![1, 2, 3])).await;
     assert!(ping_result.is_ok());
-    
+
     ws.close(None).await.ok();
 }
 
@@ -10078,28 +10171,30 @@ async fn test_ws_empty_text_message() {
 async fn test_ws_read_receipt_valid_format() {
     let (addr, _state) = start_ws_server().await;
     let url = format!("ws://{}/ws/read-receipt-valid-room", addr);
-    
+
     let (mut ws, _) = tokio_tungstenite::connect_async(&url)
         .await
         .expect("Connect failed");
-    
+
     // Drain initial messages
     for _ in 0..5 {
-        tokio::time::timeout(Duration::from_millis(100), ws.next()).await.ok();
+        tokio::time::timeout(Duration::from_millis(100), ws.next())
+            .await
+            .ok();
     }
-    
+
     // Send valid read receipt with properly formatted UUID
     let valid_uuid = uuid::Uuid::new_v4().to_string();
     let msg = format!(r#"{{"type":"ReadReceipt","message_id":"{}"}}"#, valid_uuid);
-    ws.send(WsMessage::Text(msg.into())).await.ok();
-    
+    ws.send(WsMessage::Text(msg)).await.ok();
+
     // Wait for processing
     tokio::time::sleep(Duration::from_millis(200)).await;
-    
+
     // Connection should still be alive
-    let ping_result = ws.send(WsMessage::Ping(vec![1, 2, 3].into())).await;
+    let ping_result = ws.send(WsMessage::Ping(vec![1, 2, 3])).await;
     assert!(ping_result.is_ok());
-    
+
     ws.close(None).await.ok();
 }
 
@@ -10122,7 +10217,7 @@ async fn test_user_idle_past_threshold() {
         rate_limiter: RateLimiter::new(),
         last_sanitized_message: None,
     };
-    
+
     let now = Instant::now();
     assert!(user_idle_for_too_long(&user, now));
 }
@@ -10146,7 +10241,7 @@ async fn test_user_still_active() {
         rate_limiter: RateLimiter::new(),
         last_sanitized_message: None,
     };
-    
+
     let now = Instant::now();
     assert!(!user_idle_for_too_long(&user, now));
 }
@@ -10155,19 +10250,16 @@ async fn test_user_still_active() {
 #[tokio::test]
 async fn test_all_chat_error_variants_into_response() {
     use axum::response::IntoResponse;
-    
+
     // Test all ChatError variants
     let errors = vec![
         ChatError::RoomFull,
-        ChatError::RateLimited,
         ChatError::InvalidMessage("test".to_string()),
         ChatError::ResourceLimit("test".to_string()),
-        ChatError::ConnectionError("test".to_string()),
         ChatError::SecurityError("test".to_string()),
-        ChatError::RoomError("test".to_string()),
         ChatError::RateLimitError("test".to_string()),
     ];
-    
+
     for error in errors {
         let response = error.into_response();
         // Verify we get a valid response
@@ -10179,11 +10271,11 @@ async fn test_all_chat_error_variants_into_response() {
 #[tokio::test]
 async fn test_memory_tracker_peak_bytes_update() {
     let tracker = MemoryTracker::new();
-    
+
     // Add some bytes
     tracker.add_bytes(1000);
     assert!(tracker.peak_bytes.load(Ordering::Relaxed) >= 1000);
-    
+
     // Add more
     tracker.add_bytes(2000);
     let peak = tracker.peak_bytes.load(Ordering::Relaxed);
@@ -10201,10 +10293,10 @@ async fn test_outgoing_message_size_with_reply() {
         timestamp: "1234567890".to_string(),
         reply_to: None,
     };
-    
+
     let size = msg.estimate_size();
     assert!(size > 0);
-    
+
     // With reply
     let msg_with_reply = OutgoingMessage {
         message_id: uuid::Uuid::new_v4(),
@@ -10218,7 +10310,7 @@ async fn test_outgoing_message_size_with_reply() {
             preview_text: "Previous message".to_string(),
         }),
     };
-    
+
     let size_with_reply = msg_with_reply.estimate_size();
     assert!(size_with_reply > size);
 }
@@ -10228,13 +10320,13 @@ async fn test_outgoing_message_size_with_reply() {
 async fn test_security_manager_suspicious_activity_count() {
     let manager = SecurityManager::new();
     let ip = "10.0.0.1";
-    
+
     // Record activities but not enough to ban
     for _ in 0..5 {
         let result = manager.record_suspicious_activity(ip).await;
         assert!(result.is_ok());
     }
-    
+
     // Should not be banned yet
     assert!(manager.check_ip(ip).await.is_ok());
 }
@@ -10244,7 +10336,7 @@ async fn test_security_manager_suspicious_activity_count() {
 async fn test_room_trigger_cleanup() {
     let mut room = create_room();
     let tracker = MemoryTracker::new();
-    
+
     // Add many messages
     for i in 0..100 {
         room.chat_history.push(OutgoingMessage {
@@ -10258,10 +10350,10 @@ async fn test_room_trigger_cleanup() {
         tracker.add_bytes(100);
         room.total_memory_bytes.fetch_add(100, Ordering::SeqCst);
     }
-    
+
     // Trigger cleanup
     room.trigger_cleanup(&tracker).await;
-    
+
     // Should have cleaned up some messages
     // (behavior depends on whether conditions are met)
 }
@@ -10271,7 +10363,7 @@ async fn test_room_trigger_cleanup() {
 async fn test_extract_client_ip_x_forwarded_for() {
     let mut headers = HeaderMap::new();
     headers.insert("x-forwarded-for", "192.168.1.1, 10.0.0.1".parse().unwrap());
-    
+
     let ip = extract_client_ip(&headers, None);
     assert_eq!(ip, Some("192.168.1.1".to_string()));
 }
@@ -10280,7 +10372,7 @@ async fn test_extract_client_ip_x_forwarded_for() {
 async fn test_extract_client_ip_x_real_ip() {
     let mut headers = HeaderMap::new();
     headers.insert("x-real-ip", "192.168.2.2".parse().unwrap());
-    
+
     let ip = extract_client_ip(&headers, None);
     assert_eq!(ip, Some("192.168.2.2".to_string()));
 }
@@ -10288,11 +10380,11 @@ async fn test_extract_client_ip_x_real_ip() {
 #[tokio::test]
 async fn test_extract_client_ip_fallback_to_conn_info() {
     let headers = HeaderMap::new();
-    
+
     // When no headers are present, it falls back to connection info
     let ip = extract_client_ip(&headers, None);
-    assert_eq!(ip, None);  // No connection info provided
-    
+    assert_eq!(ip, None); // No connection info provided
+
     // With connection info
     let addr: SocketAddr = "192.168.3.3:12345".parse().unwrap();
     let conn_info = ConnectInfo(addr);
@@ -10304,13 +10396,13 @@ async fn test_extract_client_ip_fallback_to_conn_info() {
 #[tokio::test]
 async fn test_connection_pool_stale_cleanup() {
     let pool = ConnectionPool::new();
-    
+
     // Add a connection
     let _ = pool.add_connection("192.168.1.1").await;
-    
+
     // Run cleanup
     pool.cleanup_stale().await;
-    
+
     // Connection should still exist (not stale yet)
     assert!(pool.can_accept("192.168.1.1").await);
 }
@@ -10319,7 +10411,7 @@ async fn test_connection_pool_stale_cleanup() {
 #[tokio::test]
 async fn test_cleanup_rooms_removes_old_rooms() {
     let state = Arc::new(AppState::new());
-    
+
     // Create an old room with no users
     {
         let mut rooms = state.rooms.write().await;
@@ -10328,10 +10420,10 @@ async fn test_cleanup_rooms_removes_old_rooms() {
         room.last_activity = Instant::now() - EMPTY_ROOM_CLEANUP_DELAY - Duration::from_secs(10);
         rooms.insert("old-empty".to_string(), room);
     }
-    
+
     // Run cleanup
     cleanup_rooms(&state).await;
-    
+
     // Room should be removed
     let rooms = state.rooms.read().await;
     assert!(!rooms.contains_key("old-empty"));
@@ -10341,17 +10433,17 @@ async fn test_cleanup_rooms_removes_old_rooms() {
 #[tokio::test]
 async fn test_cleanup_rooms_preserves_main() {
     let state = Arc::new(AppState::new());
-    
+
     // Create main room with activity
     {
         let mut rooms = state.rooms.write().await;
         let room = create_room();
         rooms.insert("main".to_string(), room);
     }
-    
+
     // Run cleanup
     cleanup_rooms(&state).await;
-    
+
     // Main room should still exist
     let rooms = state.rooms.read().await;
     assert!(rooms.contains_key("main"));
@@ -10377,10 +10469,10 @@ async fn test_generate_random_room_name_format() {
 #[tokio::test]
 async fn test_robots_txt_handler_content() {
     use axum::response::IntoResponse;
-    
+
     let response = robots_txt_handler().await.into_response();
     assert_eq!(response.status(), StatusCode::OK);
-    
+
     // Check content type header
     let headers = response.headers();
     assert!(headers.get("content-type").is_some());
@@ -10390,30 +10482,33 @@ async fn test_robots_txt_handler_content() {
 #[tokio::test]
 async fn test_health_handler_response() {
     let state = Arc::new(AppState::new());
-    
+
     // Add a room with users
     {
         let mut rooms = state.rooms.write().await;
         let mut room = create_room();
-        room.users.insert("user1".to_string(), UserData {
-            user_id: "user1".to_string(),
-            animal_name: "Lion".to_string(),
-            last_active: Instant::now(),
-            last_message_time: Instant::now(),
-            connection_state: ConnectionState::Connected {
-                last_heartbeat: Instant::now(),
-                connection_id: "conn1".to_string(),
+        room.users.insert(
+            "user1".to_string(),
+            UserData {
+                user_id: "user1".to_string(),
+                animal_name: "Lion".to_string(),
+                last_active: Instant::now(),
+                last_message_time: Instant::now(),
+                connection_state: ConnectionState::Connected {
+                    last_heartbeat: Instant::now(),
+                    connection_id: "conn1".to_string(),
+                },
+                last_read_message: None,
+                is_typing: false,
+                last_typing_event: None,
+                last_read_receipt_event: None,
+                rate_limiter: RateLimiter::new(),
+                last_sanitized_message: None,
             },
-            last_read_message: None,
-            is_typing: false,
-            last_typing_event: None,
-            last_read_receipt_event: None,
-            rate_limiter: RateLimiter::new(),
-            last_sanitized_message: None,
-        });
+        );
         rooms.insert("health-test".to_string(), room);
     }
-    
+
     let response = health_handler(State(state)).await;
     let json_response = response.into_response();
     assert_eq!(json_response.status(), StatusCode::OK);
@@ -10423,13 +10518,13 @@ async fn test_health_handler_response() {
 #[tokio::test]
 async fn test_metrics_handler_format() {
     let state = Arc::new(AppState::new());
-    
+
     // Add some data
     {
         let mut rooms = state.rooms.write().await;
         rooms.insert("metrics-test".to_string(), create_room());
     }
-    
+
     let response = metrics_handler(State(state)).await;
     let http_response = response.into_response();
     assert_eq!(http_response.status(), StatusCode::OK);
@@ -10442,7 +10537,7 @@ async fn test_room_handler_more_reserved_paths() {
     let app = Router::new()
         .route("/{room}", get(room_handler))
         .with_state(app_state);
-    
+
     // Test various reserved paths
     let reserved = vec!["admin", "api", "ws"];
     for path in reserved {
@@ -10456,7 +10551,7 @@ async fn test_room_handler_more_reserved_paths() {
             )
             .await
             .unwrap();
-        
+
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert!(String::from_utf8_lossy(&body).contains("Invalid room name"));
@@ -10470,22 +10565,19 @@ async fn test_room_handler_name_length_bounds() {
     let app = Router::new()
         .route("/{room}", get(room_handler))
         .with_state(app_state);
-    
+
     // Too short (less than 3 chars)
     let response = app
         .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/ab")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(Request::builder().uri("/ab").body(Body::empty()).unwrap())
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    assert!(String::from_utf8_lossy(&body).contains("Room name must be between 3 and 50 characters"));
-    
+    assert!(
+        String::from_utf8_lossy(&body).contains("Room name must be between 3 and 50 characters")
+    );
+
     // Too long (more than 50 chars)
     let long_name = "a".repeat(51);
     let response = app
@@ -10500,7 +10592,9 @@ async fn test_room_handler_name_length_bounds() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    assert!(String::from_utf8_lossy(&body).contains("Room name must be between 3 and 50 characters"));
+    assert!(
+        String::from_utf8_lossy(&body).contains("Room name must be between 3 and 50 characters")
+    );
 }
 
 // Test room_handler with invalid regex pattern - covers lines 1154-1159
@@ -10510,7 +10604,7 @@ async fn test_room_handler_invalid_regex_patterns() {
     let app = Router::new()
         .route("/{room}", get(room_handler))
         .with_state(app_state);
-    
+
     // Invalid patterns that fail the regex (not starting/ending with alphanumeric)
     let invalid = vec!["has@symbol", "has.dot"];
     for name in invalid {
@@ -10527,8 +10621,10 @@ async fn test_room_handler_invalid_regex_patterns() {
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         // Should fail regex validation
-        assert!(String::from_utf8_lossy(&body).contains("alphanumeric") || 
-                String::from_utf8_lossy(&body).contains("Invalid"));
+        assert!(
+            String::from_utf8_lossy(&body).contains("alphanumeric")
+                || String::from_utf8_lossy(&body).contains("Invalid")
+        );
     }
 }
 
@@ -10536,7 +10632,7 @@ async fn test_room_handler_invalid_regex_patterns() {
 #[tokio::test]
 async fn test_app_state_cleanup_with_high_memory() {
     let state = Arc::new(AppState::new());
-    
+
     // Create rooms with some memory usage
     {
         let mut rooms = state.rooms.write().await;
@@ -10556,13 +10652,13 @@ async fn test_app_state_cleanup_with_high_memory() {
             rooms.insert(format!("room{}", i), room);
         }
     }
-    
+
     // Force last_gc to be old
     state.memory_tracker.last_gc.store(0, Ordering::SeqCst);
-    
+
     // Run cleanup
     state.cleanup().await;
-    
+
     // Cleanup should have run without panic
 }
 
@@ -10570,39 +10666,42 @@ async fn test_app_state_cleanup_with_high_memory() {
 #[tokio::test]
 async fn test_app_state_shutdown_notifies_users() {
     let state = Arc::new(AppState::new());
-    
+
     // Create room with users
     {
         let mut rooms = state.rooms.write().await;
         let mut room = create_room();
-        room.users.insert("user1".to_string(), UserData {
-            user_id: "user1".to_string(),
-            animal_name: "Lion".to_string(),
-            last_active: Instant::now(),
-            last_message_time: Instant::now(),
-            connection_state: ConnectionState::Connected {
-                last_heartbeat: Instant::now(),
-                connection_id: "conn1".to_string(),
+        room.users.insert(
+            "user1".to_string(),
+            UserData {
+                user_id: "user1".to_string(),
+                animal_name: "Lion".to_string(),
+                last_active: Instant::now(),
+                last_message_time: Instant::now(),
+                connection_state: ConnectionState::Connected {
+                    last_heartbeat: Instant::now(),
+                    connection_id: "conn1".to_string(),
+                },
+                last_read_message: None,
+                is_typing: false,
+                last_typing_event: None,
+                last_read_receipt_event: None,
+                rate_limiter: RateLimiter::new(),
+                last_sanitized_message: None,
             },
-            last_read_message: None,
-            is_typing: false,
-            last_typing_event: None,
-            last_read_receipt_event: None,
-            rate_limiter: RateLimiter::new(),
-            last_sanitized_message: None,
-        });
+        );
         rooms.insert("shutdown-notify".to_string(), room);
     }
-    
+
     // Subscribe before shutdown
     let _rx = {
         let rooms = state.rooms.read().await;
         rooms.get("shutdown-notify").map(|r| r.sender.subscribe())
     };
-    
+
     // Shutdown
     state.shutdown().await;
-    
+
     // Rooms should be cleared
     let rooms = state.rooms.read().await;
     assert!(rooms.is_empty());
@@ -10612,26 +10711,37 @@ async fn test_app_state_shutdown_notifies_users() {
 #[tokio::test]
 async fn test_ws_creates_new_room_on_connect() {
     let (addr, _handle) = start_ws_server().await;
-    let unique_room = format!("new-room-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap());
+    let unique_room = format!(
+        "new-room-{}",
+        uuid::Uuid::new_v4().to_string().split('-').next().unwrap()
+    );
     let url = format!("ws://{}/ws/{}", addr, unique_room);
-    
+
     // Connect to create room
     let (mut ws, _) = tokio_tungstenite::connect_async(&url)
         .await
         .expect("Connect failed");
-    
+
     // Drain initial messages - room is created when connection establishes
     for _ in 0..5 {
-        tokio::time::timeout(Duration::from_millis(100), ws.next()).await.ok();
+        tokio::time::timeout(Duration::from_millis(100), ws.next())
+            .await
+            .ok();
     }
-    
+
     // Send a message to verify room is functional
-    ws.send(WsMessage::Text(r#"{"type":"Message","text":"hello"}"#.into())).await.ok();
-    
+    ws.send(WsMessage::Text(
+        r#"{"type":"Message","text":"hello"}"#.into(),
+    ))
+    .await
+    .ok();
+
     // Should receive the message back
     let mut received = false;
     for _ in 0..5 {
-        if let Ok(Some(Ok(WsMessage::Text(text)))) = tokio::time::timeout(Duration::from_millis(200), ws.next()).await {
+        if let Ok(Some(Ok(WsMessage::Text(text)))) =
+            tokio::time::timeout(Duration::from_millis(200), ws.next()).await
+        {
             if text.contains("hello") {
                 received = true;
                 break;
@@ -10639,7 +10749,7 @@ async fn test_ws_creates_new_room_on_connect() {
         }
     }
     assert!(received);
-    
+
     ws.close(None).await.ok();
 }
 
@@ -10649,40 +10759,47 @@ async fn test_ws_cookie_reconnection_updates_connection_state() {
     let (addr, _handle) = start_ws_server().await;
     let room_name = "reconnect-state-room";
     let url = format!("ws://{}/ws/{}", addr, room_name);
-    
+
     // First connection
     let (mut ws1, _) = tokio_tungstenite::connect_async(&url)
         .await
         .expect("First connect failed");
-    
+
     // Get user info from initial messages
     let mut user_id = String::new();
     let mut animal_name = String::new();
     for _ in 0..10 {
-        if let Ok(Some(msg)) = tokio::time::timeout(Duration::from_millis(200), ws1.next()).await {
-            if let Ok(WsMessage::Text(text)) = msg {
-                if text.contains("UserJoined") {
-                    // Parse user info from the join event
-                    if let Ok(event) = serde_json::from_str::<serde_json::Value>(&text) {
-                        if let Some(evt) = event.get("event") {
-                            user_id = evt.get("user_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                            animal_name = evt.get("animal_name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                            break;
-                        }
-                    }
-                }
-            }
+        if let Ok(Some(Ok(WsMessage::Text(text)))) =
+            tokio::time::timeout(Duration::from_millis(200), ws1.next()).await
+            && text.contains("UserJoined")
+            && let Ok(event) = serde_json::from_str::<serde_json::Value>(&text)
+            && let Some(evt) = event.get("event")
+        {
+            user_id = evt
+                .get("user_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            animal_name = evt
+                .get("animal_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            break;
         }
     }
-    
+
     ws1.close(None).await.ok();
     tokio::time::sleep(Duration::from_millis(100)).await;
-    
+
     // Reconnect with cookies if we got user info
     if !user_id.is_empty() && !animal_name.is_empty() {
         let request = http::Request::builder()
             .uri(&url)
-            .header("Cookie", format!("user_id={};animal_name={}", user_id, animal_name))
+            .header(
+                "Cookie",
+                format!("user_id={};animal_name={}", user_id, animal_name),
+            )
             .header("Host", addr.to_string())
             .header("Connection", "Upgrade")
             .header("Upgrade", "websocket")
@@ -10690,11 +10807,15 @@ async fn test_ws_cookie_reconnection_updates_connection_state() {
             .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
             .body(())
             .unwrap();
-        
+
         let result = tokio_tungstenite::connect_async(request).await;
         if let Ok((mut ws2, _)) = result {
             // Should have reconnected - send a message to verify
-            ws2.send(WsMessage::Text(r#"{"type":"Message","text":"reconnected"}"#.into())).await.ok();
+            ws2.send(WsMessage::Text(
+                r#"{"type":"Message","text":"reconnected"}"#.into(),
+            ))
+            .await
+            .ok();
             ws2.close(None).await.ok();
         }
     }
@@ -10706,20 +10827,26 @@ async fn test_ws_room_deleted_after_upgrade() {
     let (addr, _handle) = start_ws_server().await;
     let room_name = "will-delete-room";
     let url = format!("ws://{}/ws/{}", addr, room_name);
-    
+
     // Connect
     let (mut ws, _) = tokio_tungstenite::connect_async(&url)
         .await
         .expect("Connect failed");
-    
+
     // Drain messages
     for _ in 0..3 {
-        tokio::time::timeout(Duration::from_millis(100), ws.next()).await.ok();
+        tokio::time::timeout(Duration::from_millis(100), ws.next())
+            .await
+            .ok();
     }
-    
+
     // Send messages - connection should work
-    ws.send(WsMessage::Text(r#"{"type":"Message","text":"test"}"#.into())).await.ok();
-    
+    ws.send(WsMessage::Text(
+        r#"{"type":"Message","text":"test"}"#.into(),
+    ))
+    .await
+    .ok();
+
     tokio::time::sleep(Duration::from_millis(200)).await;
     ws.close(None).await.ok();
 }
@@ -10728,10 +10855,10 @@ async fn test_ws_room_deleted_after_upgrade() {
 #[tokio::test]
 async fn test_broadcast_handles_receiver_lag() {
     let room = create_room();
-    
+
     // Create a receiver
     let mut rx = room.sender.subscribe();
-    
+
     // Send many messages quickly to potentially cause lag
     for i in 0..100 {
         let _ = room.sender.send(OutgoingEvent::System {
@@ -10741,13 +10868,13 @@ async fn test_broadcast_handles_receiver_lag() {
             },
         });
     }
-    
+
     // Try to receive - may have missed some due to lag
     let mut received = 0;
     while rx.try_recv().is_ok() {
         received += 1;
     }
-    
+
     // Should have received at least some messages
     assert!(received > 0);
 }
@@ -10757,7 +10884,7 @@ async fn test_broadcast_handles_receiver_lag() {
 async fn test_prune_old_messages_keeps_recent() {
     let tracker = MemoryTracker::new();
     let mut room = create_room();
-    
+
     // Add messages with timestamps - each message ~100 bytes
     for i in 0..20 {
         let msg = OutgoingMessage {
@@ -10770,16 +10897,17 @@ async fn test_prune_old_messages_keeps_recent() {
         };
         let msg_size = msg.estimate_size();
         tracker.add_bytes(msg_size);
-        room.total_memory_bytes.fetch_add(msg_size, Ordering::SeqCst);
+        room.total_memory_bytes
+            .fetch_add(msg_size, Ordering::SeqCst);
         room.chat_history.push(msg);
     }
-    
+
     let initial_count = room.chat_history.len();
     assert_eq!(initial_count, 20);
-    
+
     // Prune to free up space for 500 bytes (should remove a few messages)
     room.prune_old_messages(500, &tracker);
-    
+
     // Should have fewer messages after pruning
     assert!(room.chat_history.len() < initial_count);
 }
@@ -10789,7 +10917,7 @@ async fn test_prune_old_messages_keeps_recent() {
 async fn test_add_message_triggers_prune_on_memory_limit() {
     let tracker = MemoryTracker::new();
     let mut room = create_room();
-    
+
     // First add some messages successfully
     for i in 0..5 {
         let msg = OutgoingMessage {
@@ -10802,10 +10930,10 @@ async fn test_add_message_triggers_prune_on_memory_limit() {
         };
         room.add_message(msg, &tracker);
     }
-    
+
     // Should have added messages
-    assert!(room.chat_history.len() > 0);
-    
+    assert!(!room.chat_history.is_empty());
+
     // Verify messages were added and tracked
     let initial_count = room.chat_history.len();
     assert_eq!(initial_count, 5);
@@ -10815,12 +10943,12 @@ async fn test_add_message_triggers_prune_on_memory_limit() {
 #[tokio::test]
 async fn test_memory_tracker_total_bytes_tracking() {
     let tracker = MemoryTracker::new();
-    
+
     assert_eq!(tracker.total_bytes.load(Ordering::Relaxed), 0);
-    
+
     tracker.add_bytes(500);
     assert_eq!(tracker.total_bytes.load(Ordering::Relaxed), 500);
-    
+
     tracker.add_bytes(300);
     assert_eq!(tracker.total_bytes.load(Ordering::Relaxed), 800);
 }
@@ -10831,15 +10959,15 @@ async fn test_validate_message_edge_cases() {
     // Whitespace only
     let result = validate_message("   \t\n   ");
     assert!(result.is_err());
-    
+
     // HTML that becomes empty after sanitization
     let result = validate_message("<script></script>");
     assert!(result.is_err());
-    
+
     // Valid message with leading/trailing whitespace
     let result = validate_message("  hello world  ");
     assert!(result.is_ok());
-    
+
     // Unicode characters
     let result = validate_message("Hello 世界 🌍");
     assert!(result.is_ok());
@@ -10849,13 +10977,13 @@ async fn test_validate_message_edge_cases() {
 #[tokio::test]
 async fn test_memory_tracker_remove_bytes_underflow() {
     let tracker = MemoryTracker::new();
-    
+
     // Add some bytes
     tracker.add_bytes(100);
-    
+
     // Remove more than added - should saturate at 0
     tracker.remove_bytes(200);
-    
+
     assert_eq!(tracker.total_bytes.load(Ordering::Relaxed), 0);
 }
 
@@ -10863,13 +10991,13 @@ async fn test_memory_tracker_remove_bytes_underflow() {
 #[tokio::test]
 async fn test_memory_tracker_peak_bytes_tracking() {
     let tracker = MemoryTracker::new();
-    
+
     tracker.add_bytes(1000);
     assert_eq!(tracker.peak_bytes.load(Ordering::Relaxed), 1000);
-    
+
     tracker.add_bytes(500);
     assert_eq!(tracker.peak_bytes.load(Ordering::Relaxed), 1500);
-    
+
     // Remove bytes - peak should stay
     tracker.remove_bytes(1000);
     assert_eq!(tracker.peak_bytes.load(Ordering::Relaxed), 1500);
@@ -10879,16 +11007,16 @@ async fn test_memory_tracker_peak_bytes_tracking() {
 #[tokio::test]
 async fn test_memory_tracker_gc_timing_threshold() {
     let tracker = MemoryTracker::new();
-    
+
     // First call should trigger GC and update timestamp
     assert!(tracker.should_gc());
-    
+
     // Immediate second call should not trigger
     assert!(!tracker.should_gc());
-    
+
     // Set last_gc to far in the past
     tracker.last_gc.store(0, Ordering::SeqCst);
-    
+
     // Now should trigger again
     assert!(tracker.should_gc());
 }
@@ -10898,18 +11026,18 @@ async fn test_memory_tracker_gc_timing_threshold() {
 async fn test_connection_pool_ip_limit() {
     let pool = ConnectionPool::new();
     let ip = "192.168.1.1".to_string();
-    
+
     // Add up to limit
     for _ in 0..MAX_CONCURRENT_CONNECTIONS_PER_IP {
         assert!(pool.add_connection(&ip).await.is_ok());
     }
-    
+
     // Exceeding should fail
     assert!(pool.add_connection(&ip).await.is_err());
-    
+
     // Remove one
     pool.remove_connection(&ip).await;
-    
+
     // Now can add again
     assert!(pool.add_connection(&ip).await.is_ok());
 }
@@ -10918,10 +11046,16 @@ async fn test_connection_pool_ip_limit() {
 #[tokio::test]
 async fn test_app_state_initialization() {
     let state = AppState::new();
-    
+
     // Check all components are initialized
     assert_eq!(state.rooms.read().await.len(), 0);
-    assert_eq!(state.resource_monitor.total_connections.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        state
+            .resource_monitor
+            .total_connections
+            .load(Ordering::Relaxed),
+        0
+    );
     assert_eq!(state.memory_tracker.total_bytes.load(Ordering::Relaxed), 0);
     assert_eq!(state.connection_pool.active.load(Ordering::Relaxed), 0);
 }
@@ -10931,19 +11065,19 @@ async fn test_app_state_initialization() {
 async fn test_security_manager_suspicious_activity() {
     let manager = SecurityManager::new();
     let ip = "10.0.0.1".to_string();
-    
+
     // Not banned initially
     assert!(manager.check_ip(&ip).await.is_ok());
-    
+
     // Track activities below threshold
     for _ in 0..10 {
         let _ = manager.record_suspicious_activity(&ip).await;
     }
-    
+
     // Next one should trigger ban (11th in < 60s triggers ban)
     let result = manager.record_suspicious_activity(&ip).await;
     assert!(result.is_err()); // Should be banned now
-    
+
     // Now check_ip should fail
     assert!(manager.check_ip(&ip).await.is_err());
 }
@@ -10952,12 +11086,12 @@ async fn test_security_manager_suspicious_activity() {
 #[tokio::test]
 async fn test_resource_monitor_tracking() {
     let monitor = ResourceMonitor::new();
-    
+
     assert_eq!(monitor.total_connections.load(Ordering::Relaxed), 0);
-    
+
     monitor.total_connections.fetch_add(1, Ordering::SeqCst);
     assert_eq!(monitor.total_connections.load(Ordering::Relaxed), 1);
-    
+
     monitor.total_connections.fetch_add(5, Ordering::SeqCst);
     assert_eq!(monitor.total_connections.load(Ordering::Relaxed), 6);
 }
@@ -10967,17 +11101,20 @@ async fn test_resource_monitor_tracking() {
 async fn test_room_state_broadcast_system_event() {
     let room = create_room();
     let mut rx = room.sender.subscribe();
-    
+
     // Broadcast a system event
     room.broadcast_system_event(SystemEvent::UserJoined {
         user_id: "test-user".to_string(),
         animal_name: "TestAnimal".to_string(),
     });
-    
+
     // Should receive the event
     if let Ok(OutgoingEvent::System { event }) = rx.try_recv() {
         match event {
-            SystemEvent::UserJoined { user_id, animal_name } => {
+            SystemEvent::UserJoined {
+                user_id,
+                animal_name,
+            } => {
                 assert_eq!(user_id, "test-user");
                 assert_eq!(animal_name, "TestAnimal");
             }
@@ -10993,27 +11130,30 @@ async fn test_room_state_broadcast_system_event() {
 async fn test_room_state_broadcast_user_count() {
     let mut room = create_room();
     let mut rx = room.sender.subscribe();
-    
+
     // Add some users
-    room.users.insert("user1".to_string(), UserData {
-        user_id: "user1".to_string(),
-        animal_name: "Lion".to_string(),
-        last_active: Instant::now(),
-        last_message_time: Instant::now(),
-        connection_state: ConnectionState::Connected {
-            last_heartbeat: Instant::now(),
-            connection_id: "conn1".to_string(),
+    room.users.insert(
+        "user1".to_string(),
+        UserData {
+            user_id: "user1".to_string(),
+            animal_name: "Lion".to_string(),
+            last_active: Instant::now(),
+            last_message_time: Instant::now(),
+            connection_state: ConnectionState::Connected {
+                last_heartbeat: Instant::now(),
+                connection_id: "conn1".to_string(),
+            },
+            last_read_message: None,
+            is_typing: false,
+            last_typing_event: None,
+            last_read_receipt_event: None,
+            rate_limiter: RateLimiter::new(),
+            last_sanitized_message: None,
         },
-        last_read_message: None,
-        is_typing: false,
-        last_typing_event: None,
-        last_read_receipt_event: None,
-        rate_limiter: RateLimiter::new(),
-        last_sanitized_message: None,
-    });
-    
+    );
+
     room.broadcast_user_count();
-    
+
     // Should receive user count event
     if let Ok(OutgoingEvent::UserCount { count }) = rx.try_recv() {
         assert_eq!(count, 1);
@@ -11033,7 +11173,7 @@ async fn test_outgoing_message_basic_size() {
         timestamp: "1234567890".to_string(),
         reply_to: None,
     };
-    
+
     let size = msg.estimate_size();
     // Size should be > 0 and reasonable
     assert!(size > 0);
@@ -11055,10 +11195,10 @@ async fn test_outgoing_message_with_reply_info() {
             preview_text: "Original message preview".to_string(),
         }),
     };
-    
+
     let size = msg.estimate_size();
     assert!(size > 0);
-    
+
     // Serialize and check
     let json = serde_json::to_string(&msg).unwrap();
     assert!(json.contains("reply_to"));
@@ -11071,12 +11211,12 @@ async fn test_validate_input_boundaries() {
     let valid = "abc";
     let result = validate_input(valid, MAX_ROOM_NAME_LEN);
     assert!(result.is_ok());
-    
+
     // Max length exactly
     let max_valid = "a".repeat(MAX_ROOM_NAME_LEN);
     let result = validate_input(&max_valid, MAX_ROOM_NAME_LEN);
     assert!(result.is_ok());
-    
+
     // Over max length
     let too_long = "a".repeat(MAX_ROOM_NAME_LEN + 1);
     let result = validate_input(&too_long, MAX_ROOM_NAME_LEN);
@@ -11088,15 +11228,12 @@ async fn test_validate_input_boundaries() {
 async fn test_chat_error_display() {
     let errors = vec![
         ChatError::InvalidMessage(String::from("test")),
-        ChatError::RateLimited,
         ChatError::RoomFull,
         ChatError::ResourceLimit(String::from("memory")),
-        ChatError::ConnectionError(String::from("timeout")),
         ChatError::SecurityError(String::from("banned")),
-        ChatError::RoomError(String::from("not found")),
         ChatError::RateLimitError(String::from("too fast")),
     ];
-    
+
     for err in errors {
         let display = format!("{}", err);
         assert!(!display.is_empty());
@@ -11110,12 +11247,12 @@ async fn test_client_event_deserialization() {
     let json = r#"{"type":"Message","text":"hello"}"#;
     let event: ClientEvent = serde_json::from_str(json).unwrap();
     matches!(event, ClientEvent::Message { .. });
-    
+
     // Typing event
     let json = r#"{"type":"Typing","is_typing":true}"#;
     let event: ClientEvent = serde_json::from_str(json).unwrap();
     matches!(event, ClientEvent::Typing { .. });
-    
+
     // ReadReceipt event
     let msg_id = uuid::Uuid::new_v4();
     let json = format!(r#"{{"type":"ReadReceipt","message_id":"{}"}}"#, msg_id);
@@ -11144,7 +11281,7 @@ async fn test_system_event_serialization() {
             reason: "maintenance".to_string(),
         },
     ];
-    
+
     for event in events {
         let json = serde_json::to_string(&event).unwrap();
         assert!(!json.is_empty());
@@ -11156,27 +11293,35 @@ async fn test_system_event_serialization() {
 async fn test_ws_malformed_json_handling() {
     let (addr, _handle) = start_ws_server().await;
     let url = format!("ws://{}/ws/malformed-test", addr);
-    
+
     let (mut ws, _) = tokio_tungstenite::connect_async(&url)
         .await
         .expect("Connect failed");
-    
+
     // Drain initial messages
     for _ in 0..5 {
-        tokio::time::timeout(Duration::from_millis(100), ws.next()).await.ok();
+        tokio::time::timeout(Duration::from_millis(100), ws.next())
+            .await
+            .ok();
     }
-    
+
     // Send malformed JSON
     ws.send(WsMessage::Text("not valid json".into())).await.ok();
     ws.send(WsMessage::Text("{incomplete".into())).await.ok();
-    ws.send(WsMessage::Text(r#"{"type":"Unknown"}"#.into())).await.ok();
-    
+    ws.send(WsMessage::Text(r#"{"type":"Unknown"}"#.into()))
+        .await
+        .ok();
+
     // Connection should still be alive
     tokio::time::sleep(Duration::from_millis(200)).await;
-    
+
     // Can still send valid message
-    ws.send(WsMessage::Text(r#"{"type":"Message","text":"valid"}"#.into())).await.ok();
-    
+    ws.send(WsMessage::Text(
+        r#"{"type":"Message","text":"valid"}"#.into(),
+    ))
+    .await
+    .ok();
+
     ws.close(None).await.ok();
 }
 
@@ -11186,7 +11331,7 @@ async fn test_header_map_operations() {
     // Test that HeaderMap works correctly
     let mut h = HeaderMap::new();
     h.insert("X-Real-IP", "192.168.1.1".parse().unwrap());
-    
+
     // Can retrieve header
     assert!(h.get("X-Real-IP").is_some());
     let ip_val = h.get("X-Real-IP").unwrap().to_str().unwrap();
@@ -11197,16 +11342,14 @@ async fn test_header_map_operations() {
 #[tokio::test]
 async fn test_connection_state_type_variants() {
     let now = Instant::now();
-    
+
     let connected = ConnectionState::Connected {
         last_heartbeat: now,
         connection_id: "conn123".to_string(),
     };
-    
-    let disconnected = ConnectionState::Disconnected {
-        since: now,
-    };
-    
+
+    let disconnected = ConnectionState::Disconnected { since: now };
+
     // Verify pattern matching works
     matches!(connected, ConnectionState::Connected { .. });
     matches!(disconnected, ConnectionState::Disconnected { .. });
@@ -11219,7 +11362,7 @@ async fn test_room_handler_hyphen_underscore() {
     let app = Router::new()
         .route("/{room}", get(room_handler))
         .with_state(app_state);
-    
+
     // Valid patterns with hyphens and underscores - should return the HTML page, not error
     let valid_names = vec!["test-room", "test_room", "test-room-name", "a1b2c3"];
     for name in valid_names {
@@ -11236,12 +11379,247 @@ async fn test_room_handler_hyphen_underscore() {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let body_str = String::from_utf8_lossy(&body);
         // Should NOT contain specific error messages
-        assert!(!body_str.contains("Room name must be between 3 and 50 characters"), 
-            "Room '{}' incorrectly rejected for length", name);
-        assert!(!body_str.contains("Room name must start/end with alphanumeric"),
-            "Room '{}' incorrectly rejected for regex", name);
+        assert!(
+            !body_str.contains("Room name must be between 3 and 50 characters"),
+            "Room '{}' incorrectly rejected for length",
+            name
+        );
+        assert!(
+            !body_str.contains("Room name must start/end with alphanumeric"),
+            "Room '{}' incorrectly rejected for regex",
+            name
+        );
         // Should contain HTML content indicating success
-        assert!(body_str.contains("<!DOCTYPE html>") || body_str.contains("<html"),
-            "Room '{}' should return HTML page", name);
+        assert!(
+            body_str.contains("<!DOCTYPE html>") || body_str.contains("<html"),
+            "Room '{}' should return HTML page",
+            name
+        );
     }
+}
+
+// ========== ROSTER INTEGRITY ==========
+
+/// The animal roster must stay sorted, unique and actually made of animals.
+///
+/// This is a sweep, not a spot check: an earlier revision of the list ran off
+/// the end of a dictionary and shipped `hadron`, `hagiology`, `gyroscope`,
+/// `half-penny` and `hallway` as assignable names, with `hallingers` and
+/// `hallway` present twice. Duplicates are the part that actually broke: two
+/// connected users could hold the same name, which is the only identity the UI
+/// shows.
+#[test]
+fn animal_roster_is_sorted_unique_and_well_formed() {
+    assert!(
+        ANIMAL_NAMES.len() >= 100,
+        "roster is too small to keep a full room in distinct names"
+    );
+
+    let mut seen = std::collections::HashSet::new();
+    for name in ANIMAL_NAMES {
+        assert!(
+            seen.insert(*name),
+            "duplicate animal name in roster: {name}"
+        );
+        assert!(!name.is_empty(), "empty animal name in roster");
+        assert!(
+            name.chars().all(|c| c.is_ascii_lowercase() || c == '-'),
+            "animal name must be lowercase ascii with hyphens only: {name}"
+        );
+        assert!(
+            !name.starts_with('-') && !name.ends_with('-'),
+            "animal name must not start or end with a hyphen: {name}"
+        );
+    }
+
+    let mut sorted = ANIMAL_NAMES.to_vec();
+    sorted.sort_unstable();
+    assert_eq!(
+        sorted.as_slice(),
+        ANIMAL_NAMES,
+        "roster must stay sorted so a duplicate is visible in review"
+    );
+}
+
+/// A full room hands out distinct names for as long as the roster lasts.
+#[tokio::test]
+async fn assign_animal_never_repeats_a_connected_name() {
+    let mut room = create_room();
+    let mut handed_out = std::collections::HashSet::new();
+
+    for i in 0..50 {
+        let name = room.assign_animal();
+        assert!(
+            handed_out.insert(name.clone()),
+            "assign_animal handed out {name} twice"
+        );
+
+        let now = Instant::now();
+        room.users.insert(
+            format!("user-{i}"),
+            UserData {
+                user_id: format!("user-{i}"),
+                animal_name: name,
+                last_active: now,
+                last_message_time: now,
+                connection_state: ConnectionState::Connected {
+                    last_heartbeat: now,
+                    connection_id: format!("conn-{i}"),
+                },
+                last_read_message: None,
+                is_typing: false,
+                last_typing_event: None,
+                last_read_receipt_event: None,
+                rate_limiter: RateLimiter::new(),
+                last_sanitized_message: None,
+            },
+        );
+    }
+}
+
+// ========== ROUTER WIRING ==========
+
+/// Every route the deployment depends on is actually mounted.
+///
+/// `build_router` exists so this asserts against the real table rather than a
+/// hand-assembled copy that can silently drift from `main`.
+#[tokio::test]
+async fn router_mounts_every_public_route() {
+    for (path, expected) in [
+        ("/", StatusCode::PERMANENT_REDIRECT),
+        ("/main", StatusCode::OK),
+        ("/health", StatusCode::OK),
+        ("/metrics", StatusCode::OK),
+        ("/robots.txt", StatusCode::OK),
+        ("/some-room", StatusCode::OK),
+    ] {
+        let app = build_router(Arc::new(AppState::new()));
+        let response = app
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), expected, "unexpected status for {path}");
+    }
+}
+
+// ========== CONNECTION ACCOUNTING ==========
+
+async fn start_ws_server_with_state() -> (SocketAddr, Arc<AppState>, tokio::task::JoinHandle<()>) {
+    let app_state = Arc::new(AppState::new());
+    let app = build_router(app_state.clone());
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let server = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    );
+    let handle = tokio::spawn(async move {
+        let _ = server.await;
+    });
+
+    (addr, app_state, handle)
+}
+
+/// A rejected upgrade must leave no connection reservation behind.
+///
+/// The admission path used to increment the per-IP pool and the global
+/// connection counter and *then* run checks that can fail, returning without
+/// releasing either. Each rejected connection permanently consumed a slot, so a
+/// server that had refused enough connections would refuse all of them while
+/// completely idle.
+#[tokio::test]
+async fn rejected_upgrade_releases_its_connection_slot() {
+    let (addr, state, handle) = start_ws_server_with_state().await;
+
+    // '.' is not a legal room character, so admission rejects this.
+    for _ in 0..(MAX_CONCURRENT_CONNECTIONS_PER_IP * 3) {
+        let url = format!("ws://{addr}/ws/not.a.valid.room");
+        let _ = connect_async(&url).await;
+    }
+
+    // Give teardown a moment to run.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    assert_eq!(
+        state
+            .resource_monitor
+            .total_connections
+            .load(Ordering::SeqCst),
+        0,
+        "rejected upgrades leaked global connection slots"
+    );
+    assert_eq!(
+        state.connection_pool.active.load(Ordering::SeqCst),
+        0,
+        "rejected upgrades leaked per-IP pool slots"
+    );
+
+    // The server still accepts a legitimate connection afterwards.
+    let (mut ws, _) = connect_async(format!("ws://{addr}/ws/leak-check"))
+        .await
+        .expect("server refused a valid connection after rejected ones");
+    let event = recv_json_event(&mut ws).await;
+    assert_eq!(event["type"], "Welcome");
+
+    handle.abort();
+}
+
+/// The first frame a client receives tells it who it is.
+///
+/// Without it the client had to guess its own identity — it assumed the first
+/// `UserJoined` it saw was itself and otherwise parsed `document.cookie`, which
+/// is why the identity cookies could not be `HttpOnly`.
+#[tokio::test]
+async fn first_frame_is_welcome_with_this_users_identity() {
+    let (addr, _state, handle) = start_ws_server_with_state().await;
+
+    let (mut ws, _) = connect_async(format!("ws://{addr}/ws/welcome-room"))
+        .await
+        .expect("connect failed");
+
+    let event = recv_json_event(&mut ws).await;
+    assert_eq!(event["type"], "Welcome");
+
+    let user_id = event["user_id"].as_str().expect("welcome carries user_id");
+    let animal_name = event["animal_name"]
+        .as_str()
+        .expect("welcome carries animal_name");
+
+    assert!(
+        Uuid::parse_str(user_id).is_ok(),
+        "welcome user_id must be a uuid, got {user_id}"
+    );
+    assert!(!animal_name.is_empty(), "welcome animal_name must be set");
+
+    handle.abort();
+}
+
+// ========== FRONTEND/BACKEND IDENTITY CONTRACT ==========
+
+/// The client must take its identity from the Welcome frame, never from
+/// `document.cookie`.
+///
+/// These are two halves of one decision. The identity cookies are `HttpOnly`,
+/// so a client that reads `document.cookie` silently fails to recognise its own
+/// messages — every message it sends renders as somebody else's. Making the
+/// cookies `HttpOnly` and teaching the client to read the Welcome frame is a
+/// single change; this test is what keeps either half from being reverted
+/// alone.
+#[test]
+fn client_takes_identity_from_welcome_frame_not_cookies() {
+    assert!(
+        !EMBEDDED_HTML.contains("document.cookie.split"),
+        "client must not parse document.cookie: the identity cookies are HttpOnly"
+    );
+    assert!(
+        EMBEDDED_HTML.contains("case 'Welcome':"),
+        "client must handle the Welcome frame to learn its own identity"
+    );
+
+    let (user_cookie, animal_cookie) = create_user_cookies("some-id", "otter");
+    assert!(user_cookie.contains("HttpOnly"));
+    assert!(animal_cookie.contains("HttpOnly"));
 }
