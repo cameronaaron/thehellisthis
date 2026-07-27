@@ -1,10 +1,11 @@
 #!/bin/bash
 # Manual deploy to Cloudflare Workers + Containers.
 #
-# The normal path is pushing to main, which deploys via
-# .github/workflows/deploy.yml only after the CI gate passes. This script is
-# for forcing a deploy or testing this specific path, and it runs the same gate
-# first — a manual deploy is not an excuse to skip it.
+# The normal path is pushing to main: Cloudflare's Git integration builds and
+# deploys from the repository on its own. This script is for forcing a deploy
+# out of band — a rollback, or testing the container build — and it runs the
+# full gate first, because a manual deploy is the one path with nothing else
+# checking it.
 
 set -euo pipefail
 

@@ -35,7 +35,7 @@ cargo test --all-features       # 612 tests; all must pass before committing
 cargo fmt --all -- --check      # formatting is a gate, not a preference
 cargo clippy --all-targets --all-features -- -D warnings   # warnings are failures
 cargo build --release           # LTO'd binary for the container image
-scripts/coverage.sh             # line-coverage floor (95%), ratchets up only
+scripts/coverage.sh             # line-coverage floor (98%), ratchets up only
 ```
 
 Two more that CI deliberately does **not** run, because they depend on real
@@ -136,10 +136,12 @@ Every module has one job and says so in its header comment. Nothing is named
 | `security.rs` | Response security headers, the CSP, the WebSocket origin check. |
 | `session.rs` | The WebSocket lifecycle. |
 | `cleanup.rs` | The room housekeeping pass. |
-| `main.rs` | Entry point, router construction, housekeeping loops. |
+| `startup.rs` | Router construction, housekeeping loops, bind, shutdown sequence. |
+| `main.rs` | The entry point, and nothing else. |
 
-`main.rs` is **only** wiring. If you are adding logic to it, it belongs in a
-module. `build_router` is factored out so tests exercise the real route table
+`main.rs` is **only** the entry point — one line calling `startup::main_inner`.
+Anything in it is code no test can reach, which is what makes its coverage
+exemption honest (§6.1c). Logic belongs in `startup.rs` or a module. `build_router` is factored out so tests exercise the real route table
 rather than a hand-assembled copy of it
 (`router_mounts_every_public_route`).
 

@@ -1,0 +1,82 @@
+# Code the coverage floor does not count, and why.
+#
+# The floor is 100%. Anything below it is either a missing test or an entry
+# here — never a lowered number. Ported from the coverage exclusion list on
+# cameronaaron.com, which holds its thresholds at 100 and excludes a short,
+# reasoned list rather than settling for a percentage.
+#
+# Two rules, both enforced by `coverage_exemptions_are_justified_and_current`:
+#
+#   1. Every entry carries a `reason`. An exclusion without one is a number
+#      being hidden.
+#   2. Every entry names a path that exists. An exemption must never outlive
+#      the thing it exempts — the same self-cleaning property the dependency
+#      allow-list has.
+
+[[exempt]]
+path = "src/tests.rs"
+reason = """
+The test suite itself. Coverage measures whether the *server* is exercised;
+counting the tests' own branches measures nothing, and a helper with an
+unexercised arm would otherwise show up as untested production code. This is
+the direct analogue of excluding `**/*.test.ts` on cameronaaron.com.
+"""
+
+[[exempt]]
+path = "src/main.rs"
+reason = """
+The process shell, and only after everything testable was moved out of it.
+`main` is one line that calls `main_inner`, because a test can never call
+`main` — `#[tokio::main]` makes it the entry point — so any line left inside it
+is a line nothing can ever cover.
+
+What remains uncovered here is the `#[tokio::main]` runtime construction and
+the `signal::ctrl_c()` call itself. The shutdown *sequence* is covered:
+`wait_then_announce` takes the signal as a parameter precisely so a test can
+supply one, including the failed-handler arm.
+
+Reopen: if this file grows anything that is not runtime setup, it belongs in a
+module and this exemption stops being honest.
+"""
+
+# ---------------------------------------------------------------------------
+# Lines, not files.
+#
+# tarpaulin can only exclude whole files, and `session.rs` is 94% covered — the
+# module holding the message path, admission and teardown. Excluding it to
+# reach a round number would hide far more than it exempted, so it stays in the
+# measurement and the floor sits at what is actually achieved.
+#
+# The 21 lines below are listed individually with reasons.
+# `session_coverage_gap_is_still_what_it_claims` fails if the count changes in
+# either direction: a new uncovered line is a missing test, and a smaller
+# number means an entry here has stopped being true and should be deleted.
+# ---------------------------------------------------------------------------
+
+[[exempt]]
+path = "src/session.rs"
+lines = 21
+reason = """
+Three classes, all needing something to fail at an exact instant:
+
+**The socket dies mid-write** (395, 400-401, 420-421, 426, 464, 486, 507, 510,
+536). Each is the `is_err()` arm of a send inside one of the four raced tasks.
+Reaching them needs the peer to vanish between one frame and the next, which a
+test can only arrange by racing — and §6.4 rules out a test that passes or
+fails on timing. The *behaviour* they guard is covered: whichever task notices
+first ends the session, and `a_session_whose_room_disappeared_still_releases_its_slots`
+asserts the teardown that follows.
+
+**State changes between admission and upgrade** (339-340, 349, 351-355). The
+room is deleted, or the user removed, in the microseconds between
+`admit_user` returning and the upgrade callback running. Both are defensive:
+the "room vanished" path is why teardown moved into a wrapper (§5.11), and the
+"user missing" path recreates them. Forcing either means winning a race against
+the runtime.
+
+**An identity that cannot be encoded as a cookie** (176). Reachable only if a
+`user_id` or `animal_name` contains a character invalid in a header value —
+which, since identity became a closed set (a UUID and a roster name, §5.9), no
+longer has a way to happen. It stays as a guard against that closed set being
+widened, and it is unreachable precisely because the guard above it holds.
+"""

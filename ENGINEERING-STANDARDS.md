@@ -56,8 +56,10 @@ concrete, executable version of "obsessive engineering quality." Concretely:
 | §10 Client | `empty_chat_placeholder_does_not_alter_container_layout`, `rendered_history_is_trimmed_from_the_dom_not_a_counter`, `the_page_does_not_block_pinch_zoom`, `images_reserve_their_space_before_they_load` |
 | Attachments | `an_attachment_must_be_the_image_type_it_claims_to_be`, `svg_is_not_an_allowed_attachment_type`, `a_rooms_oldest_images_fade_once_it_is_over_its_attachment_budget`, `images_are_re_encoded_rather_than_sent_as_picked` |
 | Reactions | `reacting_twice_with_the_same_emoji_removes_the_reaction`, `reactions_never_outlive_the_messages_they_belong_to`, `a_reaction_must_be_on_the_roster` |
-| §6.1 The gate answers "will this deploy" | `ci_node_version_satisfies_the_toolchain`, `the_workflows_install_with_the_lockfile_that_exists` |
+| §6.1 The gate answers "will this deploy" | `ci_node_version_satisfies_the_toolchain`, `the_workflows_install_with_the_lockfile_that_exists`, `ci_holds_no_deploy_credential_and_does_not_deploy` |
+| Startup lifecycle | `run_returns_cleanly_when_its_shutdown_fires`, `the_process_exit_code_reports_a_clean_stop`, `the_process_exit_code_reports_a_failed_bind`, `the_shutdown_sequence_waits_for_its_signal`, `a_server_error_is_reported_and_a_clean_stop_is_not_an_error`, `binding_a_port_already_in_use_is_an_error_not_a_panic`, `run_serves_until_it_is_shut_down`, `shutting_down_announces_departures_and_clears_the_rooms` |
 | Constraint #12 Frontend/backend agreement | `client_attachment_ceiling_matches_the_server`, `client_reaction_roster_matches_the_server`, `the_node_types_match_the_node_ci_installs` |
+| Meta: coverage exemptions | `coverage_exemptions_are_justified_and_current` |
 | Meta: standards are enforced | `every_test_the_standards_name_exists`, `every_parked_decision_records_how_to_reopen_it`, `every_contract_test_is_documented` |
 | Meta: tests can fail | `no_assertion_in_this_suite_is_a_tautology` |
 | Dead weight | `every_declared_dependency_is_used` |
@@ -724,6 +726,33 @@ and that an exemption must never outlive its reason. `every_declared_dependency_
 carries the same self-cleaning property: its allow-list of indirectly-used
 crates fails if an entry names a crate that is no longer in `Cargo.toml`.
 
+### 6.1c An untestable line is usually a misplaced line
+
+The coverage floor was 95% and the argument for it was that the rest is "the
+process shell" — `main`, signal handling. That was true of the *file* and not of
+the code. Splitting `startup.rs` out of `main.rs` and taking two things as
+parameters instead of reaching for them moved 78 lines from unreachable to
+covered:
+
+- `main` is now one line, because a test can never call it — so every line left
+  inside it is a line nothing can cover, and it is the only honest exclusion.
+- `wait_then_announce` takes the shutdown signal instead of calling
+  `ctrl_c()`. A test cannot send itself SIGINT without killing the runner; it
+  can hand over a future that has already resolved. Both arms are now covered,
+  including the one that handles a *broken* signal handler.
+- `main_inner` returns an `ExitCode` instead of calling `std::process::exit`,
+  which does not return and would take the test runner with it.
+- `log_server_result` is a function rather than a `select!` arm, so the error
+  path needs no live server failing mid-flight.
+
+**Injection belongs at the edge, where the untestable thing actually is.** That
+is the distinction from the injectable clock in §9.4, which is rejected: a clock
+threads through every timing decision in the codebase, while a signal is one
+parameter in one function at the boundary of the process.
+
+What is left is genuinely racy — a socket dying between two frames — and is
+exempted line by line with reasons, not rounded away.
+
 ### 6.2 A fix and its test are one commit
 
 Non-negotiable. A fix without a test is a fix with an expiry date. The commit
@@ -991,7 +1020,7 @@ lore.
 | 100% mutation coverage | **Rejected as a target, pursued as a direction** — six mutants survive and are classified in §6.6. Four differ only when a duration is *exactly* its threshold and would need an injectable clock, which is separately rejected because the indirection costs more than the mutants are worth. Killing the last few would mean testing the clock rather than the behaviour | Reopens if a *reachable* mutant appears that is not one of the six classified, which is a real gap rather than an exclusion |
 | Load testing | **Never done** — every performance claim here is structural (complexity, lock duration), not empirical throughput | Before raising `MAX_CONCURRENT_USERS` (400) or `MAX_USERS_PER_ROOM` (100). Those numbers are currently unvalidated assumptions, and §0.5 says so out loud. |
 | Injectable clock for the limiters | **Rejected** (§6.6) — would kill four surviving mutants that differ only when a duration is *exactly* its threshold | Reopens if a timing bug is ever observed at a limit boundary in production, or if the limiters need testable time for another reason. |
-| 100% line coverage | **Not the target** — the floor is 95% and ratchets. The remainder is the process shell (`main`, signal handling) and socket-failure paths inside the four connection tasks, which need a socket to fail at an exact instant | Reopens for any *reachable* branch: those are gaps, not exclusions. Chasing the rest would mean flaky timing tests, which §6.4 rules out as worse than none. |
+| 100% line coverage | **Now the target, with a reasoned exemption list** — 98.18%, every module at 100% except `session.rs` (352/373). `main.rs` was reduced to an entry point and `startup.rs` split out of it so the exclusion is honest rather than a hiding place; the test file is excluded the way `*.test.ts` is on cameronaaron.com. The 21 remaining lines are listed individually in scripts/coverage-exemptions.toml | Reopens for any of those 21 that becomes reachable — the registry's line count is asserted, so it fails if the number moves either way. The old entry read: **Not the target** — the floor is 95% and ratchets. The remainder is the process shell (`main`, signal handling) and socket-failure paths inside the four connection tasks, which need a socket to fail at an exact instant | Reopens for any *reachable* branch: those are gaps, not exclusions. Chasing the rest would mean flaky timing tests, which §6.4 rules out as worse than none. |
 | Edge-caching the room pages | **Rejected** — the page is per-room and sets identity cookies, so a shared cache would serve one visitor's `Set-Cookie` to another | Reopens only if identity moves entirely to the socket and the page becomes byte-identical for all visitors. |
 
 ---

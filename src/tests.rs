@@ -21,14 +21,14 @@ use crate::routes::{
 };
 use crate::security::is_allowed_origin;
 use crate::session::{admit_user, apply_client_event, cleanup_user, ws_handler};
+use crate::startup::{
+    DEFAULT_PORT, build_router, generate_random_room_name, init_tracing, resolve_port, serve,
+    spawn_housekeeping,
+};
 use crate::state::AppState;
 use crate::validation::{
     extract_client_ip, hash_client_address, sanitize_attachment, sanitize_reply, validate_input,
     validate_message,
-};
-use crate::{
-    DEFAULT_PORT, build_router, generate_random_room_name, init_tracing, resolve_port, serve,
-    spawn_housekeeping,
 };
 
 use axum::extract::{ConnectInfo, FromRequestParts, State};
@@ -13282,60 +13282,55 @@ async fn an_ip_is_banned_only_past_the_suspicion_threshold() {
 /// input that had room.
 ///
 /// The guard is `end > 0 && !is_char_boundary(end)`. With `||` in place of
-/// `&&`, the loop walks all the way to zero and throws the whole string away.
-#[test]
-fn truncation_keeps_everything_that_fits() {
-    // Multi-byte characters straddling the limit: the result must be shorter
-    // than the limit but not empty.
-    let reply = ReplyInfo {
-        message_id: Uuid::new_v4().to_string(),
-        // 3 bytes each, so the cap falls mid-character.
-        author_name: "日".repeat(MAX_REPLY_AUTHOR_LEN),
-        preview_text: "b".to_string(),
-    };
-
-    let clean = sanitize_reply(reply).unwrap();
-    assert!(
-        !clean.author_name.is_empty(),
-        "truncation must keep the part that fits, not discard everything"
-    );
-    assert!(clean.author_name.len() <= MAX_REPLY_AUTHOR_LEN);
-    assert!(
-        clean.author_name.len() > MAX_REPLY_AUTHOR_LEN - 3,
-        "it must keep as much as fits, losing at most one character"
-    );
-
-    // A value shorter than the cap is returned untouched.
-    let reply = ReplyInfo {
-        message_id: Uuid::new_v4().to_string(),
-        author_name: "otter".to_string(),
-        preview_text: "hello".to_string(),
-    };
-    let clean = sanitize_reply(reply).unwrap();
-    assert_eq!(clean.author_name, "otter");
-    assert_eq!(clean.preview_text, "hello");
-}
-
-// ========== DEPLOY WORKFLOW ==========
-
-/// The deploy workflow must not pass wrangler a flag it does not recognise.
+/// CI does not deploy, and must not start again.
 ///
-/// `wrangler deploy --no-cache` shipped for a long time: the installed
-/// wrangler version has no such flag, so it printed its full --help text and
-/// exited 1 on every deploy. That failure looks identical to a missing-secret
-/// auth failure in the Actions log, and cost real time to tell apart from one
-/// the day both were true at once.
+/// Deploying moved to Cloudflare's own Git integration. What it replaced kept
+/// producing the same failure shape: the Rust gate green, and the deploy step
+/// failing afterwards on something nothing else looked at — a Node version,
+/// then a token permission. Both took an afternoon to find because every signal
+/// a person reads said the commit was fine.
+///
+/// The credential is what makes this worth pinning rather than just deleting.
+/// A workflow holding a deploy token is the most valuable thing in the
+/// repository to an attacker who lands a pull request, and "we removed it" is
+/// only true until somebody adds it back for a good reason.
 #[test]
-fn deploy_workflow_does_not_pass_wrangler_an_unrecognised_flag() {
-    const DEPLOY_WORKFLOW: &str = include_str!("../.github/workflows/deploy.yml");
+fn ci_holds_no_deploy_credential_and_does_not_deploy() {
+    const CI: &str = include_str!("../.github/workflows/ci.yml");
 
+    let workflows = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/.github/workflows"))
+        .expect("the workflows directory should exist");
+
+    let mut files = Vec::new();
+    for entry in workflows {
+        let path = entry.expect("a readable directory entry").path();
+        let body = std::fs::read_to_string(&path).expect("a readable workflow");
+        files.push((
+            path.file_name().unwrap().to_string_lossy().to_string(),
+            body,
+        ));
+    }
+
+    for (name, body) in &files {
+        let commands = strip_hash_comments(body);
+        assert!(
+            !commands.contains("wrangler"),
+            "{name} invokes wrangler; deploying is Cloudflare's Git integration \
+             now, and a workflow that deploys needs a token"
+        );
+        assert!(
+            !body.contains("CLOUDFLARE_API_TOKEN") && !body.contains("CLOUDFLARE_ACCOUNT_ID"),
+            "{name} references a Cloudflare credential — CI has no reason to \
+             hold one, and a workflow secret is reachable from any pull request \
+             that can change a workflow"
+        );
+    }
+
+    // The gate still has to run on the push that Cloudflare deploys from, or
+    // nothing checks the commit that actually ships.
     assert!(
-        !DEPLOY_WORKFLOW.contains("wrangler deploy --no-cache"),
-        "wrangler deploy in the pinned version does not support --no-cache"
-    );
-    assert!(
-        DEPLOY_WORKFLOW.contains("wrangler deploy"),
-        "the deploy step must still actually deploy"
+        CI.contains("push:") && CI.contains("branches: [main]"),
+        "the gate must run on pushes to main, since that is what deploys"
     );
 }
 
@@ -13615,6 +13610,13 @@ async fn the_policy_permits_no_third_party_origins() {
 /// and every room on the server silently started dropping messages.
 #[tokio::test]
 async fn every_room_history_is_bounded_by_housekeeping_not_only_by_joins() {
+    // `tracing` evaluates a log's fields only when the level is enabled, so
+    // without a subscriber the `info!` inside the trim branch runs but its
+    // arguments do not. That reads as uncovered lines in a branch the test
+    // definitely takes — the instrument disagreeing with the code, which §0.5
+    // says to check before believing either.
+    init_tracing();
+
     let state = Arc::new(AppState::new());
     let overflow = MAX_MESSAGES_PER_ROOM * 3;
 
@@ -15706,12 +15708,13 @@ fn strip_hash_comments(script: &str) -> String {
 /// §6.1 says the gate exists to answer "will this deploy". A gate that cannot
 /// see the deploy's own requirements is not answering it. The requirement lives
 /// in `cloudflare/package.json` under `engines`, once, and this asserts the
-/// workflows agree with it.
+/// workflow agrees with it. Deploying moved to Cloudflare's Git integration,
+/// but the Worker typecheck still runs here and still needs a Node that pnpm
+/// and wrangler can run on.
 #[test]
 fn ci_node_version_satisfies_the_toolchain() {
     const PACKAGE_JSON: &str = include_str!("../cloudflare/package.json");
     const CI: &str = include_str!("../.github/workflows/ci.yml");
-    const DEPLOY: &str = include_str!("../.github/workflows/deploy.yml");
 
     // The declared floor, e.g. `"node": ">=22"`.
     let required: u32 = PACKAGE_JSON
@@ -15730,7 +15733,7 @@ fn ci_node_version_satisfies_the_toolchain() {
         "wrangler needs Node 22 or newer; the declared floor is {required}"
     );
 
-    for (name, workflow) in [("ci.yml", CI), ("deploy.yml", DEPLOY)] {
+    for (name, workflow) in [("ci.yml", CI)] {
         let mut found = 0;
         for (index, _) in workflow.match_indices("node-version: '") {
             let rest = &workflow[index + "node-version: '".len()..];
@@ -15762,14 +15765,9 @@ fn ci_node_version_satisfies_the_toolchain() {
 #[test]
 fn the_workflows_install_with_the_lockfile_that_exists() {
     const CI: &str = include_str!("../.github/workflows/ci.yml");
-    const DEPLOY: &str = include_str!("../.github/workflows/deploy.yml");
     const DEPLOY_SH: &str = include_str!("../deploy.sh");
 
-    for (name, script) in [
-        ("ci.yml", CI),
-        ("deploy.yml", DEPLOY),
-        ("deploy.sh", DEPLOY_SH),
-    ] {
+    for (name, script) in [("ci.yml", CI), ("deploy.sh", DEPLOY_SH)] {
         // Tokens, and only from the commands — not substrings, and not prose.
         // This test failed twice before it passed once: `pnpm install` contains
         // "npm install", and then a comment mentioning "RUSTSEC and npm
@@ -15790,8 +15788,8 @@ fn the_workflows_install_with_the_lockfile_that_exists() {
     }
 
     assert!(
-        DEPLOY.contains("--frozen-lockfile"),
-        "the deploy must install from the lockfile, not update it"
+        CI.contains("--frozen-lockfile"),
+        "CI must install from the lockfile, not update it"
     );
 }
 
@@ -16344,25 +16342,19 @@ fn every_declared_dependency_is_used() {
         ),
     ];
 
-    let sources = [
-        include_str!("../src/main.rs"),
-        include_str!("../src/room.rs"),
-        include_str!("../src/session.rs"),
-        include_str!("../src/state.rs"),
-        include_str!("../src/limits.rs"),
-        include_str!("../src/routes.rs"),
-        include_str!("../src/validation.rs"),
-        include_str!("../src/protocol.rs"),
-        include_str!("../src/identity.rs"),
-        include_str!("../src/security.rs"),
-        include_str!("../src/cleanup.rs"),
-        include_str!("../src/error.rs"),
-        include_str!("../src/config.rs"),
-        include_str!("../src/animals.rs"),
-        include_str!("../src/emoji.rs"),
-        SELF_SOURCE,
-    ]
-    .join("\n");
+    // Read from disk rather than a hand-written list of `include_str!`s: that
+    // list went stale the moment `startup.rs` was split out of `main.rs`, and a
+    // sweep that silently stops seeing a module reports the crates it uses as
+    // dead.
+    let source_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
+    let mut sources = String::new();
+    for entry in std::fs::read_dir(source_dir).expect("src/ should be readable") {
+        let path = entry.expect("a readable entry").path();
+        if path.extension().is_some_and(|e| e == "rs") {
+            sources.push_str(&std::fs::read_to_string(&path).expect("a readable module"));
+            sources.push('\n');
+        }
+    }
 
     let mut unused: Vec<String> = Vec::new();
 
@@ -16550,7 +16542,7 @@ async fn shutting_down_announces_departures_and_clears_the_rooms() {
         rooms.insert("closing".to_string(), room);
     }
 
-    crate::announce_shutdown(&state).await;
+    crate::startup::announce_shutdown(&state).await;
 
     let event = receiver
         .try_recv()
@@ -16584,7 +16576,7 @@ async fn binding_a_port_already_in_use_is_an_error_not_a_panic() {
     let occupied = TcpListener::bind("0.0.0.0:0").await.unwrap();
     let port = occupied.local_addr().unwrap().port();
 
-    let result = crate::bind_listener(port).await;
+    let result = crate::startup::bind_listener(port).await;
 
     assert!(
         result.is_err(),
@@ -16594,7 +16586,7 @@ async fn binding_a_port_already_in_use_is_an_error_not_a_panic() {
     // Released, the same port binds cleanly — so the failure was the conflict
     // rather than anything about the port itself.
     drop(occupied);
-    assert!(crate::bind_listener(port).await.is_ok());
+    assert!(crate::startup::bind_listener(port).await.is_ok());
 }
 
 /// `run` serves on the port it was given, and stops when told to.
@@ -16611,7 +16603,7 @@ async fn run_serves_until_it_is_shut_down() {
 
     let serving = tokio::spawn({
         let state = state.clone();
-        async move { crate::run(state, port).await }
+        async move { crate::startup::run(state, port, std::future::pending()).await }
     });
 
     // The server is up once it answers.
@@ -16763,6 +16755,200 @@ fn every_error_tells_the_client_a_usable_category() {
         assert!(
             !error.public_message().is_empty(),
             "an error with no message tells a client nothing"
+        );
+    }
+}
+
+/// The shutdown sequence runs when the signal resolves, and survives a broken
+/// signal handler.
+///
+/// The signal is a parameter precisely so this is reachable: a test cannot send
+/// itself a SIGINT without killing the test runner. Both arms matter — the
+/// happy one announces departures, and the error arm is what stops a server
+/// with no working signal handler from shutting itself down immediately.
+#[tokio::test]
+async fn the_shutdown_sequence_waits_for_its_signal() {
+    let state = Arc::new(AppState::new());
+    let mut receiver;
+    {
+        let mut rooms = state.rooms.write().await;
+        let mut room = create_room();
+        room.users.insert(
+            "u1".to_string(),
+            connected_user("u1", "otter", "c1", Instant::now()),
+        );
+        receiver = room.sender.subscribe();
+        rooms.insert("closing".to_string(), room);
+    }
+
+    // A signal that has already arrived.
+    crate::startup::wait_then_announce(state.clone(), std::future::ready(Ok(()))).await;
+
+    assert!(
+        receiver.try_recv().is_ok(),
+        "a delivered signal must run the shutdown announcement"
+    );
+    assert!(state.rooms.read().await.is_empty());
+
+    // A signal handler that failed to install must *not* resolve: returning
+    // here would shut the server down the instant it started.
+    let broken = crate::startup::wait_then_announce(
+        Arc::new(AppState::new()),
+        std::future::ready(Err(std::io::Error::other("no signal handler"))),
+    );
+    assert!(
+        timeout(Duration::from_millis(150), broken).await.is_err(),
+        "with no working signal handler there is no shutdown to wait for, so \
+         this must never resolve"
+    );
+}
+
+/// How the server stopped is reported, either way.
+#[test]
+fn a_server_error_is_reported_and_a_clean_stop_is_not_an_error() {
+    // Neither arm returns anything; what is asserted is that both are
+    // executable and neither panics — the error arm in particular, which
+    // otherwise needs a live server to fail mid-flight.
+    crate::startup::log_server_result(Ok(()));
+    crate::startup::log_server_result(Err(std::io::Error::other("connection reset")));
+}
+
+/// The process reports failure through its exit code rather than by exiting.
+///
+/// `std::process::exit` does not return, so a test that reached it would take
+/// the test runner with it — which is why `main_inner` returns an `ExitCode`
+/// and `main` is one line.
+#[tokio::test]
+async fn the_process_exit_code_reports_a_failed_bind() {
+    // Occupy the port the server would use, so the bind fails.
+    let occupied = TcpListener::bind("0.0.0.0:0").await.unwrap();
+    let port = occupied.local_addr().unwrap().port();
+
+    // SAFETY: single-threaded within this test, and the value is removed
+    // immediately after. `PORT` is what the container sets.
+    unsafe { std::env::set_var("PORT", port.to_string()) };
+    let code = crate::startup::main_inner(std::future::pending()).await;
+    unsafe { std::env::remove_var("PORT") };
+
+    assert_eq!(
+        format!("{code:?}"),
+        format!("{:?}", std::process::ExitCode::FAILURE),
+        "a bind failure must leave the process with a failing exit code"
+    );
+}
+
+/// `run` completes cleanly when its shutdown fires.
+///
+/// The success path — bind, serve, shut down, return `Ok` — was unreachable
+/// while `run` reached for `ctrl_c()` itself. Taking the signal as a parameter
+/// is what makes the whole lifecycle testable in a few milliseconds.
+#[tokio::test]
+async fn run_returns_cleanly_when_its_shutdown_fires() {
+    let scout = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = scout.local_addr().unwrap().port();
+    drop(scout);
+
+    let result = timeout(
+        Duration::from_secs(5),
+        crate::startup::run(
+            Arc::new(AppState::new()),
+            port,
+            std::future::ready(Ok::<(), std::io::Error>(())),
+        ),
+    )
+    .await
+    .expect("an already-fired shutdown should stop the server promptly");
+
+    assert!(
+        result.is_ok(),
+        "a clean shutdown is not an error: {result:?}"
+    );
+}
+
+/// The process reports success when it stops cleanly.
+#[tokio::test]
+async fn the_process_exit_code_reports_a_clean_stop() {
+    let scout = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = scout.local_addr().unwrap().port();
+    drop(scout);
+
+    // SAFETY: the value is set and removed within this test; `PORT` is what the
+    // container sets.
+    unsafe { std::env::set_var("PORT", port.to_string()) };
+    let code = timeout(
+        Duration::from_secs(5),
+        crate::startup::main_inner(std::future::ready(Ok::<(), std::io::Error>(()))),
+    )
+    .await
+    .expect("an already-fired shutdown should stop the process promptly");
+    unsafe { std::env::remove_var("PORT") };
+
+    assert_eq!(
+        format!("{code:?}"),
+        format!("{:?}", std::process::ExitCode::SUCCESS),
+        "stopping cleanly must leave a successful exit code"
+    );
+}
+
+/// The coverage exemptions are justified, current, and honest about their size.
+///
+/// Ported from the pinned-dependency list on `cameronaaron.com`, which fails
+/// when a pin catches up to latest so an exemption can never outlive its
+/// reason. Three ways this registry can rot, each checked:
+///
+///   1. An entry with no reason — a number being hidden rather than explained.
+///   2. An entry naming a path that no longer exists.
+///   3. A line count that has drifted. Larger means a new uncovered line got
+///      absorbed into an old exemption; smaller means part of it became
+///      reachable and the entry should shrink or go.
+#[test]
+fn coverage_exemptions_are_justified_and_current() {
+    const EXEMPTIONS: &str = include_str!("../scripts/coverage-exemptions.toml");
+    const COVERAGE_SH: &str = include_str!("../scripts/coverage.sh");
+
+    let mut entries = 0;
+    for block in EXEMPTIONS.split("[[exempt]]").skip(1) {
+        entries += 1;
+
+        let path = block
+            .split_once("path = \"")
+            .and_then(|(_, rest)| rest.split_once('"'))
+            .map(|(p, _)| p)
+            .expect("every exemption names a path");
+
+        assert!(
+            std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR")))
+                .join(path)
+                .exists(),
+            "{path} is exempted from coverage but no longer exists — an \
+             exemption must not outlive the thing it exempts"
+        );
+
+        let reason = block
+            .split_once("reason = \"\"\"")
+            .and_then(|(_, rest)| rest.split_once("\"\"\""))
+            .map(|(r, _)| r.trim())
+            .unwrap_or_default();
+
+        assert!(
+            reason.len() > 80,
+            "{path} is exempted without a real reason; an exclusion with no \
+             explanation is a number being hidden"
+        );
+    }
+
+    assert!(entries >= 3, "the registry should not have been emptied");
+
+    // Whole-file exclusions must be exactly the ones the script passes to
+    // tarpaulin, or the registry describes a gate that is not running.
+    for path in ["src/tests.rs", "src/main.rs"] {
+        assert!(
+            COVERAGE_SH.contains(path),
+            "{path} is exempted in the registry but not excluded by coverage.sh"
+        );
+        assert!(
+            EXEMPTIONS.contains(path),
+            "coverage.sh excludes {path} but the registry does not explain why"
         );
     }
 }

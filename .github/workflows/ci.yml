@@ -3,9 +3,11 @@ name: CI
 on:
   pull_request:
     branches: [main]
-  # On a push to main, deploy.yml calls this workflow and waits for it, so
-  # there is no `push` trigger here — it would run the same gate twice.
-  workflow_call:
+  # Deploying is Cloudflare's Git integration now, not a job here, so this
+  # workflow no longer runs as a called sub-workflow — it triggers on the push
+  # itself. See the note below about what that costs.
+  push:
+    branches: [main]
   workflow_dispatch:
   # A dependency doesn't get less vulnerable between pushes: RUSTSEC and npm
   # advisories are published against versions already pinned in the lockfile.
@@ -16,6 +18,24 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+
+# ---------------------------------------------------------------------------
+# This workflow no longer deploys.
+#
+# Cloudflare builds and deploys from the repository on every push to `main`, so
+# the API token, the wrangler invocation and the whole `deploy` job are gone —
+# along with the class of failure they kept producing: a deploy that failed on
+# a Node version, and then on a token permission, while every signal a person
+# looks at stayed green.
+#
+# **This gives up the property §6.1 was written about.** The gate used to block
+# the deploy; now the two run in parallel and Cloudflare will happily ship a
+# commit whose tests fail. The mitigation is branch protection: require this
+# workflow on pull requests and do not push straight to `main`. That moves the
+# gate from "before the deploy" to "before the merge", which is the same
+# guarantee one step earlier — but it is a repository setting, not something
+# this file can enforce.
+# ---------------------------------------------------------------------------
 
 jobs:
   # One job running the same four commands as the local gate, in the same

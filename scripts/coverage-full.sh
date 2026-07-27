@@ -13,7 +13,7 @@
 
 set -euo pipefail
 
-MINIMUM="${1:-96}"
+MINIMUM="${1:-98}"
 
 cd "$(dirname "$0")/.."
 
@@ -30,5 +30,6 @@ cargo tarpaulin \
     --out Xml --out Stdout \
     --output-dir target/coverage-full \
     --timeout 300 \
+    --exclude-files src/tests.rs src/main.rs \
     --fail-under "$MINIMUM" \
     -- --include-ignored

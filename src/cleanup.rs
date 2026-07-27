@@ -71,13 +71,15 @@ pub async fn cleanup_rooms(state: &Arc<AppState>) {
         };
 
         if room.chat_history.len() > target {
-            info!(
-                room = %room_name,
-                from = room.chat_history.len(),
-                to = target,
-                idle_s = idle_for.as_secs(),
-                "trimming room history"
-            );
+            // Bound outside the macro deliberately. `tracing` evaluates a
+            // log's fields only when the level is enabled, so as arguments
+            // these expressions do not run under a test with no subscriber —
+            // which reads as two uncovered lines inside a branch the test
+            // definitely takes. As statements they are simply always executed,
+            // and what coverage reports about this branch is true.
+            let from = room.chat_history.len();
+            let idle_s = idle_for.as_secs();
+            info!(room = %room_name, from, to = target, idle_s, "trimming room history");
             room.retain_newest(target, &state.memory_tracker);
         }
 
