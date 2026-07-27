@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-MINIMUM="${1:-94}"
+MINIMUM="${1:-95}"
 
 cd "$(dirname "$0")/.."
 

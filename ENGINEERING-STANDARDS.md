@@ -35,19 +35,26 @@ concrete, executable version of "obsessive engineering quality." Concretely:
 | --- | --- |
 | §1 Complexity | `assign_animal_never_repeats_a_connected_name`, memory-pruning tests |
 | §2 Lock discipline | WebSocket integration tests (a held lock deadlocks them) |
-| §3 Memory ceiling | `test_memory_tracker_*`, pruning and trim tests |
+| §3 Memory ceiling | `test_memory_tracker_*`, pruning and trim tests, `every_room_history_is_bounded_by_housekeeping_not_only_by_joins`, `rendered_html_is_bounded_by_the_input_cap` |
+| §3.3 Saturating counters | `releasing_more_than_was_reserved_cannot_wrap_a_counter` |
+| §3.5 Map eviction | `every_client_keyed_map_is_swept_by_housekeeping`, `a_live_connection_counter_survives_the_stale_sweep` |
 | §4 Protocol | `first_frame_is_welcome_with_this_users_identity`, `client_takes_identity_from_welcome_frame_not_cookies` |
-| §5 Blast radius | `rejected_upgrade_releases_its_connection_slot`, `a_full_room_refuses_and_releases_its_reservations` |
+| §5 Blast radius | `rejected_upgrade_releases_its_connection_slot`, `a_full_room_refuses_and_releases_its_reservations`, `a_session_whose_room_disappeared_still_releases_its_slots` |
 | §5.5 CSP | `every_response_carries_security_headers`, `client_script_is_external_so_csp_can_forbid_inline` |
 | §5.6 Privacy | `client_addresses_are_hashed_not_stored_in_the_clear`, `the_upgrade_path_hashes_the_address_at_the_boundary` |
 | §5.7 No third parties | `the_client_makes_no_third_party_requests`, `the_policy_permits_no_third_party_origins` |
 | §5.8 Trust boundary | `client_address_prefers_the_header_cloudflare_sets`, `worker_forwards_the_client_address` |
+| §5.9 Identity is a claim | `a_forged_identity_cookie_cannot_choose_its_own_name_or_id`, `a_cookie_name_never_duplicates_a_name_already_in_the_room`, `a_returning_visitor_keeps_a_roster_name_that_is_free` |
+| §5.10 Saturating admission counters | `releasing_more_than_was_reserved_cannot_wrap_a_counter` |
+| §5.11 Release in a wrapper | `a_session_whose_room_disappeared_still_releases_its_slots` |
 | §6 Ratchet | `cargo fmt`/`clippy -D warnings`/`cargo test`/`scripts/coverage.sh` in CI |
 | §6.8 Boundaries | `the_memory_ceiling_admits_exactly_the_limit`, `an_ip_is_banned_only_past_the_suspicion_threshold` |
 | §7 Engagement | frontend/backend consistency tests (`SHIPPED_CLIENT`) |
-| §8 Naming | `animal_roster_is_sorted_unique_and_well_formed` |
-| §9 Shipped artifact | `router_mounts_every_public_route`, `page_references_the_versioned_script_url` |
-| §10 Client | `empty_chat_placeholder_does_not_alter_container_layout`, `rendered_history_is_trimmed_from_the_dom_not_a_counter`, `the_page_does_not_block_pinch_zoom` |
+| §8 Naming | `animal_roster_is_sorted_unique_and_well_formed`, `the_roster_is_larger_than_a_room_can_ever_be`, `reaction_roster_is_sorted_unique_and_actually_emoji` |
+| §9 Shipped artifact | `router_mounts_every_public_route`, `page_references_the_versioned_script_url`, `every_element_the_client_looks_up_exists_in_the_page`, `the_client_declares_every_screaming_case_constant_it_uses` |
+| §10 Client | `empty_chat_placeholder_does_not_alter_container_layout`, `rendered_history_is_trimmed_from_the_dom_not_a_counter`, `the_page_does_not_block_pinch_zoom`, `images_reserve_their_space_before_they_load` |
+| Attachments | `an_attachment_must_be_the_image_type_it_claims_to_be`, `svg_is_not_an_allowed_attachment_type`, `a_rooms_oldest_images_fade_once_it_is_over_its_attachment_budget`, `images_are_re_encoded_rather_than_sent_as_picked` |
+| Reactions | `reacting_twice_with_the_same_emoji_removes_the_reaction`, `reactions_never_outlive_the_messages_they_belong_to`, `a_reaction_must_be_on_the_roster` |
 
 ---
 
@@ -168,6 +175,15 @@ whole room contends on (§2). Everything off it is paid once.
 | Join / admission | once per connection | O(history) acceptable |
 | Housekeeping sweep | once per 60s | O(rooms × history) acceptable |
 
+The two "acceptable" rows are a budget, not a dumping ground. A bound that runs
+**only** on the join path is not a bound: nothing obliges anybody to join.
+History trimming lived there — `admit_user` trimmed, and `cleanup_rooms` faded
+`main` — so a room that was busy but had no new joiners grew without limit, and
+because the byte ceiling is process-wide, one such room could fill it and make
+every room on the server start dropping messages. **Anything that must always
+hold belongs on the timer**; the join path may repeat it to pay the cost early,
+but must not be the only thing doing it.
+
 ### 1.2 Never shift from the front of a `Vec`
 
 `prune_old_messages` used to call `Vec::remove(0)` in a loop. Each call shifts
@@ -222,6 +238,27 @@ let taken: HashSet<&str> = self.users.values()
 ```
 
 Pinned by `assign_animal_never_repeats_a_connected_name`.
+
+### 1.4a Derive the answer; do not keep a second copy of it
+
+`available_animals` was a free list: names came out when assigned and callers
+put them back when a user was reclaimed. The bookkeeping did not balance. A name
+that never came out of *that room's* list — one carried in on a cookie, or a
+`guest_N` fallback — was pushed back anyway, so the pool grew on every such
+reclaim and filled with strings that were not on the roster. Two copies of "which
+names are free" existed, and only one of them was right.
+
+The fix deletes the second copy rather than repairing it (§0.2, step 2). Whether
+a name is in use is *derived* from `users`, which `assign_animal` was already
+doing to build its `taken` set — so the free list was never load-bearing, only
+the rotation order was. The pool is now a rotation cursor that never changes
+membership: every name drawn is pushed to the back whether or not it was handed
+out, and the pool is always exactly the roster in this room's order.
+
+This is the same shape as §10.1 on the client (`messageCount` drifting from the
+real number of DOM nodes) and §3.4 on the server. **A derived quantity stored
+separately is a quantity that will disagree with itself.** Keep the copy only
+where recomputation is genuinely too expensive, and say so where you keep it.
 
 ### 1.5 Slack keeps linear work off the hot path
 
@@ -327,6 +364,39 @@ wherever it is free."
 otherwise unbounded. `cleanup_stale` drops entries older than
 `IP_COUNTER_RETENTION`, so the map is bounded by *recent* clients, not by every
 client ever seen. Any new map keyed by client-supplied data needs the same.
+
+**Checking expiry on read is not an eviction path.** `SecurityManager` held two
+such maps and looked expired for neither: `check_ip` tested a ban's age on every
+read but never removed it, and a suspicion record was never removed at all.
+Reading the entry and deciding it no longer *means* anything bounds the
+entry's effect, not its existence — the maps still grew by one entry per address
+ever seen. The two are easy to confuse because the expiry constant appears in
+the code and looks like it is doing the work.
+
+Every such map is swept from one place, `AppState::cleanup`, so adding a map
+without adding a sweep is visible at a single line. Pinned by
+`every_client_keyed_map_is_swept_by_housekeeping`.
+
+**And eviction must not evict something live.** `ip_counters` entries were
+stamped when a connection was *added*, so a session outlasting the retention
+window — which any user who keeps talking does — had its counter swept out from
+under it, silently lifting the per-IP limit for that address. A counter that is
+still counting is not stale at any age; age only decides for entries at zero.
+
+### 3.6 Bound what you store, not just what you accept
+
+`MAX_MESSAGE_LEN` bounds the Markdown a user sends. What the server *stores in
+history and broadcasts to every socket in the room* is the rendered HTML, and
+rendering amplifies: measured at 7.2x for `[a](b)` repeated to the input cap —
+8 KB in, 57 KB out. The input cap therefore bounded nothing that costs memory or
+bandwidth, while looking exactly like it did.
+
+Wherever input is transformed before being retained, the ceiling belongs on the
+*output* of the transformation. `MAX_RENDERED_MESSAGE_LEN` is the ceiling, and
+its value is derived rather than chosen: 5x, because escaping expands by at most
+5x (`&` → `&amp;`, measured 8 000 → 40 000), so the escaped-plain-text fallback
+is guaranteed to fit under it. A fallback that can itself breach the limit is
+not a fallback.
 
 ---
 
@@ -489,6 +559,68 @@ therefore a **courtesy bound**; the per-connection and global ceilings are the
 real protection. Documented at `extract_client_ip` so nobody mistakes one for
 the other.
 
+### 5.9 `HttpOnly` is not an integrity control
+
+Both identity cookies are `HttpOnly`, which is why the client cannot read them
+(§4.1). It is easy to slide from there into treating what comes *back* in the
+`Cookie` header as server-issued. It is not. `HttpOnly` keeps a page's script
+away from the cookie jar; it does nothing about the person operating the
+browser, who can send any header they like with `curl`.
+
+`admit_user` took `animal_name` from the cookie verbatim — so a visitor could
+choose their own display name, make it a megabyte long, or take the name of
+somebody already in the room, and the server stored it and broadcast it to
+everyone. The only reason it was not also an XSS vector is that the current
+client happens to render names with `textContent` — a property of one client,
+not of the server, which is the same argument already made about `sanitize_reply`
+and just as thin.
+
+**The strongest form of validation is a closed set.** An animal name is one of
+`ANIMAL_NAMES` or it is not a name; a user id parses as a UUID or it is not an
+id. Neither has an escaping bug, a length to bound, or an encoding to get
+wrong — the questions do not arise. Reach for a closed set before reaching for a
+sanitiser.
+
+### 5.10 A counter that decides admission must never wrap
+
+Every counter compared against a ceiling — connection slots, per-IP counts,
+retained bytes — has the property that one unbalanced decrement does not merely
+misreport. It wraps to `usize::MAX`, the comparison says "full", and the server
+refuses everything for the rest of the process's life, with no traffic to point
+at. That is a permanent outage from a single arithmetic slip.
+
+`MemoryTracker::remove_bytes` had guarded against exactly this since it was
+written, and its doc comment explained why. The connection counters had the
+identical shape and none of the protection, because the reasoning lived in one
+function's comment instead of in a helper every counter had to go through.
+**When the same reasoning applies to more than one call site, make it a function,
+not a comment** — `saturating_dec` in `limits.rs`. Pinned by
+`releasing_more_than_was_reserved_cannot_wrap_a_counter`.
+
+### 5.11 Release in a wrapper, not at every exit
+
+The session's teardown used to be the duty of each `return` inside
+`handle_websocket`, and one of them — "room vanished between admission and
+upgrade" — did not do it, holding that connection's slots until the process
+died. This is §5.2 recurring: the same defect class, reintroduced one `return`
+at a time, in the function whose comment already described the class.
+
+Ordering fixes admission because admission is straight-line. A session is not:
+it has four raced tasks and several early exits, so "remember to release"
+is a rule that must hold at every future exit anyone adds. Splitting the body
+into an inner function and releasing in the wrapper makes it hold at exits that
+do not exist yet:
+
+```rust
+pub async fn handle_websocket(...) {
+    run_session(...).await;   // every early return lands here
+    cleanup_user(...).await;  // exactly one teardown, unreachable to route around
+}
+```
+
+**Prefer a structure where the invariant cannot be violated over a rule that
+must be remembered.** A test can only cover the exits that exist today.
+
 ---
 
 ## 6. The regression ratchet — how standards stay upheld
@@ -550,7 +682,7 @@ internal organisation can change without the test file silently depending on it.
 
 Two different questions, and the second is the one that catches bad tests.
 
-`scripts/coverage.sh` enforces a **line-coverage floor** (currently 93%). The
+`scripts/coverage.sh` enforces a **line-coverage floor** (currently 95%). The
 floor only ratchets up. If coverage drops, the fix is a test, not a smaller
 number.
 
@@ -719,11 +851,11 @@ lore.
 | `chat_history` as `VecDeque` | **Deferred** — would make front-removal O(1) natively, but `drain(..k)` already made pruning O(n) once per prune, and `Vec` keeps slicing/indexing that ~40 tests use | Reopens if pruning ever moves onto the per-message path, where the constant factor would matter. |
 | Per-IP rate limiting as real protection | **Rejected as a security boundary** (§5.5) — `X-Forwarded-For` is attacker-controlled | Reopens if the container stops being reachable except through the Worker, verifiable at the network layer. |
 | Sliding-window rate limiter | **Rejected** — needs a timestamp per event; the fixed window's edge behaviour is imperceptible in chat | Reopens if burst abuse is observed crossing window boundaries in production. |
-| `cargo-audit` / `cargo-deny` in CI | **Not yet added** — CI currently gates fmt, clippy, tests, build | Add when a dependency CVE is missed by manual review, or before the dependency count grows materially. |
+| `cargo-deny` in CI | **Not added** — `cargo audit` and `pnpm audit` now run in CI on every push and weekly, covering advisories on both dependency trees. `cargo-deny` would add licence and duplicate-version policy on top | Add when a licence obligation or a duplicate-version conflict actually bites. Advisories are already covered. |
 | Removing the double `ammonia::clean` | **Deferred** — `validate_message` sanitises to detect markup-only messages, then `render_message_html` sanitises the rendered HTML. Two passes over ≤8 KB, microseconds | Reopens if message throughput is ever measured as CPU-bound. |
 | Load testing | **Never done** — every performance claim here is structural (complexity, lock duration), not empirical throughput | Before raising `MAX_CONCURRENT_USERS` (400) or `MAX_USERS_PER_ROOM` (100). Those numbers are currently unvalidated assumptions, and §0.5 says so out loud. |
 | Injectable clock for the limiters | **Rejected** (§6.6) — would kill four surviving mutants that differ only when a duration is *exactly* its threshold | Reopens if a timing bug is ever observed at a limit boundary in production, or if the limiters need testable time for another reason. |
-| 100% line coverage | **Not the target** — the floor is 93% and ratchets. The remainder is the process shell (`main`, signal handling) and socket-failure paths inside the four connection tasks, which need a socket to fail at an exact instant | Reopens for any *reachable* branch: those are gaps, not exclusions. Chasing the rest would mean flaky timing tests, which §6.4 rules out as worse than none. |
+| 100% line coverage | **Not the target** — the floor is 95% and ratchets. The remainder is the process shell (`main`, signal handling) and socket-failure paths inside the four connection tasks, which need a socket to fail at an exact instant | Reopens for any *reachable* branch: those are gaps, not exclusions. Chasing the rest would mean flaky timing tests, which §6.4 rules out as worse than none. |
 | Edge-caching the room pages | **Rejected** — the page is per-room and sets identity cookies, so a shared cache would serve one visitor's `Set-Cookie` to another | Reopens only if identity moves entirely to the socket and the page becomes byte-identical for all visitors. |
 
 ---

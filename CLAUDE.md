@@ -31,11 +31,11 @@ Cloudflare Container behind a Worker.
 
 ```bash
 cargo run                       # dev server → http://localhost:3000/main
-cargo test --all-features       # 565 tests; all must pass before committing
+cargo test --all-features       # 602 tests; all must pass before committing
 cargo fmt --all -- --check      # formatting is a gate, not a preference
 cargo clippy --all-targets --all-features -- -D warnings   # warnings are failures
 cargo build --release           # LTO'd binary for the container image
-scripts/coverage.sh             # line-coverage floor (94%), ratchets up only
+scripts/coverage.sh             # line-coverage floor (95%), ratchets up only
 ```
 
 Those five are the gate, and they are exactly what `.github/workflows/ci.yml`
@@ -113,6 +113,7 @@ Every module has one job and says so in its header comment. Nothing is named
 | --- | --- |
 | `config.rs` | **Every tunable.** No magic numbers anywhere else. |
 | `animals.rs` | The animal-name roster (sorted, deduped, enforced by test). |
+| `emoji.rs` | The reaction emoji roster — the closed set a reaction may be. |
 | `protocol.rs` | The wire format. Changing it is a client change too. |
 | `error.rs` | `ChatError` → HTTP status mapping. |
 | `identity.rs` | The two identity cookies and the extractor for them. |
@@ -121,6 +122,7 @@ Every module has one job and says so in its header comment. Nothing is named
 | `state.rs` | `AppState`, graceful shutdown, periodic resource cleanup. |
 | `validation.rs` | Input validation and the Markdown → sanitised-HTML pipeline. |
 | `routes.rs` | Plain HTTP handlers. |
+| `security.rs` | Response security headers, the CSP, the WebSocket origin check. |
 | `session.rs` | The WebSocket lifecycle. |
 | `cleanup.rs` | The room housekeeping pass. |
 | `main.rs` | Entry point, router construction, housekeeping loops. |
@@ -142,8 +144,13 @@ rather than a hand-assembled copy of it
 | `heartbeat_task` | app-level `Heartbeat` frame + idle eviction |
 
 They are **raced, not joined**: a dead socket surfaces in exactly one of them,
-and the first to notice tears the whole session down. Whichever finishes first,
-`cleanup_user` runs exactly once after the `select!`.
+and the first to notice tears the whole session down.
+
+`handle_websocket` is a wrapper: it calls `run_session` (the four tasks and
+every early exit) and then `cleanup_user`, unconditionally. That is the *only*
+teardown call site, so no exit inside the session — including ones added
+later — can skip releasing the connection. It used to be each `return`'s job,
+and one of them did not do it. See ENGINEERING-STANDARDS.md §5.11.
 
 ## Critical constraints
 
@@ -336,22 +343,102 @@ The server checks `CF-Connecting-IP` first. Reading only `X-Forwarded-For`, as
 it used to, meant every visitor arrived as the same address — turning the
 per-IP connection limit into a global limit of three.
 
+### 20. An identity cookie is a claim, and the roster is a closed set
+
+`HttpOnly` stops a *page's script* reading the cookies. It does nothing about
+the person driving the browser, who can send any `Cookie` header they like.
+`admit_user` used to take `animal_name` verbatim, so a visitor could pick their
+own display name, make it a megabyte long, or take a name somebody in the room
+was already using — and the server stored it and broadcast it to everyone.
+
+Now the id must parse as a UUID and the name must be on `ANIMAL_NAMES` *and*
+free in this room (`RoomState::claim_animal`); otherwise the visitor gets a
+fresh assignment. A closed set has no escaping bug and no length to bound. See
+ENGINEERING-STANDARDS.md §5.9.
+
+### 21. Every room's history is trimmed by the timer, not only on join
+
+Trimming used to happen on the join path, plus the `main` fade. A room that was
+busy but had no new joiners therefore grew without limit, and since the byte
+ceiling is process-wide, one such room could exhaust it and make **every** room
+on the server silently start dropping messages. `cleanup_rooms` now bounds every
+room to `MAX_MESSAGES_PER_ROOM`; `main` still fades harder when idle. §1.1.
+
+### 22. The message budget is spent by messages
+
+`can_send_message` used to be charged for every client event. The client sends
+`Typing{true}` on the first keystroke and `Typing{false}` when the message goes,
+so each message cost three units of a thirty-unit window and the real limit was
+ten a minute, not the thirty `MAX_MESSAGES_PER_WINDOW` advertises. Typing and
+read receipts are bounded by their own O(1) throttles instead.
+
+The same rule caught a second instance in the reaction path: the throttle was
+stamped *before* the emoji and message id were validated, so a refused event
+spent the budget belonging to the next one and a perfectly good reaction
+vanished with nothing logged. **Validate first, then spend** — the same ordering
+constraint #1 uses for admission. A refused event did no work worth rationing.
+
+### 23. An image lives in the room's memory, and fades like everything else
+
+There is no object store and no database, so an attachment is bytes in
+`chat_history`, not a file with a URL. Nor could it be a link: the CSP names no
+external origin, and fetching a remote image would tell that host the address of
+every visitor in the room (§5.7). `img-src 'self' data:` is exactly what an
+inline attachment needs.
+
+That makes every attachment constant a memory decision. The client downscales
+and re-encodes in a canvas — which also drops EXIF, so a photo's coordinates do
+not travel with it — until it fits `MAX_ATTACHMENT_BYTES`. Past
+`MAX_ROOM_ATTACHMENT_BYTES` a room's **oldest payloads** are dropped while their
+messages stay, marked `faded`: the conversation keeps its shape and only the
+pictures age out. One room full of photographs must not be able to spend the
+process-wide ceiling every other room needs (§1.1).
+
+The declared MIME type is a claim; `sanitize_attachment` checks it against the
+payload's own magic bytes and stores the *sniffed* type. **`image/svg+xml` is
+absent from `ALLOWED_ATTACHMENT_MIMES` and must stay absent** — an SVG is a
+document that can carry script.
+
+### 24. A reaction is a closed set, and lives beside the history
+
+Reactions are stored per message and rebroadcast, so the emoji is checked
+against `emoji.rs` rather than sanitised — the same reasoning as animal names
+(§5.9). They live in `RoomState::reactions`, keyed by message id, **not** inside
+the message: applying a reaction has to be O(1), and finding the message in
+`chat_history` would be a scan on a per-event path (§1.1).
+
+Being a map keyed by message id, it needs an eviction path like any other
+(§3.5). Every path that removes a message releases its reactions, and
+`reactions_never_outlive_the_messages_they_belong_to` walks all three of them.
+
+`reacted` is resolved per viewer as history is sent, so the server never ships
+one user's list of reactors to another.
+
 ## Protocol
 
 ### Client → Server
 
 ```json
-{ "type": "Message", "text": "hello", "reply_to": { "message_id": "...", "author_name": "...", "preview_text": "..." } }
+{ "type": "Message", "text": "hello",
+  "reply_to": { "message_id": "...", "author_name": "...", "preview_text": "..." },
+  "attachment": { "mime": "image/webp", "data": "<base64>", "width": 1280, "height": 853 } }
 { "type": "Typing", "is_typing": true }
 { "type": "ReadReceipt", "message_id": "<uuid>" }
+{ "type": "React", "message_id": "<uuid>", "emoji": "🔥" }
 ```
+
+`text` and `attachment` are each optional *on their own* but not together: an
+image with no caption is a message, an empty message is not.
 
 ### Server → Client
 
 ```json
 { "type": "Welcome", "user_id": "<uuid>", "animal_name": "otter" }
-{ "type": "Message", "message": { "message_id": "<uuid>", "user_id": "...", "animal_name": "otter", "text": "<sanitised html>", "timestamp": "<ms>" } }
+{ "type": "Message", "message": { "message_id": "<uuid>", "user_id": "...", "animal_name": "otter", "text": "<sanitised html>", "timestamp": "<ms>",
+    "attachment": { "mime": "image/webp", "data": "<base64>", "width": 1280, "height": 853, "faded": false },
+    "reactions": [ { "emoji": "🔥", "count": 3, "reacted": true } ] } }
 { "type": "System", "event": { "UserJoined": { "user_id": "...", "animal_name": "otter" } } }
+{ "type": "System", "event": { "Reaction": { "message_id": "<uuid>", "user_id": "...", "emoji": "🔥", "active": true, "count": 3 } } }
 { "type": "UserCount", "count": 5 }
 { "type": "Heartbeat" }
 { "type": "ReconnectToken", "token": "<uuid>" }
@@ -377,7 +464,7 @@ Frame order on connect is **guaranteed**: `Welcome`, then history, then
 
 ## Tests
 
-`src/tests.rs` — 565 tests, one file, run with `cargo test --all-features`.
+`src/tests.rs` — 602 tests, one file, run with `cargo test --all-features`.
 Notable classes:
 
 | Class | Pins |
@@ -399,8 +486,8 @@ Run a subset: `cargo test --all-features roster`
 **waits for CI to pass first**. The Worker and container deploy together.
 
 ```bash
-./deploy.sh                            # manual: clear Docker cache, npm ci, deploy
-cd cloudflare && npx wrangler deploy   # what deploy.sh ultimately runs
+./deploy.sh                            # manual: clear Docker cache, pnpm install, deploy
+cd cloudflare && pnpm exec wrangler deploy   # what deploy.sh ultimately runs
 ```
 
 The container image builds from `Dockerfile.cloudflare`, referenced from
