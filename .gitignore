@@ -27,3 +27,7 @@ cloudflare/.wrangler/
 *.swp
 *.swo
 *~
+
+# Mutation testing output
+mutants.out/
+mutants.out.old/
