@@ -1,22 +1,31 @@
 #!/bin/bash
-# Deploy script with automatic Docker cache busting for Cloudflare Containers
+# Manual deploy to Cloudflare Workers + Containers.
+#
+# The normal path is pushing to main, which deploys via
+# .github/workflows/deploy.yml only after the CI gate passes. This script is
+# for forcing a deploy or testing this specific path, and it runs the same gate
+# first — a manual deploy is not an excuse to skip it.
 
-set -e
+set -euo pipefail
 
-echo "🚀 Deploying to Cloudflare with cache bust..."
+cd "$(dirname "$0")"
 
-# Clear Docker builder cache to force fresh build
+echo "🔎 Running the gate before deploying..."
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-features
+
+# Cloudflare builds the image from Dockerfile.cloudflare with the repo root as
+# its context. Clearing the builder cache avoids shipping a stale layer.
 echo "🧹 Clearing Docker builder cache..."
 docker builder prune -af > /dev/null 2>&1 || true
 
-# Navigate to cloudflare directory and deploy
-cd "$(dirname "$0")/cloudflare"
+cd cloudflare
 
-echo "📦 Installing dependencies..."
+echo "📦 Installing worker dependencies..."
 npm ci
 
-echo "🚢 Deploying to Cloudflare Workers + Containers..."
+echo "🚢 Deploying..."
 npx wrangler deploy
 
-echo "✅ Deployment complete!"
-echo "🌍 Live at: https://infinite-chat.cameronaaron1.workers.dev"
+echo "✅ Deployment complete — https://thehellisthis.com"

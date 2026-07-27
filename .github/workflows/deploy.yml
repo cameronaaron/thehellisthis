@@ -6,7 +6,15 @@ on:
       - main
 
 jobs:
+  # Deploying is what makes a red gate matter. This workflow used to run
+  # independently of CI, so a push with failing tests — or failing clippy, which
+  # was red and unnoticed for some time — deployed anyway.
+  # See ENGINEERING-STANDARDS.md §6.1.
+  gate:
+    uses: ./.github/workflows/ci.yml
+
   deploy:
+    needs: gate
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code

@@ -1,53 +1,68 @@
 name: CI
 
 on:
-  push:
-    branches: [ main ]
   pull_request:
-    branches: [ main ]
+    branches: [main]
+  # On a push to main, deploy.yml calls this workflow and waits for it, so
+  # there is no `push` trigger here — it would run the same gate twice.
+  workflow_call:
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
 jobs:
-  fmt:
-    name: Rustfmt
+  # One job running the same four commands as the local gate, in the same
+  # order. Split jobs would parallelise better but would no longer answer the
+  # question that matters: "does the gate pass?" — see ENGINEERING-STANDARDS.md
+  # §6.1. Compilation is shared across all four steps, which more than pays for
+  # the lost parallelism.
+  gate:
+    name: Gate (fmt, clippy, test, release)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
-      - run: cargo fmt --all -- --check
+          components: rustfmt, clippy
 
-  clippy:
-    name: Clippy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --all-targets --all-features -- -D warnings
 
-  test:
-    name: Tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo test --all-features
+      - name: Formatting
+        run: cargo fmt --all -- --check
 
-  build:
-    name: Build (release)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release
-      - name: Verify binary
+      - name: Clippy (warnings are failures)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Tests
+        run: cargo test --all-features
+
+      - name: Release build
+        run: cargo build --release
+
+      - name: Verify binary exists
         run: test -f target/release/infinite-chat
+
+  # The Worker is TypeScript and deploys alongside the container; a type error
+  # here fails the deploy after the Rust gate has already passed.
+  worker:
+    name: Worker typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: 'cloudflare/package-lock.json'
+
+      - name: Install
+        working-directory: cloudflare
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: cloudflare
+        run: npx tsc --noEmit
