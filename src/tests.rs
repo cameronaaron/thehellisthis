@@ -5,7 +5,7 @@
 // to, and third-party types are named here rather than inherited from whatever
 // `main.rs` happened to import.
 use crate::animals::ANIMAL_NAMES;
-use crate::cleanup::cleanup_rooms;
+use crate::cleanup::{cleanup_rooms, cleanup_rooms_at};
 use crate::config::*;
 use crate::emoji::{REACTION_EMOJI, is_reaction_emoji};
 use crate::error::ChatError;
@@ -8207,6 +8207,15 @@ async fn test_version_is_set() {
 // constants. They MUST fail if timing values drift apart.
 
 /// The embedded HTML - same source used by the server
+/// Serialises the tests that set `PORT`.
+///
+/// Environment variables are process-global and the suite runs in parallel, so
+/// two tests setting and removing the same one race: either can read the
+/// other's value, or find it already cleared. It did not fail locally and did
+/// fail when cargo-mutants ran the baseline in a copied tree, which is the
+/// worst shape a test failure comes in.
+static PORT_ENV: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// This file, for the sweeps that read the suite itself.
 const SELF_SOURCE: &str = include_str!("tests.rs");
 
@@ -16826,6 +16835,12 @@ async fn the_process_exit_code_reports_a_failed_bind() {
 
     // SAFETY: single-threaded within this test, and the value is removed
     // immediately after. `PORT` is what the container sets.
+    // Held for the whole window: another test reading or clearing `PORT`
+    // mid-flight is a race.
+    let _env = PORT_ENV.lock().await;
+
+    // SAFETY: the lock makes this the only test touching `PORT`, and the value
+    // is removed before the lock is released.
     unsafe { std::env::set_var("PORT", port.to_string()) };
     let code = crate::startup::main_inner(std::future::pending()).await;
     unsafe { std::env::remove_var("PORT") };
@@ -16874,6 +16889,12 @@ async fn the_process_exit_code_reports_a_clean_stop() {
 
     // SAFETY: the value is set and removed within this test; `PORT` is what the
     // container sets.
+    // Held for the whole window: another test reading or clearing `PORT`
+    // mid-flight is a race.
+    let _env = PORT_ENV.lock().await;
+
+    // SAFETY: the lock makes this the only test touching `PORT`, and the value
+    // is removed before the lock is released.
     unsafe { std::env::set_var("PORT", port.to_string()) };
     let code = timeout(
         Duration::from_secs(5),
@@ -18058,5 +18079,418 @@ fn nothing_is_public_only_for_its_own_test() {
         "these are exported but called only from tests — a function whose only \
          caller is the test written for it is dead code with a green coverage \
          report: {dead:#?}"
+    );
+}
+
+/// Every housekeeping boundary, tested exactly on the boundary.
+///
+/// Three mutants survived here — `>` reading as `>=` for the retention and the
+/// trim, and `&&` reading as `||` for the fade — because a test using its own
+/// `Instant::now()` can get close to a threshold but never land on it. Passing
+/// the instant in makes the edge reachable, and the edge is where the meaning
+/// is: "retained for exactly the retention period" decides whether somebody
+/// gets their name back.
+#[tokio::test]
+async fn the_housekeeping_boundaries_are_exact() {
+    let now = Instant::now();
+
+    // ---- Reclamation: exactly the retention is still retained -------------
+    let state = Arc::new(AppState::new());
+    {
+        let mut rooms = state.rooms.write().await;
+        let mut room = create_room();
+        for (uid, since) in [
+            ("exactly", now - DISCONNECTED_USER_RETENTION),
+            (
+                "past",
+                now - DISCONNECTED_USER_RETENTION - Duration::from_nanos(1),
+            ),
+        ] {
+            let mut user = connected_user(uid, "otter", "c", now);
+            user.connection_state = ConnectionState::Disconnected { since };
+            room.users.insert(uid.to_string(), user);
+        }
+        // Someone connected, so the room is not deleted out from under this.
+        room.users.insert(
+            "here".to_string(),
+            connected_user("here", "badger", "c", now),
+        );
+        rooms.insert("retention".to_string(), room);
+    }
+
+    cleanup_rooms_at(&state, now).await;
+
+    let rooms = state.rooms.read().await;
+    let users = &rooms.get("retention").unwrap().users;
+    assert!(
+        users.contains_key("exactly"),
+        "disconnected for *exactly* the retention period is still retained"
+    );
+    assert!(
+        !users.contains_key("past"),
+        "one nanosecond past it is reclaimed"
+    );
+    drop(rooms);
+
+    // ---- The fade applies to `main`, and only to `main` -------------------
+    let state = Arc::new(AppState::new());
+    let tracker = MemoryTracker::new();
+    {
+        let mut rooms = state.rooms.write().await;
+        for name in [MAIN_ROOM, "ordinary"] {
+            let mut room = create_room();
+            for i in 0..(MAIN_ROOM_FADE_KEEP + 20) {
+                message_in(&mut room, &tracker, &format!("m{i}"));
+            }
+            // Idle by exactly the fade time.
+            room.last_activity = now - MAIN_ROOM_FADE_IDLE;
+            room.users.insert(
+                "here".to_string(),
+                connected_user("here", "otter", "c", now),
+            );
+            rooms.insert(name.to_string(), room);
+        }
+    }
+
+    cleanup_rooms_at(&state, now).await;
+
+    let rooms = state.rooms.read().await;
+    assert_eq!(
+        rooms.get(MAIN_ROOM).unwrap().chat_history.len(),
+        MAIN_ROOM_FADE_KEEP,
+        "`main` idle by exactly the fade time fades"
+    );
+    assert_eq!(
+        rooms.get("ordinary").unwrap().chat_history.len(),
+        MAIN_ROOM_FADE_KEEP + 20,
+        "an ordinary room that is equally idle does not — the fade is `main` \
+         *and* idle, not `main` *or* idle"
+    );
+    drop(rooms);
+
+    // ---- The trim boundary: exactly the cap is left alone -----------------
+    let state = Arc::new(AppState::new());
+    {
+        let mut rooms = state.rooms.write().await;
+        let mut room = create_room();
+        for i in 0..MAX_MESSAGES_PER_ROOM {
+            message_in(&mut room, &tracker, &format!("m{i}"));
+        }
+        room.last_activity = now;
+        room.users.insert(
+            "here".to_string(),
+            connected_user("here", "otter", "c", now),
+        );
+        rooms.insert("at-the-cap".to_string(), room);
+    }
+
+    let before = state
+        .rooms
+        .read()
+        .await
+        .get("at-the-cap")
+        .unwrap()
+        .chat_history[0]
+        .message_id;
+
+    cleanup_rooms_at(&state, now).await;
+
+    let rooms = state.rooms.read().await;
+    let room = rooms.get("at-the-cap").unwrap();
+    assert_eq!(
+        room.chat_history.len(),
+        MAX_MESSAGES_PER_ROOM,
+        "a history at exactly the cap must not be trimmed"
+    );
+    assert_eq!(
+        room.chat_history[0].message_id, before,
+        "and specifically must not lose its oldest message"
+    );
+}
+
+/// A room is deleted at exactly the grace period, not a moment before.
+#[tokio::test]
+async fn the_empty_room_grace_period_is_exact() {
+    let now = Instant::now();
+    let state = Arc::new(AppState::new());
+    {
+        let mut rooms = state.rooms.write().await;
+        for (name, last_activity) in [
+            (
+                "just-inside",
+                now - EMPTY_ROOM_CLEANUP_DELAY + Duration::from_nanos(1),
+            ),
+            ("exactly", now - EMPTY_ROOM_CLEANUP_DELAY),
+        ] {
+            let mut room = create_room();
+            let mut gone = connected_user("u", "otter", "c", now);
+            gone.connection_state = ConnectionState::Disconnected { since: now };
+            room.users.insert("u".to_string(), gone);
+            room.last_activity = last_activity;
+            rooms.insert(name.to_string(), room);
+        }
+    }
+
+    cleanup_rooms_at(&state, now).await;
+
+    let rooms = state.rooms.read().await;
+    assert!(
+        rooms.contains_key("just-inside"),
+        "a nanosecond short of the grace period, the room survives"
+    );
+    assert!(
+        !rooms.contains_key("exactly"),
+        "at exactly the grace period, it is deleted"
+    );
+}
+
+/// Deleting a room returns its messages' bytes to the process budget.
+///
+/// `freed > 0` mutated to `== 0` and to `< 0` and both survived: nothing
+/// asserted that the global tracker actually goes down when a room is deleted.
+/// Left unreturned, the process believes it is holding memory that no longer
+/// exists, and after enough rooms have come and gone it refuses every message
+/// while nearly empty — the same wedge as an underflowed counter, arrived at
+/// from the other direction.
+#[tokio::test]
+async fn deleting_a_room_returns_its_bytes_to_the_process_budget() {
+    let now = Instant::now();
+    let state = Arc::new(AppState::new());
+
+    let room_bytes;
+    {
+        let mut rooms = state.rooms.write().await;
+        let mut room = create_room();
+        for i in 0..8 {
+            room.add_message(
+                OutgoingMessage {
+                    message_id: Uuid::new_v4(),
+                    user_id: "u".to_string(),
+                    animal_name: "otter".to_string(),
+                    text: format!("m{i}"),
+                    timestamp: "1700000000000".to_string(),
+                    reply_to: None,
+                    attachment: None,
+                },
+                &state.memory_tracker,
+            );
+        }
+        room_bytes = room
+            .chat_history
+            .iter()
+            .map(|m| m.estimate_size())
+            .sum::<usize>();
+
+        let mut gone = connected_user("u", "otter", "c", now);
+        gone.connection_state = ConnectionState::Disconnected { since: now };
+        room.users.insert("u".to_string(), gone);
+        room.last_activity = now - EMPTY_ROOM_CLEANUP_DELAY - Duration::from_secs(1);
+        rooms.insert("doomed".to_string(), room);
+    }
+
+    assert_eq!(
+        state.memory_tracker.total_bytes.load(Ordering::SeqCst),
+        room_bytes,
+        "the tracker should be holding exactly this room's messages"
+    );
+
+    cleanup_rooms_at(&state, now).await;
+
+    assert!(!state.rooms.read().await.contains_key("doomed"));
+    assert_eq!(
+        state.memory_tracker.total_bytes.load(Ordering::SeqCst),
+        0,
+        "deleting the room must return every byte it was holding"
+    );
+}
+
+/// Deleting an empty room reclaims nothing, and does not underflow.
+#[tokio::test]
+async fn deleting_an_empty_room_reclaims_nothing() {
+    let now = Instant::now();
+    let state = Arc::new(AppState::new());
+
+    // Another room's bytes, which must be left alone.
+    state.memory_tracker.add_bytes(5_000);
+
+    {
+        let mut rooms = state.rooms.write().await;
+        let mut room = create_room();
+        let mut gone = connected_user("u", "otter", "c", now);
+        gone.connection_state = ConnectionState::Disconnected { since: now };
+        room.users.insert("u".to_string(), gone);
+        room.last_activity = now - EMPTY_ROOM_CLEANUP_DELAY - Duration::from_secs(1);
+        rooms.insert("empty".to_string(), room);
+    }
+
+    cleanup_rooms_at(&state, now).await;
+
+    assert!(!state.rooms.read().await.contains_key("empty"));
+    assert_eq!(
+        state.memory_tracker.total_bytes.load(Ordering::SeqCst),
+        5_000,
+        "a room with no messages returns nothing, and takes nothing else with it"
+    );
+}
+
+/// Captures `tracing` output so a test can assert what an operator would see.
+///
+/// Scoped, not global: `with_default` installs it for one closure, so this does
+/// not fight the `init_tracing` other tests call. Without it, everything a
+/// human reads to understand a running server — which room faded, who was
+/// evicted — is behaviour nothing checks. Mutation testing made that concrete:
+/// the guard around the trim log could be flipped three ways and no test
+/// noticed, because no test read the log.
+#[derive(Clone, Default)]
+struct CapturedLogs(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl CapturedLogs {
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().unwrap()).to_string()
+    }
+}
+
+impl std::io::Write for CapturedLogs {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedLogs {
+    type Writer = Self;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+/// Runs `body` with logging captured, and returns what was logged.
+async fn capturing_logs<F, Fut>(body: F) -> String
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    let logs = CapturedLogs::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(logs.clone())
+        .with_ansi(false)
+        .with_max_level(tracing::Level::INFO)
+        .finish();
+
+    // `with_default` is scoped to this task rather than global, so it does not
+    // conflict with the subscriber `init_tracing` may already have installed.
+    let guard = tracing::subscriber::set_default(subscriber);
+    body().await;
+    drop(guard);
+
+    logs.text()
+}
+
+/// A trim is reported, and a pass that trims nothing says nothing.
+///
+/// The log is what an operator reads to understand a running server, so "did it
+/// trim" being announced only when it actually trimmed is part of the contract.
+/// Three mutants lived in that guard because nothing read the output.
+#[tokio::test]
+async fn housekeeping_reports_a_trim_only_when_it_trims() {
+    let now = Instant::now();
+    let tracker = MemoryTracker::new();
+
+    // A room over the cap: the trim happens and is announced.
+    let state = Arc::new(AppState::new());
+    {
+        let mut rooms = state.rooms.write().await;
+        let mut room = create_room();
+        for i in 0..(MAX_MESSAGES_PER_ROOM + 5) {
+            message_in(&mut room, &tracker, &format!("m{i}"));
+        }
+        room.last_activity = now;
+        room.users.insert(
+            "here".to_string(),
+            connected_user("here", "otter", "c", now),
+        );
+        rooms.insert("overfull".to_string(), room);
+    }
+
+    let logged = capturing_logs(|| async {
+        cleanup_rooms_at(&state, now).await;
+    })
+    .await;
+
+    assert!(
+        logged.contains("trimming room history"),
+        "a trim must be reported; the log said: {logged}"
+    );
+    assert!(
+        logged.contains("overfull"),
+        "and must name the room it trimmed: {logged}"
+    );
+    assert_eq!(
+        state
+            .rooms
+            .read()
+            .await
+            .get("overfull")
+            .unwrap()
+            .chat_history
+            .len(),
+        MAX_MESSAGES_PER_ROOM
+    );
+
+    // A room inside the cap: nothing to say.
+    let state = Arc::new(AppState::new());
+    {
+        let mut rooms = state.rooms.write().await;
+        let mut room = create_room();
+        for i in 0..10 {
+            message_in(&mut room, &tracker, &format!("m{i}"));
+        }
+        room.last_activity = now;
+        room.users.insert(
+            "here".to_string(),
+            connected_user("here", "otter", "c", now),
+        );
+        rooms.insert("comfortable".to_string(), room);
+    }
+
+    let logged = capturing_logs(|| async {
+        cleanup_rooms_at(&state, now).await;
+    })
+    .await;
+
+    assert!(
+        !logged.contains("trimming room history"),
+        "a pass that trimmed nothing must not claim it did: {logged}"
+    );
+}
+
+/// Deleting a room is announced, by name.
+#[tokio::test]
+async fn housekeeping_reports_the_rooms_it_deletes() {
+    let now = Instant::now();
+    let state = Arc::new(AppState::new());
+    {
+        let mut rooms = state.rooms.write().await;
+        let mut room = create_room();
+        let mut gone = connected_user("u", "otter", "c", now);
+        gone.connection_state = ConnectionState::Disconnected { since: now };
+        room.users.insert("u".to_string(), gone);
+        room.last_activity = now - EMPTY_ROOM_CLEANUP_DELAY - Duration::from_secs(1);
+        rooms.insert("vanishing".to_string(), room);
+    }
+
+    let logged = capturing_logs(|| async {
+        cleanup_rooms_at(&state, now).await;
+    })
+    .await;
+
+    assert!(
+        logged.contains("deleted inactive room") && logged.contains("vanishing"),
+        "a deleted room must be named in the log: {logged}"
     );
 }

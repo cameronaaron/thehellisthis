@@ -560,9 +560,13 @@ impl RoomState {
 
     /// Keeps the newest `keep` messages, releasing the rest from both the room
     /// and the global tracker.
-    pub fn retain_newest(&mut self, keep: usize, memory_tracker: &MemoryTracker) {
+    ///
+    /// Returns how many messages were dropped, so callers can report a trim
+    /// without having to ask whether one was needed first — a second comparison
+    /// against the same cap that this one already makes.
+    pub fn retain_newest(&mut self, keep: usize, memory_tracker: &MemoryTracker) -> usize {
         if self.chat_history.len() <= keep {
-            return;
+            return 0;
         }
 
         let drop_count = self.chat_history.len() - keep;
@@ -578,6 +582,8 @@ impl RoomState {
         if removed_bytes > 0 {
             memory_tracker.remove_bytes(removed_bytes);
         }
+
+        drop_count
     }
 
     /// Recomputes this room's byte total from its history.

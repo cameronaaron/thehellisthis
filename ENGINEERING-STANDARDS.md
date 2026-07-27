@@ -61,6 +61,8 @@ concrete, executable version of "obsessive engineering quality." Concretely:
 | §6.1 The gate answers "will this deploy" | `ci_node_version_satisfies_the_toolchain`, `the_workflows_install_with_the_lockfile_that_exists`, `ci_holds_no_deploy_credential_and_does_not_deploy` |
 | Startup lifecycle | `run_returns_cleanly_when_its_shutdown_fires`, `the_process_exit_code_reports_a_clean_stop`, `the_process_exit_code_reports_a_failed_bind`, `the_shutdown_sequence_waits_for_its_signal`, `a_server_error_is_reported_and_a_clean_stop_is_not_an_error`, `binding_a_port_already_in_use_is_an_error_not_a_panic`, `run_serves_until_it_is_shut_down`, `shutting_down_announces_departures_and_clears_the_rooms` |
 | Constraint #12 Frontend/backend agreement | `client_attachment_ceiling_matches_the_server`, `client_reaction_roster_matches_the_server`, `the_node_types_match_the_node_ci_installs` |
+| Operational log is a contract | `housekeeping_reports_a_trim_only_when_it_trims`, `housekeeping_reports_the_rooms_it_deletes` |
+| Housekeeping boundaries | `the_housekeeping_boundaries_are_exact`, `the_empty_room_grace_period_is_exact`, `deleting_a_room_returns_its_bytes_to_the_process_budget`, `deleting_an_empty_room_reclaims_nothing` |
 | Meta: coverage exemptions | `coverage_exemptions_are_justified_and_current` |
 | Meta: standards are enforced | `every_test_the_standards_name_exists`, `every_parked_decision_records_how_to_reopen_it`, `every_contract_test_is_documented` |
 | Meta: tests can fail | `no_assertion_in_this_suite_is_a_tautology` |
@@ -883,6 +885,28 @@ being quietly wrong: the dependency list fails if it names a crate no longer in
 `Cargo.toml`, the coverage registry fails if a path disappears or a line count
 drifts, the test-only list fails if the function is gone. **An exemption that
 cannot expire is a decision nobody will revisit.**
+
+### 6.6d Three things mutation testing keeps finding
+
+**A guard with nothing behind it.** `if freed > 0 { remove_bytes(freed) }` and
+`if len > target { retain_newest(target) }` both mutated three ways and survived
+— because `remove_bytes(0)` and `retain_newest` at the cap are already no-ops.
+The mutants were *equivalent*: the code behaved identically either way. The fix
+was not a test, it was deleting the guards (§0.2). A comparison that cannot
+change what happens is not a check, it is a place for a bug to hide.
+
+**The log nobody reads.** What is left of that trim guard now gates an `info!`,
+and three mutants lived there because no test read the output. An operator reads
+the log to understand a running server — which room faded, who was evicted — so
+`capturing_logs` installs a scoped subscriber and the log became assertable.
+§5.3 already said to shut down *loudly*; this is the same idea applied to
+housekeeping.
+
+**A boundary nobody stood on.** Every `>` that mutated to `>=` and survived was
+a threshold the tests approached from both sides and never landed on. For
+counters that is a test; for durations it needed `cleanup_rooms_at`, which takes
+the instant as a parameter — the same edge-injection as the shutdown signal, and
+still not the injectable clock §9.4 rejects.
 
 ### 6.7 Assert on structure, never on a substring a comment can contain
 

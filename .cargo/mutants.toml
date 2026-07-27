@@ -19,7 +19,10 @@
 # They read as three unkillable mutants in every report, which is how a report
 # stops being read.
 exclude_re = [
+    # Both forms: cargo-mutants writes "replace main with ()" for a unit return
+    # and "replace main -> ExitCode with Default::default()" now that it has one.
     "replace main with",
+    "replace main ->",
     "replace shutdown_signal with",
     "replace init_tracing with",
 ]

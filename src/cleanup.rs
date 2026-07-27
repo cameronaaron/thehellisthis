@@ -23,7 +23,22 @@ use crate::state::AppState;
 /// decisions after the map may have changed underneath, for a lock held tens of
 /// microseconds either way.
 pub async fn cleanup_rooms(state: &Arc<AppState>) {
-    let now = Instant::now();
+    cleanup_rooms_at(state, Instant::now()).await;
+}
+
+/// One housekeeping pass, as of `now`.
+///
+/// The instant is a parameter so the boundaries can be tested *on* the
+/// boundary. Every comparison here is against a duration, and a test using its
+/// own `Instant::now()` can get close to a threshold but never land on it —
+/// which left "retained for exactly the retention period" and "idle by exactly
+/// the fade time" as behaviour nothing pinned, and mutation testing found all
+/// three (`>` reading as `>=` changes who gets reclaimed).
+///
+/// This is one parameter on one function, at the edge where the untestable
+/// thing is — not the injectable clock §9.4 rejects, which would thread a time
+/// source through every timing decision in the codebase.
+pub async fn cleanup_rooms_at(state: &Arc<AppState>, now: Instant) {
     let mut rooms_to_remove: Vec<String> = Vec::new();
     let mut rooms = state.rooms.write().await;
 
@@ -70,17 +85,20 @@ pub async fn cleanup_rooms(state: &Arc<AppState>) {
             MAX_MESSAGES_PER_ROOM
         };
 
-        if room.chat_history.len() > target {
-            // Bound outside the macro deliberately. `tracing` evaluates a
-            // log's fields only when the level is enabled, so as arguments
-            // these expressions do not run under a test with no subscriber —
-            // which reads as two uncovered lines inside a branch the test
-            // definitely takes. As statements they are simply always executed,
-            // and what coverage reports about this branch is true.
-            let from = room.chat_history.len();
+        // No `len > target` guard: `retain_newest` already makes that comparison
+        // and returns 0 when there is nothing to do, so a second one here was
+        // code with no behaviour — a mutant could flip it to `>=` and nothing
+        // could tell, because both spellings called a function that no-ops.
+        //
+        // The values are bound outside the macro deliberately: `tracing`
+        // evaluates a log's fields only when the level is enabled, so as
+        // arguments they do not run under a test with no subscriber, and read
+        // as uncovered lines in a branch the test definitely takes.
+        let from = room.chat_history.len();
+        let dropped = room.retain_newest(target, &state.memory_tracker);
+        if dropped > 0 {
             let idle_s = idle_for.as_secs();
             info!(room = %room_name, from, to = target, idle_s, "trimming room history");
-            room.retain_newest(target, &state.memory_tracker);
         }
 
         if is_main {
@@ -105,9 +123,9 @@ pub async fn cleanup_rooms(state: &Arc<AppState>) {
 
         info!(room = %name, "deleted inactive room");
 
+        // No `freed > 0` guard: `remove_bytes(0)` is already a no-op, so the
+        // guard was a comparison with no behaviour behind it.
         let freed: usize = room.chat_history.iter().map(|m| m.estimate_size()).sum();
-        if freed > 0 {
-            state.memory_tracker.remove_bytes(freed);
-        }
+        state.memory_tracker.remove_bytes(freed);
     }
 }
