@@ -31,6 +31,12 @@
        animal name instead of an account. It also blocked first render on two
        cross-origin round trips. */
     --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, 'Helvetica Neue', Arial, sans-serif;
+    /* System monospace stack. This was 'Roboto Mono', which stopped being
+       downloaded when the webfonts went and had been silently falling back to
+       the generic `monospace` ever since. */
+    --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+    /* The empty-room icon, inline so it costs no request and no third party. */
+    --empty-chat-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 15a2 2 0 0 1-2 2H8l-4 4V5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2z'/%3E%3C/svg%3E");
     --font-display: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, 'Helvetica Neue', Arial, sans-serif;
 
     --primary: #0b57d0;
@@ -782,11 +788,20 @@ h1 {
    so the instant the first history message arrived `:empty` stopped matching
    and the whole column snapped from centred to top-aligned — a visible
    reorientation on every single page load that had any history. */
+/* The icon is a masked inline SVG, not a font ligature.
+   This was `content: 'chat_bubble'` in 'Material Icons Round' — a ligature that
+   resolved to a picture only while that font was being downloaded from Google.
+   Removing the webfont (§5.7) left the declaration behind, so every visitor
+   opening an empty room saw the literal word "chat_bubble" at 80px.
+   A mask rather than a background-image so the colour still comes from the
+   theme: `currentColor` has no meaning inside a data: URI. */
 #chat:empty::before {
-    content: 'chat_bubble';
-    font-family: 'Material Icons Round';
-    font-size: 80px;
-    color: var(--outline-variant);
+    content: '';
+    width: 80px;
+    height: 80px;
+    background-color: var(--outline-variant);
+    -webkit-mask: var(--empty-chat-icon) center / contain no-repeat;
+    mask: var(--empty-chat-icon) center / contain no-repeat;
     position: absolute;
     left: 50%;
     top: 50%;
@@ -920,7 +935,7 @@ h1 {
     background: rgba(0,0,0,0.08);
     padding: 2px 6px;
     border-radius: var(--radius-xs);
-    font-family: 'Roboto Mono', monospace;
+    font-family: var(--font-mono);
     font-size: 0.875em;
 }
 

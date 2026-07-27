@@ -55,6 +55,8 @@ concrete, executable version of "obsessive engineering quality." Concretely:
 | §10 Client | `empty_chat_placeholder_does_not_alter_container_layout`, `rendered_history_is_trimmed_from_the_dom_not_a_counter`, `the_page_does_not_block_pinch_zoom`, `images_reserve_their_space_before_they_load` |
 | Attachments | `an_attachment_must_be_the_image_type_it_claims_to_be`, `svg_is_not_an_allowed_attachment_type`, `a_rooms_oldest_images_fade_once_it_is_over_its_attachment_budget`, `images_are_re_encoded_rather_than_sent_as_picked` |
 | Reactions | `reacting_twice_with_the_same_emoji_removes_the_reaction`, `reactions_never_outlive_the_messages_they_belong_to`, `a_reaction_must_be_on_the_roster` |
+| Ratchets | `the_memory_budget_still_closes`, `the_join_path_shares_history_rather_than_copying_it`, `adding_a_message_costs_the_same_whatever_the_history_holds`, `reacting_never_touches_the_history` |
+| Dead webfonts | `the_page_names_no_font_it_does_not_ship_with`, `no_css_content_string_is_an_icon_ligature` |
 
 ---
 
@@ -728,11 +730,36 @@ most logic-dense modules leaves six, and each has a reason:
 | `end > 0` → `end >= 0` in `truncate_on_char_boundary` | **Equivalent in practice.** Index 0 is always a char boundary, so the walk always terminates first; the guard is defensive. |
 | Four `elapsed() < WINDOW` → `<=` comparisons | Differ only when a duration is *exactly* the threshold. Killing them needs an injected clock threaded through the limiters — a real abstraction bought for a one-nanosecond behavioural difference. Rejected on those terms, recorded in §9.4. |
 
+### 6.6a Deleting a dependency leaves references that still parse
+
+Removing the webfonts took out the `<link>` tags and the network requests, and
+`the_client_makes_no_third_party_requests` confirmed it. Two CSS declarations
+naming those fonts stayed behind, and both still parsed, still applied, and
+still did something — just not the right thing.
+
+`'Roboto Mono', monospace` was harmless; it had been falling back to the
+generic for months. The other was not: `#chat:empty::before` set
+`content: 'chat_bubble'` in `'Material Icons Round'`. That word is a
+**ligature** — with the font it draws a picture, without it the browser renders
+the text. Every visitor opening an empty room was shown the literal word
+"chat_bubble" at 80px, and no test that checks for network requests could ever
+see it, because there was no request to see.
+
+**When you delete a dependency, sweep for what still names it**, not just for
+what still fetches it. The absence of a request is not evidence that the
+reference is gone. Pinned by `the_page_names_no_font_it_does_not_ship_with`,
+which checks every `font-family` resolves to something the machine already has,
+and `no_css_content_string_is_an_icon_ligature`.
+
 ### 6.7 Assert on structure, never on a substring a comment can contain
 
-Three tests in this repo have failed because a **comment explaining why
+Four tests in this repo have failed because a **comment explaining why
 something was removed** necessarily names the thing it removed:
-`#chat:empty {`, `user-scalable=no`, `fonts.googleapis.com`.
+`#chat:empty {`, `user-scalable=no`, `fonts.googleapis.com`, and — most
+recently — `content: 'chat_bubble'`, where the sweep written to forbid icon-font
+ligatures failed on the comment documenting the ligature it had just removed.
+The fix there was `embedded_html_without_comments()`: scan the declarations,
+not the prose about them.
 
 A `source.contains("...")` assertion cannot tell an active declaration from
 prose about one. Match on the structure that would actually take effect — the
@@ -878,6 +905,8 @@ lore.
 | Sliding-window rate limiter | **Rejected** — needs a timestamp per event; the fixed window's edge behaviour is imperceptible in chat | Reopens if burst abuse is observed crossing window boundaries in production. |
 | `cargo-deny` in CI | **Not added** — `cargo audit` and `pnpm audit` now run in CI on every push and weekly, covering advisories on both dependency trees. `cargo-deny` would add licence and duplicate-version policy on top | Add when a licence obligation or a duplicate-version conflict actually bites. Advisories are already covered. |
 | Removing the double `ammonia::clean` | **Deferred** — `validate_message` sanitises to detect markup-only messages, then `render_message_html` sanitises the rendered HTML. Two passes over ≤8 KB, microseconds | Reopens if message throughput is ever measured as CPU-bound. |
+| AVIF for attachments | **Deferred, unmeasured** — AVIF is ~20-30% smaller than WebP at equal quality, but the constraint is *encoding*, not decoding. Browser `canvas` AVIF encode support is thin where WebP's is universal, and `toDataURL` silently returns PNG for a type it cannot encode — so an AVIF-first attempt would run a full lossless PNG encode of a 1600px image and discard it, on every browser that lacks support, for every attempt in the retry loop. Where AVIF encode does exist it is slow, and `toDataURL` is synchronous. Adding it also needs `image/avif` in `ALLOWED_ATTACHMENT_MIMES` and its magic bytes in `sniff_image_mime`. **No browser was available to measure any of this** | Reopens when the encode path can actually be measured in a browser. The shape it would need: a one-time cached probe on a 1×1 canvas (never a probe per attempt), and async `toBlob` rather than blocking `toDataURL`. Worth revisiting if attachment bytes ever become the binding constraint — they are not today |
+| Synchronous `toDataURL` in the attachment encoder | **Known cost, unmeasured** — the encoder tries up to 15 (size, quality) combinations, each a canvas redraw plus a synchronous encode that blocks the main thread. A 128 KB *base64* ceiling is ~96 KB of image, which 1600px will usually miss, so the loop probably runs several times rather than once | Reopens with a browser to measure in. The fix is `toBlob` (async) plus starting the search from a size estimated off the source dimensions instead of always at 1600px. Both are unverifiable from here, and shipping an unmeasured rewrite of a path that currently works is the trade §0.5 warns about |
 | Load testing | **Never done** — every performance claim here is structural (complexity, lock duration), not empirical throughput | Before raising `MAX_CONCURRENT_USERS` (400) or `MAX_USERS_PER_ROOM` (100). Those numbers are currently unvalidated assumptions, and §0.5 says so out loud. |
 | Injectable clock for the limiters | **Rejected** (§6.6) — would kill four surviving mutants that differ only when a duration is *exactly* its threshold | Reopens if a timing bug is ever observed at a limit boundary in production, or if the limiters need testable time for another reason. |
 | 100% line coverage | **Not the target** — the floor is 95% and ratchets. The remainder is the process shell (`main`, signal handling) and socket-failure paths inside the four connection tasks, which need a socket to fail at an exact instant | Reopens for any *reachable* branch: those are gaps, not exclusions. Chasing the rest would mean flaky timing tests, which §6.4 rules out as worse than none. |

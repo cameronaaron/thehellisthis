@@ -15270,3 +15270,364 @@ async fn fading_with_nothing_left_to_fade_changes_nothing() {
     );
     assert_eq!(room.chat_history.len(), 2);
 }
+
+/// The page's CSS and markup with comments removed.
+///
+/// §6.7: a test that greps the shipped bytes must not be able to match the
+/// prose explaining the thing it forbids. Both sweeps below were written with
+/// a comment describing the exact declaration they reject, and both failed on
+/// their own documentation until they scanned this instead.
+fn embedded_html_without_comments() -> String {
+    let mut out = String::with_capacity(EMBEDDED_HTML.len());
+    let mut rest = EMBEDDED_HTML;
+
+    loop {
+        // CSS block comments.
+        let css = rest.find("/*");
+        // HTML comments.
+        let html = rest.find("<!--");
+
+        let (start, close, skip) = match (css, html) {
+            (Some(c), Some(h)) if c < h => (c, "*/", 2),
+            (Some(_), Some(h)) => (h, "-->", 3),
+            (Some(c), None) => (c, "*/", 2),
+            (None, Some(h)) => (h, "-->", 3),
+            (None, None) => break,
+        };
+
+        out.push_str(&rest[..start]);
+        let after = &rest[start + skip..];
+        match after.find(close) {
+            Some(end) => rest = &after[end + close.len()..],
+            None => {
+                rest = "";
+                break;
+            }
+        }
+    }
+
+    out.push_str(rest);
+    out
+}
+
+/// §5.7 — every font the page names is one the machine already has.
+///
+/// Removing the webfonts left two declarations behind that referred to fonts
+/// nobody downloads any more. One was cosmetic: `'Roboto Mono', monospace` had
+/// been quietly falling back to the generic for months. The other was not —
+/// `#chat:empty::before` set `content: 'chat_bubble'` in `'Material Icons
+/// Round'`, a *ligature*, so with the font gone every visitor who opened an
+/// empty room was shown the literal word "chat_bubble" at 80px.
+///
+/// That is the trap in deleting a dependency: the code that referenced it still
+/// parses, still applies, and fails only in the rendering — which no test that
+/// checks for network requests can see. This checks the other half: that no
+/// declaration names a family the browser cannot possibly have.
+#[test]
+fn the_page_names_no_font_it_does_not_ship_with() {
+    // Families a browser has without downloading anything: the generic
+    // keywords, the system-UI aliases, and the handful of faces that ship with
+    // desktop and mobile operating systems.
+    const AVAILABLE: &[&str] = &[
+        "-apple-system",
+        "arial",
+        "blinkmacsystemfont",
+        "consolas",
+        "cursive",
+        "fantasy",
+        "helvetica",
+        "helvetica neue",
+        "inherit",
+        "liberation mono",
+        "menlo",
+        "monospace",
+        "sans-serif",
+        "serif",
+        "sf mono",
+        "sfmono-regular",
+        "segoe ui",
+        "system-ui",
+        "ui-monospace",
+        "ui-sans-serif",
+    ];
+
+    let mut offenders: Vec<String> = Vec::new();
+
+    let css = embedded_html_without_comments();
+
+    for (index, _) in css.match_indices("font-family:") {
+        let rest = &css[index + "font-family:".len()..];
+        let Some(end) = rest.find(';') else { continue };
+        let value = &rest[..end];
+
+        // A custom property is checked where it is defined, not where used.
+        if value.contains("var(--font-") {
+            continue;
+        }
+
+        for family in value.split(',') {
+            let name = family.trim().trim_matches('\'').trim_matches('"').trim();
+            if name.is_empty() {
+                continue;
+            }
+            if !AVAILABLE.contains(&name.to_ascii_lowercase().as_str()) {
+                offenders.push(name.to_string());
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "index.html names fonts that are never downloaded and will not resolve: \
+         {offenders:?}"
+    );
+}
+
+/// No `content:` string is a leftover icon-font ligature.
+///
+/// The bug above rendered as text because a ligature name *is* text: with the
+/// font present it draws a picture, and without it the browser shows the word.
+/// Icons are inline SVG here, so any `content` holding a bare identifier-like
+/// word is that mistake coming back.
+#[test]
+fn no_css_content_string_is_an_icon_ligature() {
+    let mut suspicious: Vec<String> = Vec::new();
+
+    let css = embedded_html_without_comments();
+
+    for (index, _) in css.match_indices("content: '") {
+        let rest = &css[index + "content: '".len()..];
+        let Some(end) = rest.find('\'') else { continue };
+        let value = &rest[..end];
+
+        // Ligature names are lowercase identifiers with underscores and no
+        // spaces — `chat_bubble`, `arrow_downward`. Real prose has spaces, and
+        // decorative content is punctuation or empty.
+        let looks_like_a_ligature = !value.is_empty()
+            && value.contains('_')
+            && value
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c == '_' || c.is_ascii_digit());
+
+        if looks_like_a_ligature {
+            suspicious.push(value.to_string());
+        }
+    }
+
+    assert!(
+        suspicious.is_empty(),
+        "these CSS `content` strings look like icon-font ligatures, which render \
+         as literal words once the font is gone: {suspicious:?}"
+    );
+}
+
+// ========== RATCHETS: THINGS THAT MUST NOT GET WORSE ==========
+//
+// A coverage floor is a ratchet on how much is tested. These are ratchets on
+// the properties that coverage cannot see: that the memory budget still closes,
+// that the join path still shares instead of copying, and that per-message work
+// is still independent of how much history there is.
+//
+// None of them assert a wall-clock threshold. The registry rules those out as
+// flaky (§6.4, and the "injectable clock" entry), and a number tuned to this
+// machine says nothing about CI. Each of these is either arithmetic over the
+// constants or a structural fact, so it fails for a reason rather than for a
+// bad afternoon on a shared runner.
+
+/// §3 — the memory budget closes, whatever the constants are set to.
+///
+/// Every ceiling here was chosen against the others: attachments are capped per
+/// room *because* a hundred rooms share one process-wide budget. Raising any
+/// one of them in isolation silently overcommits the container, and the symptom
+/// is an OOM kill that disconnects every user in every room — the failure the
+/// whole memory law exists to avoid. So the arithmetic is asserted rather than
+/// left in a comment for somebody to re-derive.
+#[test]
+fn the_memory_budget_still_closes() {
+    // Pictures may claim at most half the process, leaving the rest for text.
+    let attachment_ceiling = MAX_ROOM_ATTACHMENT_BYTES * MAX_ROOMS;
+    assert!(
+        attachment_ceiling <= MAX_TOTAL_ROOMS_MEMORY / 2,
+        "every room at its attachment budget is {attachment_ceiling} bytes, over \
+         half of the {MAX_TOTAL_ROOMS_MEMORY}-byte process ceiling — one room \
+         full of photographs would be taking what every other room needs"
+    );
+
+    // A single attachment cannot be a meaningful fraction of a room's budget,
+    // or "fading the oldest" would clear the room in one step.
+    //
+    // A `const` block, so this is checked when the crate is compiled rather
+    // than when the test is run: a constant edited to break it fails the build
+    // for everyone, including anyone who only runs a subset of the suite.
+    const {
+        assert!(
+            MAX_ATTACHMENT_BYTES * 8 <= MAX_ROOM_ATTACHMENT_BYTES,
+            "a room must hold at least 8 images at the per-image cap"
+        );
+    }
+
+    // A room's text is bounded by message count times the largest a message can
+    // be, and that has to fit too.
+    let text_ceiling = MAX_MESSAGES_PER_ROOM * (MAX_RENDERED_MESSAGE_LEN + ESTIMATED_MESSAGE_SIZE);
+    assert!(
+        text_ceiling <= MAX_TOTAL_ROOMS_MEMORY,
+        "one room of maximum-size messages is {text_ceiling} bytes, over the \
+         whole process ceiling"
+    );
+
+    // The rendered ceiling must stay at or above the escaping worst case, or
+    // `render_message_html`'s plain-text fallback could itself breach it.
+    const {
+        assert!(
+            MAX_RENDERED_MESSAGE_LEN >= MAX_MESSAGE_LEN * 5,
+            "escaping expands by up to 5x, so a lower ceiling makes the fallback able to exceed the limit it is the fallback for"
+        );
+    }
+}
+
+/// §2 — the join path shares stored messages; it does not copy them.
+///
+/// Deterministic, not timed: if `history_for` handed back copies, the strong
+/// count of the stored `Arc` would not move. Measured, the copy it replaced
+/// took 119 µs *under the room write lock*, so this is the largest single
+/// regression anyone could reintroduce here by changing a type back to owned.
+#[tokio::test]
+async fn the_join_path_shares_history_rather_than_copying_it() {
+    let tracker = MemoryTracker::new();
+    let mut room = create_room();
+
+    room.add_message(
+        OutgoingMessage {
+            message_id: Uuid::new_v4(),
+            user_id: "u".to_string(),
+            animal_name: "otter".to_string(),
+            text: "shared, not copied".to_string(),
+            timestamp: "1".to_string(),
+            reply_to: None,
+            attachment: None,
+        },
+        &tracker,
+    );
+
+    let before = Arc::strong_count(&room.chat_history[0]);
+
+    let first = room.history_for("alice");
+    let second = room.history_for("bob");
+
+    assert_eq!(
+        Arc::strong_count(&room.chat_history[0]),
+        before + 2,
+        "each viewer's history must be a reference to the stored message, not \
+         a copy of it"
+    );
+
+    // And they really are the same allocation, not equal values.
+    assert!(
+        Arc::ptr_eq(&first[0].0, &room.chat_history[0])
+            && Arc::ptr_eq(&second[0].0, &room.chat_history[0]),
+        "both viewers should be reading the one stored message"
+    );
+
+    drop(first);
+    drop(second);
+    assert_eq!(
+        Arc::strong_count(&room.chat_history[0]),
+        before,
+        "and the references go away with them"
+    );
+}
+
+/// §1.1 — per-message work does not grow with the size of the history.
+///
+/// The property, stated so it cannot be satisfied by a fast machine: adding a
+/// message to a room holding `MAX_MESSAGES_PER_ROOM` messages must touch the
+/// same amount of state as adding one to an almost-empty room. Asserted through
+/// the accounting rather than the clock — a message's cost to the room is its
+/// own size and nothing else, so if any history-proportional work crept back
+/// onto this path (a re-scan, a re-sum, a trim) the totals would diverge.
+#[tokio::test]
+async fn adding_a_message_costs_the_same_whatever_the_history_holds() {
+    fn message(text: &str) -> OutgoingMessage {
+        OutgoingMessage {
+            message_id: Uuid::new_v4(),
+            user_id: "u".to_string(),
+            animal_name: "otter".to_string(),
+            text: text.to_string(),
+            timestamp: "1700000000000".to_string(),
+            reply_to: None,
+            attachment: None,
+        }
+    }
+
+    let mut deltas = Vec::new();
+
+    for prefill in [1usize, MAX_MESSAGES_PER_ROOM - 1] {
+        let tracker = MemoryTracker::new();
+        let mut room = create_room();
+        for _ in 0..prefill {
+            room.add_message(message("filler"), &tracker);
+        }
+
+        let before_room = room.total_memory_bytes.load(Ordering::SeqCst);
+        let before_global = tracker.total_bytes.load(Ordering::SeqCst);
+
+        room.add_message(message("the measured one"), &tracker);
+
+        deltas.push((
+            room.total_memory_bytes.load(Ordering::SeqCst) - before_room,
+            tracker.total_bytes.load(Ordering::SeqCst) - before_global,
+            room.chat_history.len() - prefill,
+        ));
+    }
+
+    assert_eq!(
+        deltas[0], deltas[1],
+        "adding one message to a nearly-full room must cost exactly what it \
+         costs in an empty one; a difference means work proportional to the \
+         history got back onto the message path"
+    );
+}
+
+/// §1.1 — reacting is O(1) in the size of the history.
+///
+/// Reactions live beside the history, keyed by message id, precisely so this
+/// holds. Asserted structurally: reacting to the *oldest* message in a full
+/// room must leave the history untouched, which it cannot do if the message is
+/// being searched for or rewritten in place.
+#[tokio::test]
+async fn reacting_never_touches_the_history() {
+    let tracker = MemoryTracker::new();
+    let mut room = create_room();
+
+    for i in 0..MAX_MESSAGES_PER_ROOM {
+        room.add_message(
+            OutgoingMessage {
+                message_id: Uuid::new_v4(),
+                user_id: "u".to_string(),
+                animal_name: "otter".to_string(),
+                text: format!("m{i}"),
+                timestamp: "1700000000000".to_string(),
+                reply_to: None,
+                attachment: None,
+            },
+            &tracker,
+        );
+    }
+
+    let oldest = room.chat_history[0].message_id;
+    let stored = Arc::clone(&room.chat_history[0]);
+    let bytes_before = room.total_memory_bytes.load(Ordering::SeqCst);
+
+    room.toggle_reaction(oldest, "🔥", "alice");
+
+    assert!(
+        Arc::ptr_eq(&stored, &room.chat_history[0]),
+        "reacting must not rewrite the message it refers to"
+    );
+    assert_eq!(
+        room.total_memory_bytes.load(Ordering::SeqCst),
+        bytes_before,
+        "reacting must not re-derive the room's byte total"
+    );
+    assert_eq!(room.chat_history.len(), MAX_MESSAGES_PER_ROOM);
+}

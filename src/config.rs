@@ -115,17 +115,24 @@ pub(crate) const MAX_ATTACHMENT_DIMENSION: u32 = 4096;
 
 /// Attachment bytes a single room keeps before the oldest images fade.
 ///
-/// Deliberately small. 100 rooms each holding this much is 200 MB, half of
-/// [`MAX_TOTAL_ROOMS_MEMORY`], leaving the rest for text — one room full of
-/// photographs must not be able to stop every other room accepting messages
-/// (§1.1, §3).
+/// Deliberately small, and **derived rather than picked**:
+/// [`MAX_TOTAL_ROOMS_MEMORY`] / 2 / [`MAX_ROOMS`]. Every room at its budget is
+/// then exactly half the process ceiling, leaving the rest for text — one room
+/// full of photographs must not be able to stop every other room accepting
+/// messages (§1.1, §3).
+///
+/// Decimal, not binary. This was `2 * 1024 * 1024`, which reads as "2 MB" and
+/// is 2.097 MB, so a hundred rooms came to 209.7 MB against a 400 MB ceiling
+/// whose half is 200 MB. The comment claiming it was half was wrong by 5%.
+/// `the_memory_budget_still_closes` now asserts the arithmetic instead of
+/// leaving it to be re-derived by eye — and caught this on its first run.
 ///
 /// Past it the *payloads* of the oldest attachments are dropped while their
 /// messages stay, so a conversation keeps its shape and only the pictures age
 /// out. That is the §7 fade applied to the most expensive thing in the room,
 /// and it is the reason this can be a small number without deleting anything a
 /// reader still needs.
-pub(crate) const MAX_ROOM_ATTACHMENT_BYTES: usize = 2 * 1024 * 1024;
+pub(crate) const MAX_ROOM_ATTACHMENT_BYTES: usize = MAX_TOTAL_ROOMS_MEMORY / 2 / MAX_ROOMS;
 
 /// Image types an attachment may declare, checked against the payload's own
 /// magic bytes rather than trusted.
