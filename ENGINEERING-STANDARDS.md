@@ -51,6 +51,8 @@ concrete, executable version of "obsessive engineering quality." Concretely:
 | §4.5 Error taxonomy | `every_error_tells_the_client_a_usable_category`, `a_valid_id_does_not_let_a_cookie_invent_its_own_name` |
 | §6.8 Boundaries | `the_memory_ceiling_admits_exactly_the_limit`, `an_ip_is_banned_only_past_the_suspicion_threshold` |
 | §7 Engagement | frontend/backend consistency tests (`SHIPPED_CLIENT`) |
+| §8 Naming & organisation | `every_module_is_named_for_its_job_and_says_what_it_is`, `nothing_is_public_only_for_its_own_test` |
+| §9.3 Docs are part of the artifact | `every_section_reference_resolves` |
 | §8 Naming | `animal_roster_is_sorted_unique_and_well_formed`, `the_roster_is_larger_than_a_room_can_ever_be`, `reaction_roster_is_sorted_unique_and_actually_emoji` |
 | §9 Shipped artifact | `router_mounts_every_public_route`, `page_references_the_versioned_script_url`, `every_element_the_client_looks_up_exists_in_the_page`, `the_client_declares_every_screaming_case_constant_it_uses` |
 | §10 Client | `empty_chat_placeholder_does_not_alter_container_layout`, `rendered_history_is_trimmed_from_the_dom_not_a_counter`, `the_page_does_not_block_pinch_zoom`, `images_reserve_their_space_before_they_load` |
@@ -859,6 +861,28 @@ The sweep also has to be readable to be used: three mutants in `main`,
 which match nothing — cargo-mutants matches the whole description
 ("replace main with ()"). Three permanent unkillable survivors in every report
 is how a report stops being read.
+
+### 6.6c Ported from cameronaaron.com — what travels between two codebases
+
+That repository is TypeScript against a static site; this one is a Rust
+WebSocket server. **None of the code ports.** Six ideas do, and each became a
+sweep here:
+
+| Idea there | Here |
+| --- | --- |
+| The enforcement mechanism needs enforcing | `every_test_the_standards_name_exists`, `every_contract_test_is_documented`, `every_parked_decision_records_how_to_reopen_it` |
+| An exemption must never outlive its reason | `every_declared_dependency_is_used`, `coverage_exemptions_are_justified_and_current`, and the test-only list in `nothing_is_public_only_for_its_own_test` |
+| A test that cannot fail is worse than no test | `no_assertion_in_this_suite_is_a_tautology` — found three |
+| A doc pointer that no longer resolves is a lie with a green gate | `every_section_reference_resolves`, extended to Rust comments, where most citations live |
+| Dead exports hide behind their own tests | `nothing_is_public_only_for_its_own_test` |
+| 100% coverage with a short, reasoned exclusion list | `scripts/coverage-exemptions.toml` and its contract |
+
+The one that generalises furthest is the second. Every allow-list in this
+repository fails when an entry stops being needed, rather than sitting there
+being quietly wrong: the dependency list fails if it names a crate no longer in
+`Cargo.toml`, the coverage registry fails if a path disappears or a line count
+drifts, the test-only list fails if the function is gone. **An exemption that
+cannot expire is a decision nobody will revisit.**
 
 ### 6.7 Assert on structure, never on a substring a comment can contain
 

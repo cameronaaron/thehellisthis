@@ -17797,3 +17797,266 @@ async fn the_soft_limit_sweep_removes_aged_messages() {
         "past the soft limit the sweep must actually reclaim the aged messages"
     );
 }
+
+// ========== DOCS, NAMING AND DEAD CODE ==========
+
+/// Every `§` and `constraint #` pointer resolves to something that exists.
+///
+/// The docs and the source comments are dense with them — `§5.11`,
+/// `constraint #12`, `§1.4a` — and several rules lean on another by name. A
+/// section renumbered or a constraint deleted turns every pointer to it into a
+/// lie, silently, with a green gate: nothing else reads them.
+///
+/// Ported from the docs-cross-reference contract on `cameronaaron.com`. The
+/// addition here is that Rust source comments are checked too, because in this
+/// codebase the citation usually lives next to the code it justifies rather
+/// than in the document.
+#[test]
+fn every_section_reference_resolves() {
+    const STANDARDS: &str = include_str!("../ENGINEERING-STANDARDS.md");
+    const CLAUDE_MD: &str = include_str!("../CLAUDE.md");
+
+    // Sections that exist: `## 5. …` and `### 5.11 …`.
+    let mut sections: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for line in STANDARDS.lines() {
+        let trimmed = line.trim_start_matches('#').trim_start();
+        if !line.starts_with('#') {
+            continue;
+        }
+        if let Some((number, _)) = trimmed.split_once(' ')
+            && number.chars().next().is_some_and(|c| c.is_ascii_digit())
+        {
+            sections.insert(number.trim_end_matches('.').to_string());
+        }
+    }
+    assert!(
+        sections.len() > 40,
+        "the standards should have many numbered sections; found {}",
+        sections.len()
+    );
+
+    // Constraints that exist: `### 12. …` in CLAUDE.md.
+    let mut constraints: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    for line in CLAUDE_MD.lines() {
+        if let Some(rest) = line.strip_prefix("### ")
+            && let Some((number, _)) = rest.split_once('.')
+            && let Ok(n) = number.parse::<u32>()
+        {
+            constraints.insert(n);
+        }
+    }
+    assert!(
+        constraints.len() > 20,
+        "CLAUDE.md should list many constraints; found {}",
+        constraints.len()
+    );
+
+    // Every corpus that cites them: both docs, and every Rust module.
+    let mut corpus = vec![
+        (
+            "ENGINEERING-STANDARDS.md".to_string(),
+            STANDARDS.to_string(),
+        ),
+        ("CLAUDE.md".to_string(), CLAUDE_MD.to_string()),
+    ];
+    let source_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
+    for entry in std::fs::read_dir(source_dir).expect("src/ should be readable") {
+        let path = entry.expect("a readable entry").path();
+        if path.extension().is_some_and(|e| e == "rs") {
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            corpus.push((name, std::fs::read_to_string(&path).expect("readable")));
+        }
+    }
+
+    let mut broken: Vec<String> = Vec::new();
+
+    for (name, body) in &corpus {
+        for (index, _) in body.match_indices('§') {
+            let rest = &body[index + '§'.len_utf8()..];
+            let reference: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_digit() || *c == '.' || c.is_ascii_lowercase())
+                .collect();
+            let reference = reference.trim_end_matches('.').to_string();
+            if reference.is_empty() {
+                continue;
+            }
+            if !sections.contains(&reference) {
+                broken.push(format!("{name}: §{reference}"));
+            }
+        }
+
+        for (index, _) in body.match_indices("constraint #") {
+            let rest = &body[index + "constraint #".len()..];
+            let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+            let Ok(number) = digits.parse::<u32>() else {
+                continue;
+            };
+            if !constraints.contains(&number) {
+                broken.push(format!("{name}: constraint #{number}"));
+            }
+        }
+    }
+
+    broken.sort();
+    broken.dedup();
+    assert!(
+        broken.is_empty(),
+        "these pointers name a section or constraint that does not exist — a \
+         renumber or a deletion left them behind: {broken:#?}"
+    );
+}
+
+/// §8 — every module says what it is for, and none is named for nothing.
+///
+/// A module called `utils` is a module whose contents nobody decided on. The
+/// header comment is the other half: a file whose job is not stated in it is a
+/// file whose job drifts.
+#[test]
+fn every_module_is_named_for_its_job_and_says_what_it_is() {
+    const FORBIDDEN: &[&str] = &[
+        "utils", "helpers", "common", "misc", "shared", "core", "lib2",
+    ];
+
+    let source_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
+    let mut checked = 0;
+
+    for entry in std::fs::read_dir(source_dir).expect("src/ should be readable") {
+        let path = entry.expect("a readable entry").path();
+        if path.extension().is_none_or(|e| e != "rs") {
+            continue;
+        }
+        let name = path.file_stem().unwrap().to_string_lossy().to_string();
+        checked += 1;
+
+        assert!(
+            !FORBIDDEN.contains(&name.as_str()),
+            "`{name}.rs` is named for nothing — a module called that is one \
+             whose contents nobody decided on (§8)"
+        );
+        assert!(
+            name.chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
+            "`{name}.rs` should be snake_case"
+        );
+
+        // `tests.rs` is the suite; the rest must state their job at the top.
+        if name == "tests" {
+            continue;
+        }
+        let body = std::fs::read_to_string(&path).expect("a readable module");
+        let header: String = body.lines().take_while(|l| l.starts_with("//!")).collect();
+        assert!(
+            header.len() > 60,
+            "`{name}.rs` has no header comment saying what it owns (§8.1)"
+        );
+    }
+
+    assert!(checked >= 15, "expected every module to be checked");
+}
+
+/// Nothing is exported that only its own test uses.
+///
+/// The failure mode: a function superseded months ago, still compiling, still
+/// covered — by the test written for it. A 100% coverage gate cannot tell that
+/// apart from live code, which is exactly why it needs its own sweep.
+///
+/// Ported from the dead-logic-export contract on `cameronaaron.com`.
+#[test]
+fn nothing_is_public_only_for_its_own_test() {
+    let source_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
+
+    let mut production = String::new();
+    let mut declarations: Vec<(String, String)> = Vec::new();
+
+    for entry in std::fs::read_dir(source_dir).expect("src/ should be readable") {
+        let path = entry.expect("a readable entry").path();
+        if path.extension().is_none_or(|e| e != "rs") {
+            continue;
+        }
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        let body = std::fs::read_to_string(&path).expect("a readable module");
+
+        if name == "tests.rs" {
+            continue;
+        }
+        production.push_str(&body);
+        production.push('\n');
+
+        for line in body.lines() {
+            let line = line.trim();
+            let Some(rest) = line
+                .strip_prefix("pub fn ")
+                .or_else(|| line.strip_prefix("pub async fn "))
+                .or_else(|| line.strip_prefix("pub(crate) fn "))
+                .or_else(|| line.strip_prefix("pub(crate) async fn "))
+            else {
+                continue;
+            };
+            // Strip generics: `forward_broadcasts<S: FrameSink>` is declared
+            // with them and referred to without.
+            let fn_name = rest
+                .split_once('(')
+                .map(|(head, _)| head)
+                .unwrap_or(rest)
+                .split('<')
+                .next()
+                .unwrap_or_default()
+                .trim();
+            if !fn_name.is_empty() {
+                declarations.push((name.clone(), fn_name.to_string()));
+            }
+        }
+    }
+
+    assert!(
+        declarations.len() > 30,
+        "expected to find many exported functions; found {}",
+        declarations.len()
+    );
+
+    // Functions that exist only for the suite, by construction.
+    const TEST_ONLY: &[(&str, &str)] = &[("startup.rs", "generate_random_room_name")];
+
+    let mut dead: Vec<String> = Vec::new();
+    for (module, function) in &declarations {
+        if TEST_ONLY.iter().any(|(m, f)| m == module && f == function) {
+            continue;
+        }
+
+        // Count *references*, not calls: a handler is mounted as
+        // `get(ws_handler)` and a validator is passed as
+        // `and_then(sanitize_reply)` — neither is followed by a paren.
+        let referenced = production
+            .match_indices(function.as_str())
+            .filter(|(index, _)| {
+                let before = production[..*index].chars().next_back();
+                let after = production[index + function.len()..].chars().next();
+                let boundary = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric() && c != '_');
+                boundary(before) && boundary(after)
+            })
+            .count();
+
+        // The declaration itself is one of those references.
+        if referenced <= 1 {
+            dead.push(format!("{module}::{function}"));
+        }
+    }
+
+    // Self-cleaning: an exemption must not outlive the thing it exempts.
+    for (module, function) in TEST_ONLY {
+        assert!(
+            declarations
+                .iter()
+                .any(|(m, f)| m == module && f == function),
+            "{module}::{function} is exempted as test-only but no longer exists"
+        );
+    }
+
+    assert!(
+        dead.is_empty(),
+        "these are exported but called only from tests — a function whose only \
+         caller is the test written for it is dead code with a green coverage \
+         report: {dead:#?}"
+    );
+}
