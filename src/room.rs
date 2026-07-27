@@ -93,6 +93,20 @@ pub struct RoomState {
     /// `reactions_never_outlive_the_messages_they_belong_to` fails if a new
     /// removal path forgets to call it.
     pub reactions: HashMap<Uuid, HashMap<String, HashSet<String>>>,
+    /// The ids of the messages in `chat_history`.
+    ///
+    /// Exists so `toggle_reaction` can answer "is there such a message" in O(1)
+    /// without scanning the history. Without it, a reaction was accepted for
+    /// *any* uuid: a client sending `React` frames with random ids — which the
+    /// 100 ms throttle still allows ten times a second — grew `reactions`
+    /// without limit, storing buckets for messages that never existed and that
+    /// no removal path could ever clean up, none of it visible to the memory
+    /// ceiling.
+    ///
+    /// A derived copy, which §1.4a warns about, so it is maintained in exactly
+    /// the places that already maintain the reaction map and rebuilt by
+    /// `recompute_memory` — the same self-healing the byte totals get (§3.4).
+    pub message_ids: HashSet<Uuid>,
     /// Running total of attachment payload bytes still held in `chat_history`.
     ///
     /// Tracked rather than recomputed so the fade check on the message path is
@@ -140,6 +154,7 @@ pub fn create_room() -> RoomState {
         sender,
         chat_history: Vec::new(),
         reactions: HashMap::new(),
+        message_ids: HashSet::new(),
         attachment_bytes: 0,
     }
 }
@@ -240,6 +255,7 @@ impl RoomState {
         self.total_memory_bytes
             .fetch_add(msg_size, Ordering::SeqCst);
         self.attachment_bytes += msg.attachment.as_ref().map_or(0, Attachment::estimate_size);
+        self.message_ids.insert(msg.message_id);
         self.chat_history.push(Arc::new(msg));
 
         self.fade_oldest_attachments(memory_tracker);
@@ -311,6 +327,7 @@ impl RoomState {
     fn forget_reactions_for(&mut self, removed: &[Arc<OutgoingMessage>]) {
         for msg in removed {
             self.reactions.remove(&msg.message_id);
+            self.message_ids.remove(&msg.message_id);
         }
     }
 
@@ -329,6 +346,14 @@ impl RoomState {
         emoji: &str,
         user_id: &str,
     ) -> Option<(bool, usize)> {
+        // No message, no reaction. Checked first and in O(1): without it any
+        // uuid was accepted, and `reactions` grew for the life of the room with
+        // buckets nothing could ever evict (§3.5).
+        if !self.message_ids.contains(&message_id) {
+            debug!(%message_id, "reaction for a message this room does not hold");
+            return None;
+        }
+
         let buckets = self.reactions.entry(message_id).or_default();
 
         let active = match buckets.get_mut(emoji) {
@@ -506,6 +531,7 @@ impl RoomState {
         if removed > 0 {
             for id in &dropped_ids {
                 self.reactions.remove(id);
+                self.message_ids.remove(id);
             }
             // Recomputes `attachment_bytes` too, so aged-out images stop
             // counting against the room's picture budget.
@@ -573,6 +599,10 @@ impl RoomState {
             .filter_map(|m| m.attachment.as_ref())
             .map(Attachment::estimate_size)
             .sum();
+
+        // Rebuilt from the same walk, so a drift in the id index is corrected
+        // here rather than leaving reactions attached to nothing.
+        self.message_ids = self.chat_history.iter().map(|m| m.message_id).collect();
     }
 
     /// Broadcasts the number of users whose heartbeat is still current.

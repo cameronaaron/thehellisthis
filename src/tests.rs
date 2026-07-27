@@ -7238,6 +7238,7 @@ async fn test_claim_main_room_persistent() {
             sender: tokio::sync::broadcast::channel(1000).0,
             chat_history: vec![],
             reactions: std::collections::HashMap::new(),
+            message_ids: std::collections::HashSet::new(),
             attachment_bytes: 0,
             users: std::collections::HashMap::new(),
             available_animals: std::collections::VecDeque::new(),
@@ -7264,6 +7265,7 @@ async fn test_claim_custom_room_deleted_when_empty() {
             sender: tokio::sync::broadcast::channel(1000).0,
             chat_history: vec![],
             reactions: std::collections::HashMap::new(),
+            message_ids: std::collections::HashSet::new(),
             attachment_bytes: 0,
             users: std::collections::HashMap::new(),
             available_animals: std::collections::VecDeque::new(),
@@ -7303,6 +7305,7 @@ async fn test_claim_no_disk_persistence() {
             last_activity: Instant::now(),
             total_memory_bytes: std::sync::atomic::AtomicUsize::new(1024),
             reactions: std::collections::HashMap::new(),
+            message_ids: std::collections::HashSet::new(),
             attachment_bytes: 0,
         };
         rooms.insert("test".to_string(), room_state);
@@ -7383,6 +7386,7 @@ async fn test_room_survives_before_cleanup_delay() {
             sender: tokio::sync::broadcast::channel(1000).0,
             chat_history: vec![],
             reactions: std::collections::HashMap::new(),
+            message_ids: std::collections::HashSet::new(),
             attachment_bytes: 0,
             users: std::collections::HashMap::new(),
             available_animals: std::collections::VecDeque::new(),
@@ -7410,6 +7414,7 @@ async fn test_room_deleted_after_cleanup_delay() {
             sender: tokio::sync::broadcast::channel(1000).0,
             chat_history: vec![],
             reactions: std::collections::HashMap::new(),
+            message_ids: std::collections::HashSet::new(),
             attachment_bytes: 0,
             users: std::collections::HashMap::new(),
             available_animals: std::collections::VecDeque::new(),
@@ -7460,6 +7465,7 @@ async fn test_room_with_active_users_never_deleted() {
             sender: tokio::sync::broadcast::channel(1000).0,
             chat_history: vec![],
             reactions: std::collections::HashMap::new(),
+            message_ids: std::collections::HashSet::new(),
             attachment_bytes: 0,
             users,
             available_animals: std::collections::VecDeque::new(),
@@ -14291,12 +14297,37 @@ async fn a_rooms_oldest_images_fade_once_it_is_over_its_attachment_budget() {
     );
 }
 
+/// Puts a real message in a room and returns its id.
+///
+/// Reactions are only accepted for messages the room actually holds, so a test
+/// that reacts needs something to react *to*. Before that check existed these
+/// tests used a bare `Uuid::new_v4()`, which is precisely the state a client
+/// could put the server into: a reaction bucket for a message that never
+/// existed, which nothing could ever evict.
+fn message_in(room: &mut RoomState, tracker: &MemoryTracker, text: &str) -> Uuid {
+    let id = Uuid::new_v4();
+    room.add_message(
+        OutgoingMessage {
+            message_id: id,
+            user_id: "author".to_string(),
+            animal_name: "otter".to_string(),
+            text: text.to_string(),
+            timestamp: "1700000000000".to_string(),
+            reply_to: None,
+            attachment: None,
+        },
+        tracker,
+    );
+    id
+}
+
 /// Reacting is a toggle, and the same emoji twice is one person changing their
 /// mind rather than two reactions.
 #[test]
 fn reacting_twice_with_the_same_emoji_removes_the_reaction() {
+    let tracker = MemoryTracker::new();
     let mut room = create_room();
-    let id = Uuid::new_v4();
+    let id = message_in(&mut room, &tracker, "react to me");
 
     assert_eq!(room.toggle_reaction(id, "👍", "alice"), Some((true, 1)));
     assert_eq!(room.toggle_reaction(id, "👍", "bob"), Some((true, 2)));
@@ -14320,8 +14351,9 @@ fn reacting_twice_with_the_same_emoji_removes_the_reaction() {
 /// never releases grows for the life of the room.
 #[test]
 fn empty_reaction_buckets_are_not_retained() {
+    let tracker = MemoryTracker::new();
     let mut room = create_room();
-    let id = Uuid::new_v4();
+    let id = message_in(&mut room, &tracker, "react to me");
 
     room.toggle_reaction(id, "🔥", "alice");
     room.toggle_reaction(id, "🔥", "alice");
@@ -14433,15 +14465,21 @@ async fn a_reaction_must_be_on_the_roster() {
             "u1".to_string(),
             connected_user("u1", "otter", "c1", Instant::now()),
         );
-        room.chat_history.push(Arc::new(OutgoingMessage {
-            message_id,
-            user_id: "u1".to_string(),
-            animal_name: "otter".to_string(),
-            text: "hi".to_string(),
-            timestamp: "1".to_string(),
-            reply_to: None,
-            attachment: None,
-        }));
+        // Through `add_message`, not straight into the vector: the id index is
+        // maintained there, and a message the room does not know it has is one
+        // nobody can react to.
+        room.add_message(
+            OutgoingMessage {
+                message_id,
+                user_id: "u1".to_string(),
+                animal_name: "otter".to_string(),
+                text: "hi".to_string(),
+                timestamp: "1".to_string(),
+                reply_to: None,
+                attachment: None,
+            },
+            &state.memory_tracker,
+        );
         rooms.insert("react-room".to_string(), room);
     }
 
@@ -14473,8 +14511,9 @@ async fn a_reaction_must_be_on_the_roster() {
 /// A message holds a bounded number of distinct emoji.
 #[test]
 fn a_message_holds_a_bounded_number_of_distinct_reactions() {
+    let tracker = MemoryTracker::new();
     let mut room = create_room();
-    let id = Uuid::new_v4();
+    let id = message_in(&mut room, &tracker, "react to me");
 
     let mut accepted = 0;
     for (i, emoji) in REACTION_EMOJI.iter().enumerate() {
@@ -14926,7 +14965,7 @@ async fn a_message_whose_attachment_is_refused_is_not_delivered() {
 #[tokio::test]
 async fn the_reaction_event_broadcasts_throttles_and_refuses() {
     let state = Arc::new(AppState::new());
-    let message_id = Uuid::new_v4();
+    let message_id;
     {
         let mut rooms = state.rooms.write().await;
         let mut room = create_room();
@@ -14934,6 +14973,9 @@ async fn the_reaction_event_broadcasts_throttles_and_refuses() {
             "u1".to_string(),
             connected_user("u1", "otter", "c1", Instant::now()),
         );
+        // Something to react *to*: a reaction for a message the room does not
+        // hold is refused, so a bare uuid would exercise nothing.
+        message_id = message_in(&mut room, &state.memory_tracker, "react to me");
         rooms.insert("react-flow".to_string(), room);
     }
 
@@ -15021,8 +15063,9 @@ async fn the_reaction_event_broadcasts_throttles_and_refuses() {
 /// A message at its reaction cap refuses new emoji without leaving state behind.
 #[tokio::test]
 async fn a_refused_reaction_leaves_no_empty_bucket() {
+    let tracker = MemoryTracker::new();
     let mut room = create_room();
-    let id = Uuid::new_v4();
+    let id = message_in(&mut room, &tracker, "react to me");
 
     // Fill the message to its cap.
     for (i, emoji) in REACTION_EMOJI
@@ -15749,4 +15792,78 @@ fn the_node_types_match_the_node_ci_installs() {
         "@types/node is for Node {types_major} but CI installs Node {installed}; \
          the typecheck would be describing a runtime nobody runs"
     );
+}
+
+/// §3.5 — a reaction for a message that does not exist is refused, not stored.
+///
+/// `reactions` is keyed by message id, and until this check existed *any* uuid
+/// was accepted. A client sending `React` frames with random ids — which the
+/// 100 ms throttle still permits ten times a second, from every connection —
+/// grew the map for the life of the room with buckets for messages that never
+/// existed. Nothing could evict them, because eviction is driven by messages
+/// leaving the history and these had never been in it, and none of it was
+/// visible to the memory ceiling.
+///
+/// The check is O(1) against the id index, so refusing costs no more than
+/// accepting (§1.1).
+#[tokio::test]
+async fn a_reaction_for_a_message_that_does_not_exist_is_refused() {
+    let tracker = MemoryTracker::new();
+    let mut room = create_room();
+
+    for _ in 0..1000 {
+        assert_eq!(
+            room.toggle_reaction(Uuid::new_v4(), "🔥", "attacker"),
+            None,
+            "a reaction must be refused when there is no such message"
+        );
+    }
+
+    assert!(
+        room.reactions.is_empty(),
+        "refused reactions must leave nothing behind; found {} entries",
+        room.reactions.len()
+    );
+
+    // A real message is still reactable, and stops being so once it is gone.
+    let id = message_in(&mut room, &tracker, "real");
+    assert!(room.toggle_reaction(id, "🔥", "alice").is_some());
+    assert_eq!(room.reactions.len(), 1);
+
+    room.retain_newest(0, &tracker);
+    assert!(
+        room.toggle_reaction(id, "🎉", "alice").is_none(),
+        "a message trimmed out of history is no longer reactable"
+    );
+    assert!(room.reactions.is_empty());
+}
+
+/// The id index tracks the history through every path that changes it.
+///
+/// It is a derived copy, which §1.4a warns about, so the thing worth asserting
+/// is that it cannot drift: after any sequence of adds and removals it must
+/// hold exactly the ids the history holds.
+#[tokio::test]
+async fn the_message_id_index_never_drifts_from_the_history() {
+    let tracker = MemoryTracker::new();
+    let mut room = create_room();
+
+    let expected = |room: &RoomState| -> std::collections::HashSet<Uuid> {
+        room.chat_history.iter().map(|m| m.message_id).collect()
+    };
+
+    for i in 0..(MAX_MESSAGES_PER_ROOM + 40) {
+        message_in(&mut room, &tracker, &format!("m{i}"));
+    }
+    assert_eq!(room.message_ids, expected(&room), "after adding");
+
+    room.retain_newest(100, &tracker);
+    assert_eq!(room.message_ids, expected(&room), "after trimming");
+
+    room.prune_old_messages(5_000, &tracker);
+    assert_eq!(room.message_ids, expected(&room), "after pruning");
+
+    // Age-based cleanup: everything here is stamped 1970.
+    room.cleanup_messages(Instant::now(), &tracker).await;
+    assert_eq!(room.message_ids, expected(&room), "after age cleanup");
 }
