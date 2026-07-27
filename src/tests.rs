@@ -56,6 +56,15 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tower::util::ServiceExt;
 use uuid::Uuid;
 
+/// Builds a text frame.
+///
+/// `tungstenite` 0.27 changed `Message::Text` to take `Utf8Bytes` rather than
+/// `String`. One helper rather than a conversion at each of the ~30 call sites,
+/// so the next signature change is one edit.
+fn text_frame(body: impl Into<tokio_tungstenite::tungstenite::Utf8Bytes>) -> WsMessage {
+    WsMessage::Text(body.into())
+}
+
 #[tokio::test]
 async fn test_root_redirect() {
     let app = Router::new().route("/", get(root_redirect));
@@ -1249,10 +1258,10 @@ async fn recv_json_event(
 }
 
 fn extract_system_event<'a>(event: &'a JsonValue, key: &str) -> Option<&'a JsonValue> {
-    if let Some(t) = event.get("type").and_then(|v| v.as_str()) {
-        if t == key {
-            return Some(event);
-        }
+    if let Some(t) = event.get("type").and_then(|v| v.as_str())
+        && t == key
+    {
+        return Some(event);
     }
     event.get(key)
 }
@@ -1290,23 +1299,22 @@ async fn test_ws_user_join_event_sent() {
     let mut found = false;
     for _ in 0..10 {
         let val = recv_json_event(&mut ws).await;
-        if val.get("type") == Some(&JsonValue::String("System".to_string())) {
-            if let Some(event) = val.get("event") {
-                if let Some(payload) = extract_system_event(event, "UserJoined") {
-                    let user_id = payload
-                        .get("user_id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    let animal = payload
-                        .get("animal_name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    assert!(!user_id.is_empty());
-                    assert!(!animal.is_empty());
-                    found = true;
-                    break;
-                }
-            }
+        if val.get("type") == Some(&JsonValue::String("System".to_string()))
+            && let Some(event) = val.get("event")
+            && let Some(payload) = extract_system_event(event, "UserJoined")
+        {
+            let user_id = payload
+                .get("user_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let animal = payload
+                .get("animal_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            assert!(!user_id.is_empty());
+            assert!(!animal.is_empty());
+            found = true;
+            break;
         }
     }
 
@@ -1357,7 +1365,7 @@ async fn test_ws_message_broadcast_to_other_client() {
         "text": "Hello <script>alert(1)</script> world"
     })
     .to_string();
-    ws1.send(WsMessage::Text(payload)).await.unwrap();
+    ws1.send(text_frame(payload)).await.unwrap();
 
     let mut found = false;
     for _ in 0..10 {
@@ -1398,20 +1406,19 @@ async fn test_ws_typing_event_broadcast() {
         "is_typing": true
     })
     .to_string();
-    ws1.send(WsMessage::Text(payload)).await.unwrap();
+    ws1.send(text_frame(payload)).await.unwrap();
 
     let mut found = false;
     for _ in 0..10 {
         let val = recv_json_event(&mut ws2).await;
-        if val.get("type") == Some(&JsonValue::String("System".to_string())) {
-            if let Some(event) = val.get("event") {
-                if let Some(payload) = extract_system_event(event, "Typing") {
-                    let is_typing = payload.get("is_typing").and_then(|v| v.as_bool());
-                    assert_eq!(is_typing, Some(true));
-                    found = true;
-                    break;
-                }
-            }
+        if val.get("type") == Some(&JsonValue::String("System".to_string()))
+            && let Some(event) = val.get("event")
+            && let Some(payload) = extract_system_event(event, "Typing")
+        {
+            let is_typing = payload.get("is_typing").and_then(|v| v.as_bool());
+            assert_eq!(is_typing, Some(true));
+            found = true;
+            break;
         }
     }
 
@@ -1439,23 +1446,22 @@ async fn test_ws_read_receipt_event_broadcast() {
         "message_id": msg_id
     })
     .to_string();
-    ws1.send(WsMessage::Text(payload)).await.unwrap();
+    ws1.send(text_frame(payload)).await.unwrap();
 
     let mut found = false;
     for _ in 0..10 {
         let val = recv_json_event(&mut ws2).await;
-        if val.get("type") == Some(&JsonValue::String("System".to_string())) {
-            if let Some(event) = val.get("event") {
-                if let Some(payload) = extract_system_event(event, "ReadReceipt") {
-                    let message_id = payload
-                        .get("message_id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    assert!(!message_id.is_empty());
-                    found = true;
-                    break;
-                }
-            }
+        if val.get("type") == Some(&JsonValue::String("System".to_string()))
+            && let Some(event) = val.get("event")
+            && let Some(payload) = extract_system_event(event, "ReadReceipt")
+        {
+            let message_id = payload
+                .get("message_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            assert!(!message_id.is_empty());
+            found = true;
+            break;
         }
     }
 
@@ -1476,14 +1482,14 @@ async fn test_malformed_client_event() {
         .expect("Failed to connect");
 
     // Send invalid JSON
-    ws.send(WsMessage::Text(r#"{"type":"InvalidType"}"#.to_string()))
+    ws.send(text_frame(r#"{"type":"InvalidType"}"#.to_string()))
         .await
         .unwrap();
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Send malformed JSON
-    ws.send(WsMessage::Text(r#"{not valid json}"#.to_string()))
+    ws.send(text_frame(r#"{not valid json}"#.to_string()))
         .await
         .unwrap();
 
@@ -1507,11 +1513,9 @@ async fn test_empty_message_text() {
     }
 
     // Send empty message
-    ws.send(WsMessage::Text(
-        r#"{"type":"Message","text":""}"#.to_string(),
-    ))
-    .await
-    .unwrap();
+    ws.send(text_frame(r#"{"type":"Message","text":""}"#.to_string()))
+        .await
+        .unwrap();
 
     // Should not receive broadcast of empty message
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -1535,7 +1539,7 @@ async fn test_message_exceeds_max_length() {
 
     // Send message longer than MAX_MESSAGE_LEN
     let long_text = "x".repeat(10000);
-    ws.send(WsMessage::Text(format!(
+    ws.send(text_frame(format!(
         r#"{{"type":"Message","text":"{}"}}"#,
         long_text
     )))
@@ -1596,7 +1600,7 @@ async fn test_xss_attempt_in_message() {
     // Client 1 sends XSS attempt mixed with real text content
     // Pure script tags would be rejected as empty after sanitization
     let xss_payload = r#"Hello <script>alert('XSS')</script> world"#;
-    ws1.send(WsMessage::Text(format!(
+    ws1.send(text_frame(format!(
         r#"{{"type":"Message","text":"{}"}}"#,
         xss_payload
     )))
@@ -1642,7 +1646,7 @@ async fn test_sql_injection_attempt_in_message() {
 
     // Send SQL injection attempt
     let sql_payload = r#"'; DROP TABLE users; --"#;
-    ws.send(WsMessage::Text(format!(
+    ws.send(text_frame(format!(
         r#"{{"type":"Message","text":"{}"}}"#,
         sql_payload
     )))
@@ -1672,7 +1676,7 @@ async fn test_concurrent_typing_events() {
     // Send multiple typing events rapidly
     for i in 0..10 {
         let is_typing = i % 2 == 0;
-        ws.send(WsMessage::Text(format!(
+        ws.send(text_frame(format!(
             r#"{{"type":"Typing","is_typing":{}}}"#,
             is_typing
         )))
@@ -1701,7 +1705,7 @@ async fn test_read_receipt_for_nonexistent_message() {
     }
 
     // Send read receipt for fake message ID
-    ws.send(WsMessage::Text(
+    ws.send(text_frame(
         r#"{"type":"ReadReceipt","message_id":"00000000-0000-0000-0000-000000000000"}"#.to_string(),
     ))
     .await
@@ -1736,7 +1740,7 @@ async fn test_multiple_rooms_isolation() {
     }
 
     // Send message in room A
-    ws1.send(WsMessage::Text(
+    ws1.send(text_frame(
         r#"{"type":"Message","text":"Room A message"}"#.to_string(),
     ))
     .await
@@ -1865,7 +1869,7 @@ async fn test_concurrent_message_sends() {
 
     // Send multiple messages concurrently (within rate limit window)
     for i in 0..5 {
-        ws.send(WsMessage::Text(format!(
+        ws.send(text_frame(format!(
             r#"{{"type":"Message","text":"Concurrent message {}"}}"#,
             i
         )))
@@ -1927,7 +1931,7 @@ async fn test_message_history_preserved_across_reconnects() {
             let _ = recv_json_event(&mut ws1).await;
         }
 
-        ws1.send(WsMessage::Text(
+        ws1.send(text_frame(
             r#"{"type":"Message","text":"Historical message"}"#.to_string(),
         ))
         .await
@@ -1972,7 +1976,7 @@ async fn test_markdown_rendering_in_messages() {
     }
 
     // Send markdown formatted message
-    ws1.send(WsMessage::Text(
+    ws1.send(text_frame(
         r#"{"type":"Message","text":"**bold** and *italic* text"}"#.to_string(),
     ))
     .await
@@ -2011,7 +2015,7 @@ async fn test_special_characters_in_messages() {
     }
 
     // Send message with special characters
-    ws.send(WsMessage::Text(
+    ws.send(text_frame(
         r#"{"type":"Message","text":"Hello 世界 🌍 café"}"#.to_string(),
     ))
     .await
@@ -2516,7 +2520,9 @@ async fn test_ws_ping_pong_handling() {
         .expect("Failed to connect");
 
     // Send ping
-    ws.send(WsMessage::Ping(vec![1, 2, 3, 4])).await.unwrap();
+    ws.send(WsMessage::Ping(vec![1, 2, 3, 4].into()))
+        .await
+        .unwrap();
 
     // Server should respond with pong (though we don't strictly verify response)
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -2540,7 +2546,7 @@ async fn test_ws_binary_message_ignored() {
     }
 
     // Send binary data
-    ws.send(WsMessage::Binary(vec![0xDE, 0xAD, 0xBE, 0xEF]))
+    ws.send(WsMessage::Binary(vec![0xDE, 0xAD, 0xBE, 0xEF].into()))
         .await
         .unwrap();
 
@@ -2585,13 +2591,13 @@ async fn test_typing_debounce_same_state() {
     }
 
     // Send typing=true twice
-    ws.send(WsMessage::Text(
+    ws.send(text_frame(
         r#"{"type":"Typing","is_typing":true}"#.to_string(),
     ))
     .await
     .unwrap();
     tokio::time::sleep(Duration::from_millis(20)).await;
-    ws.send(WsMessage::Text(
+    ws.send(text_frame(
         r#"{"type":"Typing","is_typing":true}"#.to_string(),
     ))
     .await
@@ -2639,7 +2645,7 @@ async fn test_user_last_read_message_tracking() {
 
     // Send read receipt
     let fake_uuid = "12345678-1234-5678-1234-567812345678";
-    ws.send(WsMessage::Text(format!(
+    ws.send(text_frame(format!(
         r#"{{"type":"ReadReceipt","message_id":"{}"}}"#,
         fake_uuid
     )))
@@ -2852,7 +2858,7 @@ async fn test_message_broadcast_excludes_sender() {
     }
 
     // ws1 sends message
-    ws1.send(WsMessage::Text(
+    ws1.send(text_frame(
         r#"{"type":"Message","text":"Test from ws1"}"#.to_string(),
     ))
     .await
@@ -3001,7 +3007,7 @@ async fn test_room_state_typing_broadcast() {
     }
 
     // Send typing event
-    ws1.send(WsMessage::Text(
+    ws1.send(text_frame(
         r#"{"type":"Typing","is_typing":true}"#.to_string(),
     ))
     .await
@@ -3063,14 +3069,14 @@ async fn test_message_deduplication_different_messages() {
         let _ = recv_json_event(&mut ws).await;
     }
 
-    ws.send(WsMessage::Text(
+    ws.send(text_frame(
         r#"{"type":"Message","text":"Message 1"}"#.to_string(),
     ))
     .await
     .unwrap();
     tokio::time::sleep(Duration::from_millis(600)).await;
 
-    ws.send(WsMessage::Text(
+    ws.send(text_frame(
         r#"{"type":"Message","text":"Message 2"}"#.to_string(),
     ))
     .await
@@ -3219,12 +3225,12 @@ async fn test_websocket_invalid_json() {
 
     let _ = recv_json_event(&mut ws).await;
 
-    ws.send(WsMessage::Text("{not valid json}".to_string()))
+    ws.send(text_frame("{not valid json}".to_string()))
         .await
         .unwrap();
 
     let result = ws
-        .send(WsMessage::Text(
+        .send(text_frame(
             r#"{"type":"Message","text":"test"}"#.to_string(),
         ))
         .await;
@@ -3239,14 +3245,14 @@ async fn test_websocket_unknown_event_type() {
 
     let _ = recv_json_event(&mut ws).await;
 
-    ws.send(WsMessage::Text(
+    ws.send(text_frame(
         r#"{"type":"UnknownEvent","data":"test"}"#.to_string(),
     ))
     .await
     .unwrap();
 
     let result = ws
-        .send(WsMessage::Text(
+        .send(text_frame(
             r#"{"type":"Message","text":"test"}"#.to_string(),
         ))
         .await;
@@ -3504,7 +3510,7 @@ async fn test_websocket_multiple_rapid_frames() {
     // Send 5 messages rapidly (not 10 - rate limiting kicks in)
     for i in 0..5 {
         let msg = serde_json::json!({"type": "Message", "text": format!("Rapid message {}", i)});
-        ws.send(WsMessage::Text(msg.to_string())).await.unwrap();
+        ws.send(text_frame(msg.to_string())).await.unwrap();
         // Small delay to avoid rate limiting
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -3514,12 +3520,10 @@ async fn test_websocket_multiple_rapid_frames() {
     for _ in 0..10 {
         if let Ok(Some(Ok(WsMessage::Text(text)))) =
             tokio::time::timeout(Duration::from_millis(500), ws.next()).await
+            && let Ok(event) = serde_json::from_str::<serde_json::Value>(&text)
+            && event["type"] == "Message"
         {
-            if let Ok(event) = serde_json::from_str::<serde_json::Value>(&text) {
-                if event["type"] == "Message" {
-                    received += 1;
-                }
-            }
+            received += 1;
         }
     }
     assert!(
@@ -3544,7 +3548,7 @@ async fn test_typing_indicator_broadcast() {
     while let Ok(Some(_)) = tokio::time::timeout(Duration::from_millis(50), ws2.next()).await {}
 
     // ws1 sends typing indicator
-    ws1.send(WsMessage::Text(
+    ws1.send(text_frame(
         r#"{"type":"Typing","is_typing":true}"#.to_string(),
     ))
     .await
@@ -3555,17 +3559,13 @@ async fn test_typing_indicator_broadcast() {
     for _ in 0..10 {
         if let Ok(Some(Ok(WsMessage::Text(text)))) =
             tokio::time::timeout(Duration::from_millis(200), ws2.next()).await
+            && let Ok(event) = serde_json::from_str::<serde_json::Value>(&text)
+            && event["type"] == "System"
+            && let Some(typing) = event.get("event").and_then(|e| e.get("Typing"))
+            && typing.get("is_typing") == Some(&serde_json::json!(true))
         {
-            if let Ok(event) = serde_json::from_str::<serde_json::Value>(&text) {
-                if event["type"] == "System" {
-                    if let Some(typing) = event.get("event").and_then(|e| e.get("Typing")) {
-                        if typing.get("is_typing") == Some(&serde_json::json!(true)) {
-                            received_typing = true;
-                            break;
-                        }
-                    }
-                }
-            }
+            received_typing = true;
+            break;
         }
     }
     assert!(
@@ -3853,7 +3853,7 @@ async fn test_invalid_read_receipt_message_id() {
     }
 
     // Send invalid read receipt (not a valid UUID)
-    ws.send(WsMessage::Text(
+    ws.send(text_frame(
         r#"{"type":"ReadReceipt","message_id":"not-a-uuid"}"#.to_string(),
     ))
     .await
@@ -3863,7 +3863,7 @@ async fn test_invalid_read_receipt_message_id() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Connection should still be alive
-    ws.send(WsMessage::Text(
+    ws.send(text_frame(
         r#"{"type":"Message","text":"Still connected"}"#.to_string(),
     ))
     .await
@@ -3890,13 +3890,13 @@ async fn test_payload_too_large_rejected() {
     // Send a very large payload (larger than MAX_PAYLOAD_SIZE which is 64KB)
     let large_text = "x".repeat(70000);
     let msg = format!(r#"{{"type":"Message","text":"{}"}}"#, large_text);
-    ws.send(WsMessage::Text(msg)).await.unwrap();
+    ws.send(text_frame(msg)).await.unwrap();
 
     // Server should handle gracefully - message won't be broadcast
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Connection should still work
-    ws.send(WsMessage::Text(
+    ws.send(text_frame(
         r#"{"type":"Message","text":"Small message"}"#.to_string(),
     ))
     .await
@@ -3922,25 +3922,22 @@ async fn test_duplicate_message_rejected() {
 
     // Send same message twice rapidly
     let msg = r#"{"type":"Message","text":"Duplicate test message"}"#;
-    ws.send(WsMessage::Text(msg.to_string())).await.unwrap();
-    ws.send(WsMessage::Text(msg.to_string())).await.unwrap();
+    ws.send(text_frame(msg.to_string())).await.unwrap();
+    ws.send(text_frame(msg.to_string())).await.unwrap();
 
     // Should only receive one message back (duplicate rejected)
     let mut message_count = 0;
     for _ in 0..5 {
         if let Ok(Some(Ok(WsMessage::Text(text)))) =
             tokio::time::timeout(Duration::from_millis(200), ws.next()).await
+            && let Ok(event) = serde_json::from_str::<serde_json::Value>(&text)
+            && event["type"] == "Message"
+            && event["message"]["text"]
+                .as_str()
+                .map(|t| t.contains("Duplicate test message"))
+                .unwrap_or(false)
         {
-            if let Ok(event) = serde_json::from_str::<serde_json::Value>(&text) {
-                if event["type"] == "Message"
-                    && event["message"]["text"]
-                        .as_str()
-                        .map(|t| t.contains("Duplicate test message"))
-                        .unwrap_or(false)
-                {
-                    message_count += 1;
-                }
-            }
+            message_count += 1;
         }
     }
 
@@ -4256,7 +4253,7 @@ async fn test_typing_event_debounce() {
 
     // Send typing events rapidly (should be debounced)
     for _ in 0..5 {
-        ws.send(WsMessage::Text(
+        ws.send(text_frame(
             r#"{"type":"Typing","is_typing":true}"#.to_string(),
         ))
         .await
@@ -4267,7 +4264,7 @@ async fn test_typing_event_debounce() {
     // Just verify connection is still alive
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    ws.send(WsMessage::Text(
+    ws.send(text_frame(
         r#"{"type":"Message","text":"Still connected"}"#.to_string(),
     ))
     .await
@@ -4294,7 +4291,7 @@ async fn test_read_receipt_event_debounce() {
     // Send read receipts rapidly (should be debounced)
     let msg_id = Uuid::new_v4().to_string();
     for _ in 0..5 {
-        ws.send(WsMessage::Text(format!(
+        ws.send(text_frame(format!(
             r#"{{"type":"ReadReceipt","message_id":"{}"}}"#,
             msg_id
         )))
@@ -4305,7 +4302,7 @@ async fn test_read_receipt_event_debounce() {
     // Verify connection still works
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    ws.send(WsMessage::Text(
+    ws.send(text_frame(
         r#"{"type":"Message","text":"Still connected"}"#.to_string(),
     ))
     .await
@@ -5586,18 +5583,17 @@ async fn test_reconnect_with_chat_history() {
     let mut user_id = String::new();
     for _ in 0..10 {
         let val = recv_json_event(&mut ws_stream).await;
-        if val.get("type") == Some(&JsonValue::String("System".to_string())) {
-            if let Some(event) = val.get("event") {
-                if let Some(payload) = extract_system_event(event, "UserJoined") {
-                    user_id = payload
-                        .get("user_id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    if !user_id.is_empty() {
-                        break;
-                    }
-                }
+        if val.get("type") == Some(&JsonValue::String("System".to_string()))
+            && let Some(event) = val.get("event")
+            && let Some(payload) = extract_system_event(event, "UserJoined")
+        {
+            user_id = payload
+                .get("user_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if !user_id.is_empty() {
+                break;
             }
         }
     }
@@ -5612,7 +5608,7 @@ async fn test_reconnect_with_chat_history() {
     // Send a message
     let test_msg = r#"{"type":"Message","text":"First message before reconnect"}"#;
     ws_stream
-        .send(WsMessage::Text(test_msg.to_string()))
+        .send(text_frame(test_msg.to_string()))
         .await
         .unwrap();
 
@@ -5670,18 +5666,17 @@ async fn test_message_alignment_with_multiple_users() {
     let mut user1_id = String::new();
     for _ in 0..10 {
         let val = recv_json_event(&mut ws1).await;
-        if val.get("type") == Some(&JsonValue::String("System".to_string())) {
-            if let Some(event) = val.get("event") {
-                if let Some(payload) = extract_system_event(event, "UserJoined") {
-                    user1_id = payload
-                        .get("user_id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    if !user1_id.is_empty() {
-                        break;
-                    }
-                }
+        if val.get("type") == Some(&JsonValue::String("System".to_string()))
+            && let Some(event) = val.get("event")
+            && let Some(payload) = extract_system_event(event, "UserJoined")
+        {
+            user1_id = payload
+                .get("user_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if !user1_id.is_empty() {
+                break;
             }
         }
     }
@@ -5697,18 +5692,17 @@ async fn test_message_alignment_with_multiple_users() {
     let mut user2_id = String::new();
     for _ in 0..10 {
         let val = recv_json_event(&mut ws2).await;
-        if val.get("type") == Some(&JsonValue::String("System".to_string())) {
-            if let Some(event) = val.get("event") {
-                if let Some(payload) = extract_system_event(event, "UserJoined") {
-                    user2_id = payload
-                        .get("user_id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    if !user2_id.is_empty() {
-                        break;
-                    }
-                }
+        if val.get("type") == Some(&JsonValue::String("System".to_string()))
+            && let Some(event) = val.get("event")
+            && let Some(payload) = extract_system_event(event, "UserJoined")
+        {
+            user2_id = payload
+                .get("user_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if !user2_id.is_empty() {
+                break;
             }
         }
     }
@@ -5724,28 +5718,28 @@ async fn test_message_alignment_with_multiple_users() {
 
     // User 1 sends message
     let msg1 = r#"{"type":"Message","text":"From user 1"}"#;
-    ws1.send(WsMessage::Text(msg1.to_string())).await.unwrap();
+    ws1.send(text_frame(msg1.to_string())).await.unwrap();
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // User 2 sends message
     let msg2 = r#"{"type":"Message","text":"From user 2"}"#;
-    ws2.send(WsMessage::Text(msg2.to_string())).await.unwrap();
+    ws2.send(text_frame(msg2.to_string())).await.unwrap();
 
     // Both users should receive both messages with correct user_ids
     let mut messages_received = 0;
     for _ in 0..4 {
-        if let Ok(data) = timeout(Duration::from_secs(2), recv_json_event(&mut ws1)).await {
-            if data["type"] == "Message" {
-                let received_user_id = data["message"]["user_id"].as_str().unwrap_or("");
-                assert!(
-                    !received_user_id.is_empty()
-                        && (received_user_id == user1_id || received_user_id == user2_id),
-                    "Message should have valid user_id, got: {}",
-                    received_user_id
-                );
-                messages_received += 1;
-            }
+        if let Ok(data) = timeout(Duration::from_secs(2), recv_json_event(&mut ws1)).await
+            && data["type"] == "Message"
+        {
+            let received_user_id = data["message"]["user_id"].as_str().unwrap_or("");
+            assert!(
+                !received_user_id.is_empty()
+                    && (received_user_id == user1_id || received_user_id == user2_id),
+                "Message should have valid user_id, got: {}",
+                received_user_id
+            );
+            messages_received += 1;
         }
     }
 
@@ -5776,13 +5770,13 @@ async fn test_user_count_updates_on_join() {
     // User 1 should receive user count update
     let mut found_count = false;
     for _ in 0..10 {
-        if let Ok(data) = timeout(Duration::from_secs(2), recv_json_event(&mut ws1)).await {
-            if data["type"] == "UserCount" {
-                let count = data["count"].as_u64().unwrap();
-                if count == 2 {
-                    found_count = true;
-                    break;
-                }
+        if let Ok(data) = timeout(Duration::from_secs(2), recv_json_event(&mut ws1)).await
+            && data["type"] == "UserCount"
+        {
+            let count = data["count"].as_u64().unwrap();
+            if count == 2 {
+                found_count = true;
+                break;
             }
         }
     }
@@ -5955,18 +5949,17 @@ async fn test_ws_message_includes_user_id_in_broadcast() {
     let mut ws1_user_id = String::new();
     for _ in 0..10 {
         let val = recv_json_event(&mut ws1).await;
-        if val.get("type") == Some(&JsonValue::String("System".to_string())) {
-            if let Some(event) = val.get("event") {
-                if let Some(payload) = extract_system_event(event, "UserJoined") {
-                    let uid = payload
-                        .get("user_id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    if !uid.is_empty() {
-                        ws1_user_id = uid.to_string();
-                        break;
-                    }
-                }
+        if val.get("type") == Some(&JsonValue::String("System".to_string()))
+            && let Some(event) = val.get("event")
+            && let Some(payload) = extract_system_event(event, "UserJoined")
+        {
+            let uid = payload
+                .get("user_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if !uid.is_empty() {
+                ws1_user_id = uid.to_string();
+                break;
             }
         }
     }
@@ -5978,7 +5971,7 @@ async fn test_ws_message_includes_user_id_in_broadcast() {
     }
 
     // ws1 sends message
-    ws1.send(WsMessage::Text(
+    ws1.send(text_frame(
         r#"{"type":"Message","text":"Test alignment"}"#.to_string(),
     ))
     .await
@@ -5987,20 +5980,20 @@ async fn test_ws_message_includes_user_id_in_broadcast() {
     // ws2 receives - verify user_id is present in message
     let mut found_message = false;
     for _ in 0..10 {
-        if let Ok(val) = timeout(Duration::from_secs(2), recv_json_event(&mut ws2)).await {
-            if val.get("type") == Some(&JsonValue::String("Message".to_string())) {
-                let msg_user_id = val["message"]["user_id"].as_str().unwrap_or("");
-                assert!(
-                    !msg_user_id.is_empty(),
-                    "Broadcast message MUST contain user_id"
-                );
-                assert_eq!(
-                    msg_user_id, ws1_user_id,
-                    "Message user_id should match sender"
-                );
-                found_message = true;
-                break;
-            }
+        if let Ok(val) = timeout(Duration::from_secs(2), recv_json_event(&mut ws2)).await
+            && val.get("type") == Some(&JsonValue::String("Message".to_string()))
+        {
+            let msg_user_id = val["message"]["user_id"].as_str().unwrap_or("");
+            assert!(
+                !msg_user_id.is_empty(),
+                "Broadcast message MUST contain user_id"
+            );
+            assert_eq!(
+                msg_user_id, ws1_user_id,
+                "Message user_id should match sender"
+            );
+            found_message = true;
+            break;
         }
     }
 
@@ -6024,18 +6017,17 @@ async fn test_message_alignment_after_reconnect() {
     let mut user_id = String::new();
     for _ in 0..10 {
         let val = recv_json_event(&mut ws1).await;
-        if val.get("type") == Some(&JsonValue::String("System".to_string())) {
-            if let Some(event) = val.get("event") {
-                if let Some(payload) = extract_system_event(event, "UserJoined") {
-                    user_id = payload
-                        .get("user_id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    if !user_id.is_empty() {
-                        break;
-                    }
-                }
+        if val.get("type") == Some(&JsonValue::String("System".to_string()))
+            && let Some(event) = val.get("event")
+            && let Some(payload) = extract_system_event(event, "UserJoined")
+        {
+            user_id = payload
+                .get("user_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if !user_id.is_empty() {
+                break;
             }
         }
     }
@@ -6045,7 +6037,7 @@ async fn test_message_alignment_after_reconnect() {
         let _ = timeout(Duration::from_millis(100), recv_json_event(&mut ws1)).await;
     }
 
-    ws1.send(WsMessage::Text(
+    ws1.send(text_frame(
         r#"{"type":"Message","text":"Pre-reconnect message"}"#.to_string(),
     ))
     .await
@@ -6061,18 +6053,18 @@ async fn test_message_alignment_after_reconnect() {
     // Should receive history with original user_id intact
     let mut found_historical_msg = false;
     for _ in 0..15 {
-        if let Ok(val) = timeout(Duration::from_secs(2), recv_json_event(&mut ws2)).await {
-            if val.get("type") == Some(&JsonValue::String("Message".to_string())) {
-                let msg_user_id = val["message"]["user_id"].as_str().unwrap_or("");
-                let text = val["message"]["text"].as_str().unwrap_or("");
-                if text.contains("Pre-reconnect") {
-                    assert_eq!(
-                        msg_user_id, user_id,
-                        "Historical message must preserve original user_id for alignment"
-                    );
-                    found_historical_msg = true;
-                    break;
-                }
+        if let Ok(val) = timeout(Duration::from_secs(2), recv_json_event(&mut ws2)).await
+            && val.get("type") == Some(&JsonValue::String("Message".to_string()))
+        {
+            let msg_user_id = val["message"]["user_id"].as_str().unwrap_or("");
+            let text = val["message"]["text"].as_str().unwrap_or("");
+            if text.contains("Pre-reconnect") {
+                assert_eq!(
+                    msg_user_id, user_id,
+                    "Historical message must preserve original user_id for alignment"
+                );
+                found_historical_msg = true;
+                break;
             }
         }
     }
@@ -6098,36 +6090,34 @@ async fn test_multiple_users_message_ids_distinct() {
 
     for _ in 0..10 {
         let val = recv_json_event(&mut ws1).await;
-        if val.get("type") == Some(&JsonValue::String("System".to_string())) {
-            if let Some(event) = val.get("event") {
-                if let Some(payload) = extract_system_event(event, "UserJoined") {
-                    let uid = payload
-                        .get("user_id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    if user1_id.is_empty() {
-                        user1_id = uid.to_string();
-                    }
-                    break;
-                }
+        if val.get("type") == Some(&JsonValue::String("System".to_string()))
+            && let Some(event) = val.get("event")
+            && let Some(payload) = extract_system_event(event, "UserJoined")
+        {
+            let uid = payload
+                .get("user_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if user1_id.is_empty() {
+                user1_id = uid.to_string();
             }
+            break;
         }
     }
 
     for _ in 0..10 {
         let val = recv_json_event(&mut ws2).await;
-        if val.get("type") == Some(&JsonValue::String("System".to_string())) {
-            if let Some(event) = val.get("event") {
-                if let Some(payload) = extract_system_event(event, "UserJoined") {
-                    let uid = payload
-                        .get("user_id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    if uid != user1_id && !uid.is_empty() {
-                        user2_id = uid.to_string();
-                        break;
-                    }
-                }
+        if val.get("type") == Some(&JsonValue::String("System".to_string()))
+            && let Some(event) = val.get("event")
+            && let Some(payload) = extract_system_event(event, "UserJoined")
+        {
+            let uid = payload
+                .get("user_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if uid != user1_id && !uid.is_empty() {
+                user2_id = uid.to_string();
+                break;
             }
         }
     }
@@ -6155,7 +6145,7 @@ async fn test_chat_history_sends_on_connect() {
         let _ = timeout(Duration::from_millis(100), recv_json_event(&mut ws1)).await;
     }
 
-    ws1.send(WsMessage::Text(
+    ws1.send(text_frame(
         r#"{"type":"Message","text":"Historical message"}"#.to_string(),
     ))
     .await
@@ -6168,13 +6158,13 @@ async fn test_chat_history_sends_on_connect() {
 
     let mut received_history = false;
     for _ in 0..15 {
-        if let Ok(val) = timeout(Duration::from_secs(2), recv_json_event(&mut ws2)).await {
-            if val.get("type") == Some(&JsonValue::String("Message".to_string())) {
-                let text = val["message"]["text"].as_str().unwrap_or("");
-                if text.contains("Historical") {
-                    received_history = true;
-                    break;
-                }
+        if let Ok(val) = timeout(Duration::from_secs(2), recv_json_event(&mut ws2)).await
+            && val.get("type") == Some(&JsonValue::String("Message".to_string()))
+        {
+            let text = val["message"]["text"].as_str().unwrap_or("");
+            if text.contains("Historical") {
+                received_history = true;
+                break;
             }
         }
     }
@@ -6351,7 +6341,7 @@ async fn test_message_id_is_valid_uuid() {
     }
 
     // Send message
-    ws1.send(WsMessage::Text(
+    ws1.send(text_frame(
         r#"{"type":"Message","text":"UUID test"}"#.to_string(),
     ))
     .await
@@ -6359,17 +6349,17 @@ async fn test_message_id_is_valid_uuid() {
 
     // Receive and verify UUID format
     for _ in 0..10 {
-        if let Ok(val) = timeout(Duration::from_secs(2), recv_json_event(&mut ws2)).await {
-            if val.get("type") == Some(&JsonValue::String("Message".to_string())) {
-                let message_id = val["message"]["message_id"].as_str().unwrap_or("");
-                // UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-                assert!(
-                    uuid::Uuid::parse_str(message_id).is_ok(),
-                    "message_id must be valid UUID, got: {}",
-                    message_id
-                );
-                break;
-            }
+        if let Ok(val) = timeout(Duration::from_secs(2), recv_json_event(&mut ws2)).await
+            && val.get("type") == Some(&JsonValue::String("Message".to_string()))
+        {
+            let message_id = val["message"]["message_id"].as_str().unwrap_or("");
+            // UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+            assert!(
+                uuid::Uuid::parse_str(message_id).is_ok(),
+                "message_id must be valid UUID, got: {}",
+                message_id
+            );
+            break;
         }
     }
 
@@ -6394,26 +6384,26 @@ async fn test_timestamp_is_unix_millis() {
         .unwrap()
         .as_millis();
 
-    ws1.send(WsMessage::Text(
+    ws1.send(text_frame(
         r#"{"type":"Message","text":"Timestamp test"}"#.to_string(),
     ))
     .await
     .unwrap();
 
     for _ in 0..10 {
-        if let Ok(val) = timeout(Duration::from_secs(2), recv_json_event(&mut ws2)).await {
-            if val.get("type") == Some(&JsonValue::String("Message".to_string())) {
-                let timestamp_str = val["message"]["timestamp"].as_str().unwrap_or("0");
-                let timestamp: u128 = timestamp_str.parse().unwrap_or(0);
+        if let Ok(val) = timeout(Duration::from_secs(2), recv_json_event(&mut ws2)).await
+            && val.get("type") == Some(&JsonValue::String("Message".to_string()))
+        {
+            let timestamp_str = val["message"]["timestamp"].as_str().unwrap_or("0");
+            let timestamp: u128 = timestamp_str.parse().unwrap_or(0);
 
-                // Timestamp should be reasonable Unix milliseconds (after year 2020)
-                assert!(
-                    timestamp > 1577836800000,
-                    "Timestamp should be Unix milliseconds"
-                );
-                assert!(timestamp >= before_send, "Timestamp should be >= send time");
-                break;
-            }
+            // Timestamp should be reasonable Unix milliseconds (after year 2020)
+            assert!(
+                timestamp > 1577836800000,
+                "Timestamp should be Unix milliseconds"
+            );
+            assert!(timestamp >= before_send, "Timestamp should be >= send time");
+            break;
         }
     }
 
@@ -6432,18 +6422,17 @@ async fn test_animal_name_in_message() {
     let mut animal_name = String::new();
     for _ in 0..10 {
         let val = recv_json_event(&mut ws1).await;
-        if val.get("type") == Some(&JsonValue::String("System".to_string())) {
-            if let Some(event) = val.get("event") {
-                if let Some(payload) = extract_system_event(event, "UserJoined") {
-                    animal_name = payload
-                        .get("animal_name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    if !animal_name.is_empty() {
-                        break;
-                    }
-                }
+        if val.get("type") == Some(&JsonValue::String("System".to_string()))
+            && let Some(event) = val.get("event")
+            && let Some(payload) = extract_system_event(event, "UserJoined")
+        {
+            animal_name = payload
+                .get("animal_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if !animal_name.is_empty() {
+                break;
             }
         }
     }
@@ -6453,23 +6442,23 @@ async fn test_animal_name_in_message() {
         let _ = timeout(Duration::from_millis(100), recv_json_event(&mut ws2)).await;
     }
 
-    ws1.send(WsMessage::Text(
+    ws1.send(text_frame(
         r#"{"type":"Message","text":"Animal test"}"#.to_string(),
     ))
     .await
     .unwrap();
 
     for _ in 0..10 {
-        if let Ok(val) = timeout(Duration::from_secs(2), recv_json_event(&mut ws2)).await {
-            if val.get("type") == Some(&JsonValue::String("Message".to_string())) {
-                let msg_animal = val["message"]["animal_name"].as_str().unwrap_or("");
-                assert!(!msg_animal.is_empty(), "Message must contain animal_name");
-                assert_eq!(
-                    msg_animal, animal_name,
-                    "Message animal_name should match sender"
-                );
-                break;
-            }
+        if let Ok(val) = timeout(Duration::from_secs(2), recv_json_event(&mut ws2)).await
+            && val.get("type") == Some(&JsonValue::String("Message".to_string()))
+        {
+            let msg_animal = val["message"]["animal_name"].as_str().unwrap_or("");
+            assert!(!msg_animal.is_empty(), "Message must contain animal_name");
+            assert_eq!(
+                msg_animal, animal_name,
+                "Message animal_name should match sender"
+            );
+            break;
         }
     }
 
@@ -6487,24 +6476,23 @@ async fn test_system_event_contains_required_fields() {
     let mut found_join = false;
     for _ in 0..10 {
         let val = recv_json_event(&mut ws).await;
-        if val.get("type") == Some(&JsonValue::String("System".to_string())) {
-            if let Some(event) = val.get("event") {
-                if let Some(payload) = extract_system_event(event, "UserJoined") {
-                    let user_id = payload
-                        .get("user_id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    let animal_name = payload
-                        .get("animal_name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
+        if val.get("type") == Some(&JsonValue::String("System".to_string()))
+            && let Some(event) = val.get("event")
+            && let Some(payload) = extract_system_event(event, "UserJoined")
+        {
+            let user_id = payload
+                .get("user_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let animal_name = payload
+                .get("animal_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
 
-                    assert!(!user_id.is_empty(), "UserJoined must have user_id");
-                    assert!(!animal_name.is_empty(), "UserJoined must have animal_name");
-                    found_join = true;
-                    break;
-                }
-            }
+            assert!(!user_id.is_empty(), "UserJoined must have user_id");
+            assert!(!animal_name.is_empty(), "UserJoined must have animal_name");
+            found_join = true;
+            break;
         }
     }
 
@@ -6850,7 +6838,7 @@ async fn test_ws_early_disconnect_during_history() {
     }
 
     for i in 0..3 {
-        ws1.send(WsMessage::Text(format!(
+        ws1.send(text_frame(format!(
             r#"{{"type":"Message","text":"History message {}"}}"#,
             i
         )))
@@ -9036,16 +9024,15 @@ async fn test_message_rejected_after_heartbeat_timeout() {
 
     // Verify the user has timed out heartbeat
     let rooms = app_state.rooms.read().await;
-    if let Some(room_state) = rooms.get("heartbeat-test-room") {
-        if let Some(user) = room_state.users.get("timeout-user") {
-            if let ConnectionState::Connected { last_heartbeat, .. } = user.connection_state {
-                let elapsed = Instant::now().duration_since(last_heartbeat);
-                assert!(
-                    elapsed > HEARTBEAT_TIMEOUT,
-                    "Heartbeat should have timed out"
-                );
-            }
-        }
+    if let Some(room_state) = rooms.get("heartbeat-test-room")
+        && let Some(user) = room_state.users.get("timeout-user")
+        && let ConnectionState::Connected { last_heartbeat, .. } = user.connection_state
+    {
+        let elapsed = Instant::now().duration_since(last_heartbeat);
+        assert!(
+            elapsed > HEARTBEAT_TIMEOUT,
+            "Heartbeat should have timed out"
+        );
     }
 }
 
@@ -9088,17 +9075,16 @@ async fn test_typing_event_debounce_interval() {
 
     // Verify the debounce would trigger
     let rooms = app_state.rooms.read().await;
-    if let Some(room_state) = rooms.get("typing-debounce-room") {
-        if let Some(user) = room_state.users.get("typing-user") {
-            if let Some(last_typing) = user.last_typing_event {
-                let elapsed = Instant::now().duration_since(last_typing);
-                // Should be less than the debounce interval since we just set it
-                assert!(
-                    elapsed < TYPING_EVENT_MIN_INTERVAL,
-                    "Typing event should be debounced"
-                );
-            }
-        }
+    if let Some(room_state) = rooms.get("typing-debounce-room")
+        && let Some(user) = room_state.users.get("typing-user")
+        && let Some(last_typing) = user.last_typing_event
+    {
+        let elapsed = Instant::now().duration_since(last_typing);
+        // Should be less than the debounce interval since we just set it
+        assert!(
+            elapsed < TYPING_EVENT_MIN_INTERVAL,
+            "Typing event should be debounced"
+        );
     }
 }
 
@@ -9140,16 +9126,15 @@ async fn test_read_receipt_debounce_interval() {
 
     // Verify the debounce would trigger
     let rooms = app_state.rooms.read().await;
-    if let Some(room_state) = rooms.get("receipt-debounce-room") {
-        if let Some(user) = room_state.users.get("receipt-user") {
-            if let Some(last_receipt) = user.last_read_receipt_event {
-                let elapsed = Instant::now().duration_since(last_receipt);
-                assert!(
-                    elapsed < READ_RECEIPT_MIN_INTERVAL,
-                    "Read receipt should be debounced"
-                );
-            }
-        }
+    if let Some(room_state) = rooms.get("receipt-debounce-room")
+        && let Some(user) = room_state.users.get("receipt-user")
+        && let Some(last_receipt) = user.last_read_receipt_event
+    {
+        let elapsed = Instant::now().duration_since(last_receipt);
+        assert!(
+            elapsed < READ_RECEIPT_MIN_INTERVAL,
+            "Read receipt should be debounced"
+        );
     }
 }
 
@@ -9193,13 +9178,13 @@ async fn test_invalid_uuid_in_read_receipt_via_ws() {
 
     // Send read receipt with invalid UUID
     let invalid_receipt = r#"{"type":"ReadReceipt","message_id":"not-a-valid-uuid"}"#;
-    ws.send(WsMessage::Text(invalid_receipt.into())).await.ok();
+    ws.send(text_frame(invalid_receipt)).await.ok();
 
     // Wait a moment - server should log warning but not crash
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Connection should still be alive
-    let ping_result = ws.send(WsMessage::Ping(vec![1, 2, 3])).await;
+    let ping_result = ws.send(WsMessage::Ping(vec![1, 2, 3].into())).await;
     assert!(
         ping_result.is_ok(),
         "Connection should still be alive after invalid UUID"
@@ -9228,14 +9213,14 @@ async fn test_rate_limit_exceeded_via_ws() {
     // Send many messages rapidly to trigger rate limit
     for i in 0..50 {
         let msg = format!(r#"{{"type":"Message","text":"Spam message {}"}}"#, i);
-        ws.send(WsMessage::Text(msg)).await.ok();
+        ws.send(text_frame(msg)).await.ok();
     }
 
     // Wait a moment
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Connection should still be alive
-    let ping_result = ws.send(WsMessage::Ping(vec![1, 2, 3])).await;
+    let ping_result = ws.send(WsMessage::Ping(vec![1, 2, 3].into())).await;
     assert!(
         ping_result.is_ok(),
         "Connection should still be alive after rate limiting"
@@ -9263,14 +9248,14 @@ async fn test_duplicate_message_prevention_via_ws() {
 
     // Send the same message twice rapidly
     let msg = r#"{"type":"Message","text":"Duplicate test message"}"#;
-    ws.send(WsMessage::Text(msg.into())).await.ok();
-    ws.send(WsMessage::Text(msg.into())).await.ok();
+    ws.send(text_frame(msg)).await.ok();
+    ws.send(text_frame(msg)).await.ok();
 
     // Wait a moment
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Connection should still be alive
-    let ping_result = ws.send(WsMessage::Ping(vec![1, 2, 3])).await;
+    let ping_result = ws.send(WsMessage::Ping(vec![1, 2, 3].into())).await;
     assert!(
         ping_result.is_ok(),
         "Connection should still be alive after duplicate detection"
@@ -9299,13 +9284,13 @@ async fn test_message_too_long_via_ws() {
     // Send a message that exceeds MAX_MESSAGE_LEN
     let long_text = "x".repeat(MAX_MESSAGE_LEN + 100);
     let msg = format!(r#"{{"type":"Message","text":"{}"}}"#, long_text);
-    ws.send(WsMessage::Text(msg)).await.ok();
+    ws.send(text_frame(msg)).await.ok();
 
     // Wait a moment
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Connection should still be alive
-    let ping_result = ws.send(WsMessage::Ping(vec![1, 2, 3])).await;
+    let ping_result = ws.send(WsMessage::Ping(vec![1, 2, 3].into())).await;
     assert!(
         ping_result.is_ok(),
         "Connection should still be alive after rejecting long message"
@@ -9332,7 +9317,7 @@ async fn test_binary_message_handling() {
     }
 
     // Send binary data - should be ignored
-    ws.send(WsMessage::Binary(vec![0, 1, 2, 3, 4, 5]))
+    ws.send(WsMessage::Binary(vec![0, 1, 2, 3, 4, 5].into()))
         .await
         .ok();
 
@@ -9340,7 +9325,7 @@ async fn test_binary_message_handling() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Connection should still be alive
-    let ping_result = ws.send(WsMessage::Ping(vec![1, 2, 3])).await;
+    let ping_result = ws.send(WsMessage::Ping(vec![1, 2, 3].into())).await;
     assert!(
         ping_result.is_ok(),
         "Connection should still be alive after binary message"
@@ -9367,21 +9352,15 @@ async fn test_malformed_json_handling() {
     }
 
     // Send malformed JSON
-    ws.send(WsMessage::Text("{not valid json}".into()))
-        .await
-        .ok();
-    ws.send(WsMessage::Text("just plain text".into()))
-        .await
-        .ok();
-    ws.send(WsMessage::Text(r#"{"type":"Unknown"}"#.into()))
-        .await
-        .ok();
+    ws.send(text_frame("{not valid json}")).await.ok();
+    ws.send(text_frame("just plain text")).await.ok();
+    ws.send(text_frame(r#"{"type":"Unknown"}"#)).await.ok();
 
     // Wait a moment
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Connection should still be alive
-    let ping_result = ws.send(WsMessage::Ping(vec![1, 2, 3])).await;
+    let ping_result = ws.send(WsMessage::Ping(vec![1, 2, 3].into())).await;
     assert!(
         ping_result.is_ok(),
         "Connection should still be alive after malformed JSON"
@@ -9727,7 +9706,9 @@ async fn test_pong_message_received() {
     }
 
     // Send ping and wait for pong
-    ws.send(WsMessage::Ping(vec![1, 2, 3])).await.unwrap();
+    ws.send(WsMessage::Ping(vec![1, 2, 3].into()))
+        .await
+        .unwrap();
 
     // We should receive a pong response
     let mut received_pong = false;
@@ -9810,23 +9791,19 @@ async fn test_typing_stop_event_via_ws() {
     }
 
     // Send typing start then stop
-    ws.send(WsMessage::Text(
-        r#"{"type":"Typing","is_typing":true}"#.into(),
-    ))
-    .await
-    .ok();
+    ws.send(text_frame(r#"{"type":"Typing","is_typing":true}"#))
+        .await
+        .ok();
     tokio::time::sleep(Duration::from_millis(100)).await;
-    ws.send(WsMessage::Text(
-        r#"{"type":"Typing","is_typing":false}"#.into(),
-    ))
-    .await
-    .ok();
+    ws.send(text_frame(r#"{"type":"Typing","is_typing":false}"#))
+        .await
+        .ok();
 
     // Wait a moment
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Connection should still be alive
-    let ping_result = ws.send(WsMessage::Ping(vec![1, 2, 3])).await;
+    let ping_result = ws.send(WsMessage::Ping(vec![1, 2, 3].into())).await;
     assert!(ping_result.is_ok());
 
     ws.close(None).await.ok();
@@ -9851,7 +9828,7 @@ async fn test_message_with_reply_via_ws() {
 
     // Send a message with reply_to
     let msg = r#"{"type":"Message","text":"This is a reply","reply_to":{"message_id":"12345","author_name":"Someone","preview_text":"Original message"}}"#;
-    ws.send(WsMessage::Text(msg.into())).await.ok();
+    ws.send(text_frame(msg)).await.ok();
 
     // Wait a moment
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -10248,13 +10225,13 @@ async fn test_ws_oversized_payload() {
 
     // Send oversized payload (MAX_PAYLOAD_SIZE is 64KB)
     let large_payload = format!(r#"{{"type":"Message","text":"{}"}}"#, "x".repeat(70000));
-    ws.send(WsMessage::Text(large_payload)).await.ok();
+    ws.send(text_frame(large_payload)).await.ok();
 
     // Wait a moment - the message should be ignored
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Connection should still be alive (message was just ignored)
-    let ping_result = ws.send(WsMessage::Ping(vec![1, 2, 3])).await;
+    let ping_result = ws.send(WsMessage::Ping(vec![1, 2, 3].into())).await;
     assert!(ping_result.is_ok());
 
     ws.close(None).await.ok();
@@ -10278,7 +10255,7 @@ async fn test_ws_empty_text_message() {
     }
 
     // Send message with empty text
-    ws.send(WsMessage::Text(r#"{"type":"Message","text":""}"#.into()))
+    ws.send(text_frame(r#"{"type":"Message","text":""}"#))
         .await
         .ok();
 
@@ -10286,7 +10263,7 @@ async fn test_ws_empty_text_message() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Connection should still be alive
-    let ping_result = ws.send(WsMessage::Ping(vec![1, 2, 3])).await;
+    let ping_result = ws.send(WsMessage::Ping(vec![1, 2, 3].into())).await;
     assert!(ping_result.is_ok());
 
     ws.close(None).await.ok();
@@ -10312,13 +10289,13 @@ async fn test_ws_read_receipt_valid_format() {
     // Send valid read receipt with properly formatted UUID
     let valid_uuid = uuid::Uuid::new_v4().to_string();
     let msg = format!(r#"{{"type":"ReadReceipt","message_id":"{}"}}"#, valid_uuid);
-    ws.send(WsMessage::Text(msg)).await.ok();
+    ws.send(text_frame(msg)).await.ok();
 
     // Wait for processing
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Connection should still be alive
-    let ping_result = ws.send(WsMessage::Ping(vec![1, 2, 3])).await;
+    let ping_result = ws.send(WsMessage::Ping(vec![1, 2, 3].into())).await;
     assert!(ping_result.is_ok());
 
     ws.close(None).await.ok();
@@ -10864,22 +10841,19 @@ async fn test_ws_creates_new_room_on_connect() {
     }
 
     // Send a message to verify room is functional
-    ws.send(WsMessage::Text(
-        r#"{"type":"Message","text":"hello"}"#.into(),
-    ))
-    .await
-    .ok();
+    ws.send(text_frame(r#"{"type":"Message","text":"hello"}"#))
+        .await
+        .ok();
 
     // Should receive the message back
     let mut received = false;
     for _ in 0..5 {
         if let Ok(Some(Ok(WsMessage::Text(text)))) =
             tokio::time::timeout(Duration::from_millis(200), ws.next()).await
+            && text.contains("hello")
         {
-            if text.contains("hello") {
-                received = true;
-                break;
-            }
+            received = true;
+            break;
         }
     }
     assert!(received);
@@ -10945,11 +10919,9 @@ async fn test_ws_cookie_reconnection_updates_connection_state() {
         let result = tokio_tungstenite::connect_async(request).await;
         if let Ok((mut ws2, _)) = result {
             // Should have reconnected - send a message to verify
-            ws2.send(WsMessage::Text(
-                r#"{"type":"Message","text":"reconnected"}"#.into(),
-            ))
-            .await
-            .ok();
+            ws2.send(text_frame(r#"{"type":"Message","text":"reconnected"}"#))
+                .await
+                .ok();
             ws2.close(None).await.ok();
         }
     }
@@ -10975,11 +10947,9 @@ async fn test_ws_room_deleted_after_upgrade() {
     }
 
     // Send messages - connection should work
-    ws.send(WsMessage::Text(
-        r#"{"type":"Message","text":"test"}"#.into(),
-    ))
-    .await
-    .ok();
+    ws.send(text_frame(r#"{"type":"Message","text":"test"}"#))
+        .await
+        .ok();
 
     tokio::time::sleep(Duration::from_millis(200)).await;
     ws.close(None).await.ok();
@@ -11445,21 +11415,17 @@ async fn test_ws_malformed_json_handling() {
     }
 
     // Send malformed JSON
-    ws.send(WsMessage::Text("not valid json".into())).await.ok();
-    ws.send(WsMessage::Text("{incomplete".into())).await.ok();
-    ws.send(WsMessage::Text(r#"{"type":"Unknown"}"#.into()))
-        .await
-        .ok();
+    ws.send(text_frame("not valid json")).await.ok();
+    ws.send(text_frame("{incomplete")).await.ok();
+    ws.send(text_frame(r#"{"type":"Unknown"}"#)).await.ok();
 
     // Connection should still be alive
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Can still send valid message
-    ws.send(WsMessage::Text(
-        r#"{"type":"Message","text":"valid"}"#.into(),
-    ))
-    .await
-    .ok();
+    ws.send(text_frame(r#"{"type":"Message","text":"valid"}"#))
+        .await
+        .ok();
 
     ws.close(None).await.ok();
 }
@@ -12702,21 +12668,21 @@ async fn a_burst_beyond_the_limit_is_dropped_without_killing_the_session() {
 
     for i in 0..(MAX_MESSAGES_PER_WINDOW * 2) {
         let payload = serde_json::json!({ "type": "Message", "text": format!("m{i}") });
-        ws.send(WsMessage::Text(payload.to_string()))
+        ws.send(text_frame(payload.to_string()))
             .await
             .expect("send failed");
     }
 
     // Oversized frames and unparseable frames are ignored rather than fatal.
-    ws.send(WsMessage::Text("not json at all".into()))
-        .await
-        .unwrap();
-    ws.send(WsMessage::Text("x".repeat(MAX_MESSAGE_LEN + 100)))
+    ws.send(text_frame("not json at all")).await.unwrap();
+    ws.send(text_frame("x".repeat(MAX_MESSAGE_LEN + 100)))
         .await
         .unwrap();
 
     // The socket is still usable afterwards.
-    ws.send(WsMessage::Ping(vec![1, 2, 3])).await.unwrap();
+    ws.send(WsMessage::Ping(vec![1, 2, 3].into()))
+        .await
+        .unwrap();
 
     tokio::time::sleep(Duration::from_millis(200)).await;
     handle.abort();
@@ -13425,10 +13391,10 @@ async fn oversized_frame_is_dropped_without_killing_the_session() {
     assert_eq!(recv_json_event(&mut ws).await["type"], "Welcome");
 
     let huge = "x".repeat(MAX_PAYLOAD_SIZE + 1024);
-    ws.send(WsMessage::Text(huge)).await.expect("send failed");
+    ws.send(text_frame(huge)).await.expect("send failed");
 
     // The socket must still be usable afterwards, not torn down.
-    ws.send(WsMessage::Ping(vec![9])).await.unwrap();
+    ws.send(WsMessage::Ping(vec![9].into())).await.unwrap();
     tokio::time::sleep(Duration::from_millis(150)).await;
 
     handle.abort();
@@ -15746,5 +15712,41 @@ fn the_workflows_install_with_the_lockfile_that_exists() {
     assert!(
         DEPLOY.contains("--frozen-lockfile"),
         "the deploy must install from the lockfile, not update it"
+    );
+}
+
+/// `@types/node` describes the Node the workflows actually install.
+///
+/// Types are a claim about the runtime. A `@types/node` ahead of the installed
+/// Node promises APIs that will not be there, and one behind hides APIs that
+/// are — either way the typecheck is answering a question about a different
+/// machine than the one the build runs on.
+#[test]
+fn the_node_types_match_the_node_ci_installs() {
+    const PACKAGE_JSON: &str = include_str!("../cloudflare/package.json");
+    const CI: &str = include_str!("../.github/workflows/ci.yml");
+
+    let types_major: u32 = PACKAGE_JSON
+        .split_once("\"@types/node\":")
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map(|(spec, _)| {
+            spec.trim_start_matches(['^', '~', '>', '=', ' '])
+                .to_string()
+        })
+        .and_then(|spec| spec.split('.').next().unwrap_or_default().parse().ok())
+        .expect("cloudflare/package.json should depend on @types/node");
+
+    let ci = strip_hash_comments(CI);
+    let installed: u32 = ci
+        .split_once("node-version: '")
+        .and_then(|(_, rest)| rest.split_once('\''))
+        .and_then(|(version, _)| version.split('.').next().unwrap_or_default().parse().ok())
+        .expect("ci.yml should pin a node-version");
+
+    assert_eq!(
+        types_major, installed,
+        "@types/node is for Node {types_major} but CI installs Node {installed}; \
+         the typecheck would be describing a runtime nobody runs"
     );
 }

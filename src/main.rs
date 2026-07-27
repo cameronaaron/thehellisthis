@@ -188,7 +188,7 @@ async fn main() {
 /// Test-only helper for generating room names that look like the real ones.
 #[cfg(test)]
 fn generate_random_room_name() -> String {
-    use rand::prelude::SliceRandom;
+    use rand::seq::IndexedRandom;
 
     const ADJECTIVES: &[&str] = &[
         "latent",
@@ -225,7 +225,7 @@ fn generate_random_room_name() -> String {
         "realm",
     ];
 
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let adjective = ADJECTIVES.choose(&mut rng).unwrap_or(&"hidden");
     let noun = NOUNS.choose(&mut rng).unwrap_or(&"room");
     format!("{adjective}-{noun}")

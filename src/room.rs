@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Instant, SystemTime};
 
-use rand::prelude::SliceRandom;
+use rand::seq::SliceRandom;
 use tokio::sync::broadcast;
 use tracing::{debug, trace, warn};
 use uuid::Uuid;
@@ -128,7 +128,7 @@ fn names_in_use(users: &HashMap<String, UserData>) -> HashSet<&str> {
 /// order; it is the one linear cost here, and it runs once per room ever.
 pub fn create_room() -> RoomState {
     let mut animals: Vec<&'static str> = ANIMAL_NAMES.to_vec();
-    animals.shuffle(&mut rand::thread_rng());
+    animals.shuffle(&mut rand::rng());
 
     let (sender, _) = broadcast::channel::<OutgoingEvent>(BROADCAST_CHANNEL_CAPACITY);
 

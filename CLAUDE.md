@@ -80,7 +80,7 @@ Before ending a session that touched code or made a real decision:
 
 ## Stack
 
-- **Rust 2024 edition** (MSRV 1.85), **Tokio** async runtime
+- **Rust 2024 edition** (MSRV 1.88), **Tokio** async runtime
 - **Axum 0.8** + `axum-server` — HTTP routes and the WebSocket upgrade
 - **comrak** (Markdown) → **ammonia** (HTML sanitisation) message pipeline
 - **Vanilla JS client** — `index.html` + `client.js`, both compiled into the

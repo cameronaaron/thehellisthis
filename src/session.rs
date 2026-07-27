@@ -636,11 +636,11 @@ pub async fn apply_client_event(
             // there is nothing else to carry, which is why this is not simply
             // `validate_message(&text)?` — an empty caption under a photograph
             // is not an empty message.
-            if attachment.is_none() || !text.trim().is_empty() {
-                if let Err(e) = validate_message(&text) {
-                    debug!(user_id = %user_id, error = %e, "message rejected");
-                    return;
-                }
+            if (attachment.is_none() || !text.trim().is_empty())
+                && let Err(e) = validate_message(&text)
+            {
+                debug!(user_id = %user_id, error = %e, "message rejected");
+                return;
             }
 
             user.last_sanitized_message = Some((text.clone(), now));

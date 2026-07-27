@@ -28,12 +28,12 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          # 24, not 20. wrangler requires Node >= 22 and pnpm 11 needs
+          # 26, not 20. wrangler requires Node >= 22 and pnpm 11 needs
           # `node:sqlite`, which Node 20 does not have. Pinned to 20, the deploy
           # step failed on every push for hours while the gate stayed green —
           # see cloudflare/package.json `engines`, which is the single source of
           # this requirement, and `ci_node_version_satisfies_the_toolchain`.
-          node-version: '24'
+          node-version: '26'
           cache: 'pnpm'
           cache-dependency-path: 'cloudflare/pnpm-lock.yaml'
 
