@@ -16952,3 +16952,848 @@ fn coverage_exemptions_are_justified_and_current() {
         );
     }
 }
+
+// ========== MUTATION-DRIVEN: ARITHMETIC AND ACCOUNTING ==========
+//
+// Every test here exists because a mutant survived. Coverage said these lines
+// ran; nothing checked what they computed.
+
+/// A message's estimated size is the sum of its parts, exactly.
+///
+/// Nine mutants survived in `estimate_size` — every `+` could become `*` or
+/// `-` and the suite still passed, because every existing assertion was
+/// relative ("bigger than", "goes down after a trim"). This is what the memory
+/// ceiling is built on: if it computes a product instead of a sum, the room
+/// believes it is full at the second message, or never.
+#[test]
+fn a_messages_estimated_size_is_the_sum_of_its_parts() {
+    let message = OutgoingMessage {
+        message_id: Uuid::new_v4(),
+        user_id: "user-id".to_string(),         // 7
+        animal_name: "otter".to_string(),       // 5
+        text: "hello there".to_string(),        // 11
+        timestamp: "1700000000000".to_string(), // 13
+        reply_to: None,
+        attachment: None,
+    };
+
+    let expected = 7 + 5 + 11 + 13 + size_of::<Uuid>() + ESTIMATED_MESSAGE_SIZE;
+    assert_eq!(
+        message.estimate_size(),
+        expected,
+        "the estimate must be the sum of the field lengths, the uuid and the \
+         per-message overhead — nothing multiplied, nothing dropped"
+    );
+
+    // A reply adds exactly its three strings.
+    let with_reply = OutgoingMessage {
+        reply_to: Some(ReplyInfo {
+            message_id: "abcd".to_string(),    // 4
+            author_name: "badger".to_string(), // 6
+            preview_text: "hi".to_string(),    // 2
+        }),
+        ..message.clone()
+    };
+    assert_eq!(
+        with_reply.estimate_size(),
+        expected + 4 + 6 + 2,
+        "a quoted reply costs exactly its three strings"
+    );
+
+    // An attachment adds exactly its mime and payload.
+    let with_attachment = OutgoingMessage {
+        attachment: Some(Attachment {
+            mime: "image/png".to_string(), // 9
+            data: "A".repeat(100),         // 100
+            width: 1,
+            height: 1,
+            faded: false,
+        }),
+        ..message.clone()
+    };
+    assert_eq!(
+        with_attachment.estimate_size(),
+        expected + 9 + 100,
+        "an attachment costs exactly its type and its payload"
+    );
+
+    // And the attachment's own accounting agrees with what the message charges.
+    let attachment = with_attachment.attachment.as_ref().unwrap();
+    assert_eq!(attachment.estimate_size(), 109);
+}
+
+/// Pruning gives the room's attachment budget back, exactly.
+///
+/// `release_attachment_bytes` could be replaced with an empty body and the
+/// whole suite still passed: nothing asserted that removing messages returns
+/// their picture bytes. Left unreturned, the running total only ever climbs,
+/// and a room that had once been busy would fade every new image immediately
+/// while holding almost none.
+#[tokio::test]
+async fn pruning_returns_the_attachment_bytes_it_removed() {
+    let tracker = MemoryTracker::new();
+    let mut room = create_room();
+
+    let payload = 4_096;
+    for i in 0..6 {
+        room.add_message(
+            OutgoingMessage {
+                message_id: Uuid::new_v4(),
+                user_id: "u".to_string(),
+                animal_name: "otter".to_string(),
+                text: format!("p{i}"),
+                timestamp: "1".to_string(),
+                reply_to: None,
+                attachment: Some(Attachment {
+                    mime: "image/png".to_string(), // 9 bytes of mime
+                    data: "A".repeat(payload),
+                    width: 1,
+                    height: 1,
+                    faded: false,
+                }),
+            },
+            &tracker,
+        );
+    }
+
+    let each = payload + "image/png".len();
+    assert_eq!(
+        room.attachment_bytes,
+        each * 6,
+        "six images cost exactly six payloads plus six mime strings"
+    );
+
+    // Drop the two oldest.
+    room.retain_newest(4, &tracker);
+    assert_eq!(
+        room.attachment_bytes,
+        each * 4,
+        "trimming two messages must return exactly two images' worth"
+    );
+
+    // And pruning under memory pressure does the same.
+    room.prune_old_messages(usize::MAX, &tracker);
+    assert_eq!(
+        room.attachment_bytes, 0,
+        "removing every message must return every byte"
+    );
+}
+
+/// Fading subtracts exactly what it freed.
+///
+/// Two mutants survived here: `attachment_bytes - freed` becoming `+`, and
+/// `attachment_bytes -= freed` becoming `/=`. Either leaves the running total
+/// disconnected from what the room is holding, and the symptom is silent —
+/// pictures fading while the room is nearly empty, or never fading at all.
+#[tokio::test]
+async fn fading_subtracts_exactly_the_bytes_it_freed() {
+    let tracker = MemoryTracker::new();
+    let mut room = create_room();
+
+    let payload = MAX_ATTACHMENT_BYTES;
+    let each = payload + "image/png".len();
+    let needed = (MAX_ROOM_ATTACHMENT_BYTES / each) + 2;
+
+    for i in 0..needed {
+        room.add_message(
+            OutgoingMessage {
+                message_id: Uuid::new_v4(),
+                user_id: "u".to_string(),
+                animal_name: "otter".to_string(),
+                text: format!("p{i}"),
+                timestamp: "1".to_string(),
+                reply_to: None,
+                attachment: Some(Attachment {
+                    mime: "image/png".to_string(),
+                    data: "A".repeat(payload),
+                    width: 1,
+                    height: 1,
+                    faded: false,
+                }),
+            },
+            &tracker,
+        );
+    }
+
+    // The running total must equal what is actually still held, counted from
+    // the history rather than from the counter it is being compared against.
+    let actually_held: usize = room
+        .chat_history
+        .iter()
+        .filter_map(|m| m.attachment.as_ref())
+        .filter(|a| !a.faded)
+        .map(crate::protocol::Attachment::estimate_size)
+        .sum();
+
+    assert_eq!(
+        room.attachment_bytes, actually_held,
+        "after fading, the running total must be exactly the bytes still held"
+    );
+    assert!(room.attachment_bytes <= MAX_ROOM_ATTACHMENT_BYTES);
+
+    // Faded entries keep their mime but lose their payload, so the total is a
+    // whole number of surviving images.
+    assert_eq!(
+        actually_held % each,
+        0,
+        "the survivors should each be a full image"
+    );
+}
+
+/// The memory ceiling admits exactly the limit and refuses one byte more.
+///
+/// `total > MAX` mutating to `total >= MAX` survived, which means nothing was
+/// testing the boundary itself — only comfortably inside and comfortably
+/// outside it. One byte either way is the difference between a full room
+/// working and a full room silently dropping messages.
+#[test]
+fn the_memory_ceiling_boundary_is_exact() {
+    let tracker = MemoryTracker::new();
+
+    assert!(
+        tracker.add_bytes(MAX_TOTAL_ROOMS_MEMORY),
+        "exactly the limit must be admitted"
+    );
+    assert_eq!(
+        tracker.total_bytes.load(Ordering::SeqCst),
+        MAX_TOTAL_ROOMS_MEMORY
+    );
+
+    assert!(
+        !tracker.add_bytes(1),
+        "one byte past the limit must be refused"
+    );
+    assert_eq!(
+        tracker.total_bytes.load(Ordering::SeqCst),
+        MAX_TOTAL_ROOMS_MEMORY,
+        "and a refusal must reserve nothing"
+    );
+
+    // Freeing one byte makes exactly one byte available again.
+    tracker.remove_bytes(1);
+    assert!(tracker.add_bytes(1), "the freed byte must be usable");
+    assert!(!tracker.add_bytes(1), "and only that one");
+}
+
+/// The per-user message window admits exactly its quota.
+///
+/// `>=` mutating to `>` in `can_send_message` would let one extra message
+/// through every window; the existing tests sent comfortably more than the
+/// quota and never checked the last allowed one.
+#[test]
+fn the_message_quota_boundary_is_exact() {
+    let mut limiter = RateLimiter::new();
+
+    for i in 1..=MAX_MESSAGES_PER_WINDOW {
+        assert!(
+            limiter.can_send_message(),
+            "message {i} of {MAX_MESSAGES_PER_WINDOW} must be allowed"
+        );
+    }
+    assert_eq!(limiter.message_count, MAX_MESSAGES_PER_WINDOW);
+    assert!(
+        !limiter.can_send_message(),
+        "the message after the quota must be refused"
+    );
+    assert_eq!(
+        limiter.message_count, MAX_MESSAGES_PER_WINDOW,
+        "and a refusal must not count against the window either"
+    );
+}
+
+/// Joining admits exactly its quota of attempts.
+#[test]
+fn the_join_quota_boundary_is_exact() {
+    let mut limiter = RateLimiter::new();
+
+    for i in 1..=MAX_ROOM_JOIN_ATTEMPTS {
+        assert!(limiter.can_join_room(), "join {i} must be allowed");
+    }
+    assert!(
+        !limiter.can_join_room(),
+        "the join after the quota must be refused"
+    );
+}
+
+/// An address is banned only *past* the suspicion threshold, not at it.
+#[tokio::test]
+async fn the_suspicion_threshold_is_exact() {
+    let manager = SecurityManager::new();
+    let ip = "borderline";
+
+    for i in 1..=MAX_SUSPICIOUS_EVENTS {
+        assert!(
+            manager.record_suspicious_activity(ip).await.is_ok(),
+            "event {i} of {MAX_SUSPICIOUS_EVENTS} is suspicious but not yet a ban"
+        );
+        assert!(
+            manager.check_ip(ip).await.is_ok(),
+            "and the address is still allowed after event {i}"
+        );
+    }
+
+    assert!(
+        manager.record_suspicious_activity(ip).await.is_err(),
+        "the event past the threshold is the one that bans"
+    );
+    assert!(manager.check_ip(ip).await.is_err());
+}
+
+/// Joining a room that has just been deleted is a clean refusal.
+///
+/// The room can disappear in the microseconds between `admit_user` returning
+/// and the upgrade callback running. Winning that race from a test is not
+/// possible reliably — but the decision does not need a socket, only a room in
+/// the right state, which is why it is a function now (§6.1c).
+#[tokio::test]
+async fn joining_a_room_that_vanished_is_refused_rather_than_panicking() {
+    let state = Arc::new(AppState::new());
+
+    let joined = crate::session::join_room(&state, "never-existed", "u1", "otter", "c1").await;
+
+    assert!(
+        joined.is_none(),
+        "there is nothing to join, so the session must end and let teardown run"
+    );
+}
+
+/// A user missing at upgrade is recreated rather than dropped.
+///
+/// The other side of the same race: the room survived but the user's slot did
+/// not. Dropping them here would mean an upgraded socket belonging to nobody —
+/// it would receive broadcasts and never appear in the user count.
+#[tokio::test]
+async fn a_user_missing_at_upgrade_is_recreated_in_place() {
+    let state = Arc::new(AppState::new());
+    {
+        let mut rooms = state.rooms.write().await;
+        // A room with history, and no users at all.
+        let mut room = create_room();
+        room.add_message(
+            OutgoingMessage {
+                message_id: Uuid::new_v4(),
+                user_id: "someone".to_string(),
+                animal_name: "badger".to_string(),
+                text: "said earlier".to_string(),
+                timestamp: "1".to_string(),
+                reply_to: None,
+                attachment: None,
+            },
+            &state.memory_tracker,
+        );
+        rooms.insert("orphaned".to_string(), room);
+    }
+
+    let (_receiver, history) =
+        crate::session::join_room(&state, "orphaned", "ghost", "otter", "conn-9")
+            .await
+            .expect("the room exists, so the join succeeds");
+
+    assert_eq!(history.len(), 1, "the joiner still receives the history");
+
+    let rooms = state.rooms.read().await;
+    let user = rooms
+        .get("orphaned")
+        .unwrap()
+        .users
+        .get("ghost")
+        .expect("the missing user must have been recreated");
+
+    assert_eq!(user.animal_name, "otter");
+    assert!(
+        user.is_connected(),
+        "and recreated as connected, or they would never appear in the count"
+    );
+    assert!(
+        matches!(
+            &user.connection_state,
+            ConnectionState::Connected { connection_id, .. } if connection_id == "conn-9"
+        ),
+        "with this connection's id, so teardown can tell it from a newer one"
+    );
+}
+
+/// An existing user reconnecting keeps their slot and takes the new connection.
+#[tokio::test]
+async fn joining_again_rebinds_the_existing_slot_to_the_new_connection() {
+    let state = Arc::new(AppState::new());
+    {
+        let mut rooms = state.rooms.write().await;
+        let mut room = create_room();
+        room.users.insert(
+            "u1".to_string(),
+            connected_user("u1", "otter", "old-conn", Instant::now()),
+        );
+        rooms.insert("rejoin".to_string(), room);
+    }
+
+    crate::session::join_room(&state, "rejoin", "u1", "otter", "new-conn")
+        .await
+        .expect("the room exists");
+
+    let rooms = state.rooms.read().await;
+    let room = rooms.get("rejoin").unwrap();
+    assert_eq!(
+        room.users.len(),
+        1,
+        "reconnecting must not add a second slot"
+    );
+    assert!(matches!(
+        &room.users["u1"].connection_state,
+        ConnectionState::Connected { connection_id, .. } if connection_id == "new-conn"
+    ));
+}
+
+// ========== A SINK THAT FAILS ==========
+
+/// A frame sink that records what it was given and can be told to fail.
+///
+/// The four connection tasks all end the same way — a send returns an error
+/// because the peer is gone — and reaching that arm with a real socket means
+/// making the peer vanish between two exact frames, which is a race no test
+/// wins reliably. Making the tasks generic over their sink turns that race into
+/// a parameter (§6.1c).
+#[derive(Default)]
+struct RecordingSink {
+    sent: Vec<crate::session::Message>,
+    fail_after: Option<usize>,
+}
+
+impl RecordingSink {
+    fn failing_immediately() -> Self {
+        Self {
+            sent: Vec::new(),
+            fail_after: Some(0),
+        }
+    }
+
+    fn failing_after(n: usize) -> Self {
+        Self {
+            sent: Vec::new(),
+            fail_after: Some(n),
+        }
+    }
+}
+
+impl crate::session::FrameSink for RecordingSink {
+    async fn send_frame(&mut self, message: crate::session::Message) -> Result<(), ()> {
+        if self.fail_after.is_some_and(|n| self.sent.len() >= n) {
+            return Err(());
+        }
+        self.sent.push(message);
+        Ok(())
+    }
+}
+
+/// Forwarding stops the moment the client stops accepting frames.
+///
+/// If it did not, a dead socket would keep a broadcast receiver subscribed and
+/// the session would never tear down — the connection slot leak, arrived at
+/// from the other direction.
+#[tokio::test]
+async fn forwarding_stops_when_the_client_is_gone() {
+    let room = create_room();
+    let receiver = room.sender.subscribe();
+
+    for i in 0..3 {
+        let _ = room.sender.send(OutgoingEvent::UserCount { count: i });
+    }
+    drop(room);
+
+    let sink = Arc::new(tokio::sync::Mutex::new(RecordingSink::failing_after(1)));
+    timeout(
+        Duration::from_secs(5),
+        crate::session::forward_broadcasts(receiver, sink.clone()),
+    )
+    .await
+    .expect("a failing sink must end the forward task, not hang it");
+
+    assert_eq!(
+        sink.lock().await.sent.len(),
+        1,
+        "forwarding must stop at the first refused frame, not keep trying"
+    );
+}
+
+/// Forwarding delivers what the room broadcasts, in order, while it can.
+#[tokio::test]
+async fn forwarding_delivers_every_broadcast_in_order() {
+    let room = create_room();
+    let receiver = room.sender.subscribe();
+
+    for count in [1usize, 2, 3] {
+        let _ = room.sender.send(OutgoingEvent::UserCount { count });
+    }
+    drop(room);
+
+    let sink = Arc::new(tokio::sync::Mutex::new(RecordingSink::default()));
+    timeout(
+        Duration::from_secs(5),
+        crate::session::forward_broadcasts(receiver, sink.clone()),
+    )
+    .await
+    .expect("the task ends when the room's sender is dropped");
+
+    let sent = &sink.lock().await.sent;
+    assert_eq!(sent.len(), 3, "every broadcast should have been forwarded");
+
+    for (index, expected) in [1usize, 2, 3].into_iter().enumerate() {
+        let crate::session::Message::Text(body) = &sent[index] else {
+            panic!("broadcasts are sent as text frames");
+        };
+        let event: JsonValue = serde_json::from_str(body.as_str()).unwrap();
+        assert_eq!(event["type"], "UserCount");
+        assert_eq!(event["count"], expected, "frames must arrive in order");
+    }
+}
+
+/// Pinging stops when the client stops accepting frames.
+#[tokio::test]
+async fn pinging_stops_when_the_client_is_gone() {
+    let sink = Arc::new(tokio::sync::Mutex::new(RecordingSink::failing_immediately()));
+
+    timeout(
+        HEARTBEAT_INTERVAL * 3,
+        crate::session::send_pings(sink.clone()),
+    )
+    .await
+    .expect("a failing sink must end the ping task rather than loop forever");
+
+    assert!(
+        sink.lock().await.sent.is_empty(),
+        "the first ping failed, so nothing was accepted"
+    );
+}
+
+/// The eviction frame carries the code the client reads.
+///
+/// Assertable without waiting ten minutes for a real eviction. A bare close is
+/// indistinguishable from a dropped connection, and the client would reconnect
+/// straight back into the room it was removed from — which is what stopped
+/// rooms fading (§7).
+#[test]
+fn the_idle_eviction_frame_carries_the_agreed_code() {
+    let crate::session::Message::Close(Some(frame)) = crate::session::idle_close_frame() else {
+        panic!("an eviction must be a close frame carrying a reason");
+    };
+
+    assert_eq!(frame.code, IDLE_CLOSE_CODE);
+    assert_eq!(frame.reason.as_str(), "idle");
+}
+
+/// A client that leaves during the history replay ends the session cleanly.
+///
+/// Ordinary, not exceptional: people open a room and close the tab. What
+/// matters is that the replay stops at the refused frame rather than working
+/// through five hundred more, and that the caller learns to tear down.
+#[tokio::test]
+async fn a_client_that_leaves_mid_replay_stops_the_replay() {
+    let tracker = MemoryTracker::new();
+    let mut room = create_room();
+    for i in 0..5 {
+        message_in(&mut room, &tracker, &format!("m{i}"));
+    }
+    let history = room.history_for("viewer");
+
+    let sink = Arc::new(tokio::sync::Mutex::new(RecordingSink::failing_after(2)));
+    let completed = crate::session::send_history(&history, &sink, "viewer").await;
+
+    assert!(!completed, "the caller must learn the client is gone");
+    assert_eq!(
+        sink.lock().await.sent.len(),
+        2,
+        "the replay must stop at the refused frame, not push the rest"
+    );
+}
+
+/// A history replay that completes says so, and sends every message.
+#[tokio::test]
+async fn a_full_history_replay_sends_every_message_and_reports_success() {
+    let tracker = MemoryTracker::new();
+    let mut room = create_room();
+    let ids: Vec<Uuid> = (0..4)
+        .map(|i| message_in(&mut room, &tracker, &format!("m{i}")))
+        .collect();
+    room.toggle_reaction(ids[1], "🔥", "viewer");
+
+    let history = room.history_for("viewer");
+    let sink = Arc::new(tokio::sync::Mutex::new(RecordingSink::default()));
+
+    assert!(crate::session::send_history(&history, &sink, "viewer").await);
+
+    let sent = &sink.lock().await.sent;
+    assert_eq!(sent.len(), 4, "every message should have been replayed");
+
+    // The reacted message carries this viewer's own state, flattened onto a
+    // frame shaped exactly like a live one.
+    let crate::session::Message::Text(body) = &sent[1] else {
+        panic!("history is sent as text frames");
+    };
+    let frame: JsonValue = serde_json::from_str(body.as_str()).unwrap();
+    assert_eq!(frame["type"], "Message");
+    assert_eq!(frame["message"]["reactions"][0]["emoji"], "🔥");
+    assert_eq!(frame["message"]["reactions"][0]["reacted"], true);
+}
+
+/// Reacting to a message the room does not hold changes nothing and says
+/// nothing, through the event path a client actually uses.
+///
+/// `toggle_reaction` refusing is tested directly; this is the arm in
+/// `apply_client_event` that acts on the refusal — without it the server would
+/// broadcast a reaction it had not recorded.
+#[tokio::test]
+async fn a_react_event_for_an_unknown_message_broadcasts_nothing() {
+    let state = Arc::new(AppState::new());
+    {
+        let mut rooms = state.rooms.write().await;
+        let mut room = create_room();
+        room.users.insert(
+            "u1".to_string(),
+            connected_user("u1", "otter", "c1", Instant::now()),
+        );
+        rooms.insert("ghost-react".to_string(), room);
+    }
+
+    let mut receiver = state
+        .rooms
+        .read()
+        .await
+        .get("ghost-react")
+        .unwrap()
+        .sender
+        .subscribe();
+
+    apply_client_event(
+        &state,
+        "ghost-react",
+        "u1",
+        "otter",
+        ClientEvent::React {
+            message_id: Uuid::new_v4().to_string(),
+            emoji: "🔥".to_string(),
+        },
+    )
+    .await;
+
+    assert!(
+        receiver.try_recv().is_err(),
+        "a refused reaction must not be broadcast as though it had happened"
+    );
+    assert!(
+        state
+            .rooms
+            .read()
+            .await
+            .get("ghost-react")
+            .unwrap()
+            .reactions
+            .is_empty()
+    );
+}
+
+/// The heartbeat stops when the client stops accepting frames.
+#[tokio::test]
+async fn the_heartbeat_stops_when_the_client_is_gone() {
+    let state = Arc::new(AppState::new());
+    let sink = Arc::new(tokio::sync::Mutex::new(RecordingSink::failing_immediately()));
+
+    timeout(
+        HEARTBEAT_INTERVAL * 3,
+        crate::session::beat_and_evict_idle(
+            state,
+            "gone-room".to_string(),
+            "u1".to_string(),
+            sink.clone(),
+        ),
+    )
+    .await
+    .expect("a failing sink must end the heartbeat rather than loop forever");
+
+    assert!(sink.lock().await.sent.is_empty());
+}
+
+/// A user who has gone quiet is sent the eviction frame and the loop ends.
+///
+/// This is the mechanic rooms fading depends on, reachable here in
+/// milliseconds: the user is backdated rather than waited out, and the sink is
+/// a parameter rather than a socket.
+#[tokio::test]
+async fn a_quiet_user_is_evicted_with_the_close_frame() {
+    let state = Arc::new(AppState::new());
+    {
+        let mut rooms = state.rooms.write().await;
+        let mut room = create_room();
+        let mut user = connected_user("u1", "otter", "c1", Instant::now());
+        user.last_message_time =
+            Instant::now() - USER_IDLE_MESSAGE_TIMEOUT - Duration::from_secs(5);
+        room.users.insert("u1".to_string(), user);
+        rooms.insert("quiet".to_string(), room);
+    }
+
+    let sink = Arc::new(tokio::sync::Mutex::new(RecordingSink::default()));
+    timeout(
+        HEARTBEAT_INTERVAL * 3,
+        crate::session::beat_and_evict_idle(
+            state,
+            "quiet".to_string(),
+            "u1".to_string(),
+            sink.clone(),
+        ),
+    )
+    .await
+    .expect("an idle user must be evicted, ending the loop");
+
+    let sent = &sink.lock().await.sent;
+    let last = sent.last().expect("a heartbeat and then a close");
+
+    let crate::session::Message::Close(Some(frame)) = last else {
+        panic!("the last frame must be the eviction close, got {last:?}");
+    };
+    assert_eq!(
+        frame.code, IDLE_CLOSE_CODE,
+        "without the code the client reconnects and the room never empties"
+    );
+}
+
+/// A user who is still talking is not evicted, and keeps getting heartbeats.
+#[tokio::test]
+async fn a_talking_user_keeps_their_connection() {
+    let state = Arc::new(AppState::new());
+    {
+        let mut rooms = state.rooms.write().await;
+        let mut room = create_room();
+        room.users.insert(
+            "u1".to_string(),
+            connected_user("u1", "otter", "c1", Instant::now()),
+        );
+        rooms.insert("chatty".to_string(), room);
+    }
+
+    let sink = Arc::new(tokio::sync::Mutex::new(RecordingSink::default()));
+    // The loop never ends on its own for an active user, so it is stopped here.
+    let _ = timeout(
+        HEARTBEAT_INTERVAL + Duration::from_millis(200),
+        crate::session::beat_and_evict_idle(
+            state,
+            "chatty".to_string(),
+            "u1".to_string(),
+            sink.clone(),
+        ),
+    )
+    .await;
+
+    let sent = &sink.lock().await.sent;
+    assert!(!sent.is_empty(), "an active user should receive heartbeats");
+    assert!(
+        !sent
+            .iter()
+            .any(|m| matches!(m, crate::session::Message::Close(_))),
+        "and must not be evicted while they are still here"
+    );
+}
+
+/// Trimming boundaries are exact: at the cap nothing moves, one past it one goes.
+///
+/// Both `>` comparisons mutated to `>=` and survived — the existing tests
+/// trimmed comfortably-over histories and never checked the edge. Trimming at
+/// exactly the cap would move the whole history on the message that reaches it,
+/// which is the O(n)-per-message cost `HISTORY_TRIM_SLACK` exists to prevent.
+#[tokio::test]
+async fn the_history_trim_boundaries_are_exact() {
+    let tracker = MemoryTracker::new();
+
+    // `retain_newest` at exactly `keep` is a no-op.
+    let mut room = create_room();
+    for i in 0..10 {
+        message_in(&mut room, &tracker, &format!("m{i}"));
+    }
+    let before: Vec<Uuid> = room.chat_history.iter().map(|m| m.message_id).collect();
+    room.retain_newest(10, &tracker);
+    assert_eq!(
+        room.chat_history
+            .iter()
+            .map(|m| m.message_id)
+            .collect::<Vec<_>>(),
+        before,
+        "keeping exactly what is there must not touch the history"
+    );
+
+    // One more than `keep` drops exactly one, the oldest.
+    room.retain_newest(9, &tracker);
+    assert_eq!(room.chat_history.len(), 9);
+    assert_eq!(
+        room.chat_history[0].message_id, before[1],
+        "the oldest is the one that goes"
+    );
+
+    // `trim_to_max_messages` at exactly the cap is a no-op.
+    let mut room = create_room();
+    for i in 0..MAX_MESSAGES_PER_ROOM {
+        message_in(&mut room, &tracker, &format!("m{i}"));
+    }
+    let oldest = room.chat_history[0].message_id;
+    room.trim_to_max_messages(&tracker);
+    assert_eq!(
+        room.chat_history.len(),
+        MAX_MESSAGES_PER_ROOM,
+        "a history exactly at the cap must not be trimmed"
+    );
+    assert_eq!(room.chat_history[0].message_id, oldest);
+
+    // One past the cap trims back to it.
+    message_in(&mut room, &tracker, "one too many");
+    room.trim_to_max_messages(&tracker);
+    assert_eq!(room.chat_history.len(), MAX_MESSAGES_PER_ROOM);
+    assert_ne!(
+        room.chat_history[0].message_id, oldest,
+        "and the oldest is what it dropped"
+    );
+}
+
+/// The soft-limit sweep actually sweeps.
+///
+/// `trigger_cleanup` could be replaced with an empty body and nothing noticed:
+/// it is called from the housekeeping loop when the process is over its memory
+/// ceiling, and it is the last thing standing between a full server and one
+/// that refuses every message. Nothing asserted it did anything at all.
+#[tokio::test]
+async fn the_soft_limit_sweep_removes_aged_messages() {
+    let tracker = MemoryTracker::new();
+    let mut room = create_room();
+
+    // Aged messages: stamped 1970, far past MAX_MESSAGE_AGE.
+    for i in 0..5 {
+        room.add_message(
+            OutgoingMessage {
+                message_id: Uuid::new_v4(),
+                user_id: "u".to_string(),
+                animal_name: "otter".to_string(),
+                text: format!("ancient {i}"),
+                timestamp: "1".to_string(),
+                reply_to: None,
+                attachment: None,
+            },
+            &tracker,
+        );
+    }
+
+    // Below the soft threshold, the sweep leaves them alone — pruning is for
+    // memory pressure, not a scheduled deletion of everything old.
+    room.trigger_cleanup(&tracker).await;
+    assert_eq!(
+        room.chat_history.len(),
+        5,
+        "under the soft limit there is nothing to reclaim"
+    );
+
+    // Over it, the aged messages go.
+    let (num, den) = MEMORY_SOFT_LIMIT_RATIO;
+    room.total_memory_bytes
+        .store((MAX_TOTAL_ROOMS_MEMORY * num) / den + 1, Ordering::SeqCst);
+    room.trigger_cleanup(&tracker).await;
+
+    assert!(
+        room.chat_history.is_empty(),
+        "past the soft limit the sweep must actually reclaim the aged messages"
+    );
+}

@@ -11,7 +11,8 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
-use axum::extract::ws::{CloseFrame, Message, WebSocket};
+pub(crate) use axum::extract::ws::Message;
+use axum::extract::ws::{CloseFrame, WebSocket};
 use axum::{
     extract::{ConnectInfo, Path, State, WebSocketUpgrade},
     response::{IntoResponse, Response},
@@ -279,6 +280,209 @@ fn insert_user(
     );
 }
 
+/// A sink this session can write frames to.
+///
+/// The four tasks are generic over this rather than tied to a `WebSocket`, so a
+/// test can hand them a sink that fails and reach the "the client is gone"
+/// arms — which otherwise need the peer to vanish between two exact frames, a
+/// race no test can win reliably (§6.1c).
+pub(crate) trait FrameSink: Send {
+    fn send_frame(
+        &mut self,
+        message: Message,
+    ) -> impl std::future::Future<Output = Result<(), ()>> + Send;
+}
+
+impl FrameSink for futures::stream::SplitSink<WebSocket, Message> {
+    async fn send_frame(&mut self, message: Message) -> Result<(), ()> {
+        SinkExt::send(self, message).await.map_err(|_| ())
+    }
+}
+
+/// Room broadcasts → this client, until the socket stops accepting them.
+pub(crate) async fn forward_broadcasts<S: FrameSink>(
+    mut receiver: tokio::sync::broadcast::Receiver<OutgoingEvent>,
+    sink: Arc<Mutex<S>>,
+) {
+    while let Ok(event) = receiver.recv().await {
+        let Ok(json) = serde_json::to_string(&event) else {
+            error!("failed to serialise outgoing event");
+            continue;
+        };
+
+        let mut tx = sink.lock().await;
+        if tx.send_frame(Message::Text(json.into())).await.is_err() {
+            break;
+        }
+    }
+}
+
+/// WebSocket-level pings, until the socket stops accepting them.
+pub(crate) async fn send_pings<S: FrameSink>(sink: Arc<Mutex<S>>) {
+    let mut interval = tokio::time::interval(HEARTBEAT_INTERVAL);
+    loop {
+        interval.tick().await;
+        let mut tx = sink.lock().await;
+        if tx.send_frame(Message::Ping(Bytes::new())).await.is_err() {
+            break;
+        }
+    }
+}
+
+/// The frame that removes an idle user, sent with the code the client reads.
+///
+/// A function so the frame itself is assertable without waiting ten minutes for
+/// a real eviction: what matters is that it carries `IDLE_CLOSE_CODE`, because
+/// a bare close is indistinguishable from a dropped connection and the client
+/// would reconnect straight back into the room (§7).
+pub(crate) fn idle_close_frame() -> Message {
+    Message::Close(Some(CloseFrame {
+        code: IDLE_CLOSE_CODE,
+        reason: "idle".into(),
+    }))
+}
+
+/// Replays the room's history to a joining client.
+///
+/// Returns false if the client left part-way through, which is common enough to
+/// be ordinary: people open a room and close the tab. Sink-generic so that path
+/// is reachable without having to make a real peer vanish mid-replay.
+pub(crate) async fn send_history<S: FrameSink>(
+    history: &[(Arc<OutgoingMessage>, Vec<crate::protocol::Reaction>)],
+    sink: &Arc<Mutex<S>>,
+    user_id: &str,
+) -> bool {
+    debug!(count = history.len(), user_id = %user_id, "sending history");
+
+    for (message, reactions) in history {
+        // Serialised from borrows: the history was handed over as refcounts,
+        // and nothing here copies a message just to put a `type` around it.
+        let Ok(json) = serde_json::to_string(&HistoryEvent::Message {
+            message: HistoryMessage { message, reactions },
+        }) else {
+            continue;
+        };
+
+        let mut tx = sink.lock().await;
+        if tx.send_frame(Message::Text(json.into())).await.is_err() {
+            debug!(user_id = %user_id, "client left during history send");
+            return false;
+        }
+    }
+
+    true
+}
+
+/// The application heartbeat, and the eviction that lets a room empty.
+///
+/// Sink-generic like the others, so both ways this ends — the client stopping
+/// accepting frames, and the user going quiet long enough to be removed — are
+/// reachable without a real socket dying at an exact instant.
+pub(crate) async fn beat_and_evict_idle<S: FrameSink>(
+    state: Arc<AppState>,
+    room: String,
+    user_id: String,
+    sink: Arc<Mutex<S>>,
+) {
+    let mut interval = tokio::time::interval(HEARTBEAT_INTERVAL);
+    loop {
+        interval.tick().await;
+
+        {
+            let mut tx = sink.lock().await;
+            let Ok(beat) = serde_json::to_string(&OutgoingEvent::Heartbeat) else {
+                break;
+            };
+            if tx.send_frame(Message::Text(beat.into())).await.is_err() {
+                break;
+            }
+        }
+
+        let idle_too_long = {
+            let mut rooms = state.rooms.write().await;
+            rooms
+                .get_mut(&room)
+                .and_then(|rs| rs.users.get_mut(&user_id))
+                .is_some_and(|user| {
+                    let now = Instant::now();
+                    if let ConnectionState::Connected {
+                        ref mut last_heartbeat,
+                        ..
+                    } = user.connection_state
+                    {
+                        *last_heartbeat = now;
+                    }
+                    user_idle_for_too_long(user, now)
+                })
+        };
+
+        if idle_too_long {
+            let timeout_s = USER_IDLE_MESSAGE_TIMEOUT.as_secs();
+            info!(user_id = %user_id, room = %room, timeout_s, "disconnecting idle user");
+            let mut tx = sink.lock().await;
+            let _ = tx.send_frame(idle_close_frame()).await;
+            break;
+        }
+    }
+}
+
+/// Takes the connection's place in the room and returns what it needs to run.
+///
+/// A function rather than a block inside `run_session` so both of its unhappy
+/// paths can be exercised. Both are races against the microseconds between
+/// `admit_user` returning and the upgrade callback running, which a test cannot
+/// win reliably — but neither needs a socket to reach, only a room in the right
+/// state (§6.1c: an untestable line is usually a misplaced line).
+///
+/// Returns `None` when the room is gone, in which case there is nothing to
+/// join and the caller's teardown still runs.
+pub(crate) async fn join_room(
+    state: &Arc<AppState>,
+    room: &str,
+    user_id: &str,
+    animal_name: &str,
+    connection_id: &str,
+) -> Option<(
+    tokio::sync::broadcast::Receiver<OutgoingEvent>,
+    Vec<(Arc<OutgoingMessage>, Vec<crate::protocol::Reaction>)>,
+)> {
+    let mut rooms = state.rooms.write().await;
+    let room_state = rooms.get_mut(room).or_else(|| {
+        error!(room = %room, "room vanished between admission and upgrade");
+        None
+    })?;
+
+    if let Some(user) = room_state.users.get_mut(user_id) {
+        user.connection_state = ConnectionState::Connected {
+            last_heartbeat: Instant::now(),
+            connection_id: connection_id.to_string(),
+        };
+    } else {
+        warn!(user_id = %user_id, room = %room, "user missing at upgrade; recreating");
+        insert_user(
+            room_state,
+            user_id,
+            animal_name,
+            connection_id,
+            Instant::now(),
+        );
+    }
+
+    // Subscribe *before* announcing the join, so this user sees their own
+    // arrival and no broadcast between the two is missed.
+    let receiver = room_state.sender.subscribe();
+    room_state.broadcast_user_count();
+    room_state.broadcast_system_event(SystemEvent::UserJoined {
+        user_id: user_id.to_string(),
+        animal_name: animal_name.to_string(),
+    });
+
+    // Reactions are resolved for *this* viewer as the history is copied, so
+    // each client learns which buckets it is in without ever being told who
+    // else is in them.
+    Some((receiver, room_state.history_for(user_id)))
+}
+
 /// Runs one connection and then releases it, whatever ended it.
 ///
 /// The teardown is here, wrapped around the session, rather than at each of the
@@ -333,42 +537,10 @@ async fn run_session(
 ) {
     let (ws_tx, mut ws_rx) = socket.split();
 
-    let (mut receiver, chat_history) = {
-        let mut rooms = state.rooms.write().await;
-        let Some(room_state) = rooms.get_mut(&room) else {
-            error!(room = %room, "room vanished between admission and upgrade");
-            return;
-        };
-
-        if let Some(user) = room_state.users.get_mut(&user_id) {
-            user.connection_state = ConnectionState::Connected {
-                last_heartbeat: Instant::now(),
-                connection_id: connection_id.clone(),
-            };
-        } else {
-            warn!(user_id = %user_id, room = %room, "user missing at upgrade; recreating");
-            insert_user(
-                room_state,
-                &user_id,
-                &animal_name,
-                &connection_id,
-                Instant::now(),
-            );
-        }
-
-        // Subscribe *before* announcing the join, so this user sees their own
-        // arrival and no broadcast between the two is missed.
-        let receiver = room_state.sender.subscribe();
-        room_state.broadcast_user_count();
-        room_state.broadcast_system_event(SystemEvent::UserJoined {
-            user_id: user_id.clone(),
-            animal_name: animal_name.clone(),
-        });
-
-        // Reactions are resolved for *this* viewer as the history is copied, so
-        // each client learns which buckets it is in without ever being told who
-        // else is in them.
-        (receiver, room_state.history_for(&user_id))
+    let Some((receiver, chat_history)) =
+        join_room(&state, &room, &user_id, &animal_name, &connection_id).await
+    else {
+        return;
     };
 
     let ws_tx = Arc::new(Mutex::new(ws_tx));
@@ -385,21 +557,8 @@ async fn run_session(
         }
     }
 
-    debug!(count = chat_history.len(), user_id = %user_id, "sending history");
-    for (message, reactions) in &chat_history {
-        // Serialised from borrows: the history was handed over as refcounts,
-        // and nothing here copies a message just to put a `type` around it.
-        let Ok(json) = serde_json::to_string(&HistoryEvent::Message {
-            message: HistoryMessage { message, reactions },
-        }) else {
-            continue;
-        };
-
-        let mut tx = ws_tx.lock().await;
-        if tx.send(Message::Text(json.into())).await.is_err() {
-            debug!(user_id = %user_id, "client left during history send");
-            return;
-        }
+    if !send_history(&chat_history, &ws_tx, &user_id).await {
+        return;
     }
 
     {
@@ -412,22 +571,7 @@ async fn run_session(
     }
 
     // ---- Task 1: room broadcasts → this client ---------------------------
-    let forward_task = {
-        let ws_tx = ws_tx.clone();
-        async move {
-            while let Ok(event) = receiver.recv().await {
-                let Ok(json) = serde_json::to_string(&event) else {
-                    error!("failed to serialise outgoing event");
-                    continue;
-                };
-
-                let mut tx = ws_tx.lock().await;
-                if tx.send(Message::Text(json.into())).await.is_err() {
-                    break;
-                }
-            }
-        }
-    };
+    let forward_task = forward_broadcasts(receiver, ws_tx.clone());
 
     // ---- Task 2: this client → the room ----------------------------------
     let receive_task = {
@@ -475,82 +619,11 @@ async fn run_session(
     };
 
     // ---- Task 3: protocol-level keepalive --------------------------------
-    let ping_task = {
-        let ws_tx = ws_tx.clone();
-        async move {
-            let mut interval = tokio::time::interval(HEARTBEAT_INTERVAL);
-            loop {
-                interval.tick().await;
-                let mut tx = ws_tx.lock().await;
-                if tx.send(Message::Ping(Bytes::new())).await.is_err() {
-                    break;
-                }
-            }
-        }
-    };
+    let ping_task = send_pings(ws_tx.clone());
 
     // ---- Task 4: application heartbeat + idle eviction --------------------
-    let heartbeat_task = {
-        let state = state.clone();
-        let room = room.clone();
-        let user_id = user_id.clone();
-        let ws_tx = ws_tx.clone();
-
-        async move {
-            let mut interval = tokio::time::interval(HEARTBEAT_INTERVAL);
-            loop {
-                interval.tick().await;
-
-                {
-                    let mut tx = ws_tx.lock().await;
-                    let Ok(beat) = serde_json::to_string(&OutgoingEvent::Heartbeat) else {
-                        break;
-                    };
-                    if tx.send(Message::Text(beat.into())).await.is_err() {
-                        break;
-                    }
-                }
-
-                let idle_too_long = {
-                    let mut rooms = state.rooms.write().await;
-                    rooms
-                        .get_mut(&room)
-                        .and_then(|rs| rs.users.get_mut(&user_id))
-                        .is_some_and(|user| {
-                            let now = Instant::now();
-                            if let ConnectionState::Connected {
-                                ref mut last_heartbeat,
-                                ..
-                            } = user.connection_state
-                            {
-                                *last_heartbeat = now;
-                            }
-                            user_idle_for_too_long(user, now)
-                        })
-                };
-
-                if idle_too_long {
-                    info!(
-                        user_id = %user_id,
-                        room = %room,
-                        timeout_s = USER_IDLE_MESSAGE_TIMEOUT.as_secs(),
-                        "disconnecting idle user"
-                    );
-                    let mut tx = ws_tx.lock().await;
-                    // With a code, so the client knows this was a decision
-                    // rather than a dropped connection and does not reconnect
-                    // straight back into the room it was just removed from.
-                    let _ = tx
-                        .send(Message::Close(Some(CloseFrame {
-                            code: IDLE_CLOSE_CODE,
-                            reason: "idle".into(),
-                        })))
-                        .await;
-                    break;
-                }
-            }
-        }
-    };
+    let heartbeat_task =
+        beat_and_evict_idle(state.clone(), room.clone(), user_id.clone(), ws_tx.clone());
 
     tokio::select! {
         _ = forward_task => trace!(user_id = %user_id, "forward task ended"),

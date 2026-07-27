@@ -1,13 +1,14 @@
 #!/bin/bash
 # Line-coverage gate.
 #
-# The floor here is **97%**, and scripts/coverage-full.sh's is **98%**. The
-# difference is exactly the `#[ignore]`d time-dependent tests, which CI does not
-# run: they cover the idle eviction and the housekeeping loops, and measuring
-# without them and demanding their coverage anyway would be asking CI to prove
-# something it was not allowed to check.
+# Both this and scripts/coverage-full.sh sit at **98%**. They used to differ,
+# because the `#[ignore]`d time-dependent tests were the only thing covering the
+# idle eviction. Making the connection tasks generic over their sink moved that
+# coverage into ordinary tests, so CI now reaches everything the slow run does
+# and the two numbers agree. The slow tests still earn their place: they are the
+# only thing proving the *real* heartbeat and housekeeping intervals fire.
 #
-# Neither floor is If coverage drops the fix is a test, or — for code that
+# The floor is If coverage drops the fix is a test, or — for code that
 # genuinely cannot be exercised — an entry in scripts/coverage-exemptions.toml
 # with a reason attached. Never a smaller number (ENGINEERING-STANDARDS.md §6).
 #
@@ -19,7 +20,7 @@
 
 set -euo pipefail
 
-MINIMUM="${1:-97}"
+MINIMUM="${1:-98}"
 
 cd "$(dirname "$0")/.."
 

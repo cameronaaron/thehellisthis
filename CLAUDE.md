@@ -35,7 +35,7 @@ cargo test --all-features       # 612 tests; all must pass before committing
 cargo fmt --all -- --check      # formatting is a gate, not a preference
 cargo clippy --all-targets --all-features -- -D warnings   # warnings are failures
 cargo build --release           # LTO'd binary for the container image
-scripts/coverage.sh             # line-coverage floor (97%), ratchets up only
+scripts/coverage.sh             # line-coverage floor (98%), ratchets up only
 ```
 
 Two more that CI deliberately does **not** run, because they depend on real

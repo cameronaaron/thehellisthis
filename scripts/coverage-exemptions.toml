@@ -55,28 +55,39 @@ module and this exemption stops being honest.
 
 [[exempt]]
 path = "src/session.rs"
-lines = 21
+lines = 12
 reason = """
-Three classes, all needing something to fail at an exact instant:
+Down from 21. Everything that could be reached by moving the untestable thing
+to a parameter has been (§6.1c): the four connection tasks are now generic over
+their sink, so "the client stopped accepting frames" is a test fixture rather
+than a race, and `join_room` and `send_history` are functions rather than
+blocks. What is left is four kinds of genuinely unreachable line.
 
-**The socket dies mid-write** (395, 400-401, 420-421, 426, 464, 486, 507, 510,
-536). Each is the `is_err()` arm of a send inside one of the four raced tasks.
-Reaching them needs the peer to vanish between one frame and the next, which a
-test can only arrange by racing — and §6.4 rules out a test that passes or
-fails on timing. The *behaviour* they guard is covered: whichever task notices
-first ends the session, and `a_session_whose_room_disappeared_still_releases_its_slots`
-asserts the teardown that follows.
+**Serialisation that cannot fail** (309-310, 363). `serde_json::to_string` of an
+`OutgoingEvent` or a `HistoryEvent` — plain structs and enums of owned strings,
+numbers and UUIDs, with no map keys that could be non-strings and no float that
+could be NaN. The arms stay because the signature is fallible and silently
+ignoring an error is worse than a branch nothing reaches.
 
-**State changes between admission and upgrade** (339-340, 349, 351-355). The
-room is deleted, or the user removed, in the microseconds between
-`admit_user` returning and the upgrade callback running. Both are defensive:
-the "room vanished" path is why teardown moved into a wrapper (§5.11), and the
-"user missing" path recreates them. Forcing either means winning a race against
-the runtime.
+**Encoding an identity as a cookie** (177). Reachable only if a `user_id` or
+`animal_name` contained a character invalid in a header value — which, since
+identity became a closed set of UUIDs and roster names (§5.9), has no way to
+happen. It is unreachable *because* the guard above it holds, and it should
+stay as the thing that catches that guard being widened.
 
-**An identity that cannot be encoded as a cookie** (176). Reachable only if a
-`user_id` or `animal_name` contains a character invalid in a header value —
-which, since identity became a closed set (a UUID and a roster name, §5.9), no
-longer has a way to happen. It stays as a guard against that closed set being
-widened, and it is unreachable precisely because the guard above it holds.
+**Two `return`s inside `run_session`** (543, 561), taken when `join_room`
+refuses or the client leaves mid-replay. Both decisions are covered directly —
+`joining_a_room_that_vanished_is_refused_rather_than_panicking` and
+`a_client_that_leaves_mid_replay_stops_the_replay` — but the two statements that
+act on them live in a function that needs a real upgraded `WebSocket`, which
+only axum can construct from a live handshake.
+
+**Loop headers and a `break` tarpaulin attributes oddly** (323, 388, 394, 408,
+410, 608). These sit inside `send_pings` and `beat_and_evict_idle`, both of
+which have tests that demonstrably enter the loop, send frames and exit through
+the branch in question — `pinging_stops_when_the_client_is_gone`,
+`a_quiet_user_is_evicted_with_the_close_frame`,
+`the_heartbeat_stops_when_the_client_is_gone`. The instrument and the code
+disagree here, and §0.5 says to say so rather than write a worse test to please
+the instrument.
 """
