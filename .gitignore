@@ -1,6 +1,12 @@
 # Rust build artifacts
+# NOTE: Cargo.lock IS tracked — this is a binary crate, and the deployed
+# container must build from the exact dependency set that CI tested.
 /target/
-Cargo.lock
+
+# Coverage reports (regenerate with `cargo tarpaulin`)
+tarpaulin-report.*
+cobertura.xml
+lcov.info
 
 # Dependencies
 cloudflare/node_modules/
@@ -15,16 +21,9 @@ cloudflare/.wrangler/
 .DS_Store
 *.log
 *.pdb
-tmp.txt
-
-# Test artifacts
-test-frontend.html
-tests.html
-*.swp
-*.swo
-*~
-
-# Development
 .idea/
 .vscode/
 *.iml
+*.swp
+*.swo
+*~

@@ -1,6 +1,12 @@
+# Build context should contain only what the image actually needs:
+# Cargo.toml, Cargo.lock, src/, index.html, robots.txt.
 target
 .git
 .github
-fly.toml
-Dockerfile
+cloudflare
 *.log
+tarpaulin-report.*
+CLAUDE.md
+ENGINEERING-STANDARDS.md
+README.md
+deploy.sh
