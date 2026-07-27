@@ -37,7 +37,8 @@ use crate::room::{ConnectionState, RoomState, UserData, create_room, user_idle_f
 use crate::security::is_allowed_origin;
 use crate::state::AppState;
 use crate::validation::{
-    extract_client_ip, render_message_html, sanitize_reply, validate_input, validate_message,
+    extract_client_ip, hash_client_address, render_message_html, sanitize_reply, validate_input,
+    validate_message,
 };
 
 /// Upgrades the connection to a WebSocket for `room`.
@@ -63,7 +64,12 @@ pub async fn ws_handler(
         return ChatError::SecurityError("Origin not allowed".to_string()).into_response();
     }
 
-    let ip = extract_client_ip(&headers, Some(&conn_info));
+    // Hashed at the boundary: everything downstream compares addresses for
+    // equality only, so the real address never needs to exist past this line.
+    // It is never stored in a map, never logged, and absent from a memory dump.
+    let ip = extract_client_ip(&headers, Some(&conn_info))
+        .as_deref()
+        .map(hash_client_address);
 
     match ws_handler_inner(state, ip, cookie, room, ws).await {
         Ok(response) => response.into_response(),
@@ -94,7 +100,7 @@ pub async fn ws_handler_inner(
     room: String,
     ws: WebSocketUpgrade,
 ) -> Result<Response, ChatError> {
-    debug!(room = %room, ip = ?ip, "websocket upgrade requested");
+    debug!(room = %room, "websocket upgrade requested");
 
     // ---- Checks that mutate nothing --------------------------------------
     if let Some(ip) = &ip {

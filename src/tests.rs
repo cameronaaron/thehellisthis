@@ -19,7 +19,9 @@ use crate::routes::{
 use crate::security::is_allowed_origin;
 use crate::session::{admit_user, apply_client_event, cleanup_user, ws_handler};
 use crate::state::AppState;
-use crate::validation::{extract_client_ip, sanitize_reply, validate_input, validate_message};
+use crate::validation::{
+    extract_client_ip, hash_client_address, sanitize_reply, validate_input, validate_message,
+};
 use crate::{
     DEFAULT_PORT, build_router, generate_random_room_name, init_tracing, resolve_port, serve,
     spawn_housekeeping,
@@ -13312,5 +13314,51 @@ async fn whitespace_padded_messages_cannot_bypass_the_length_cap() {
     assert!(
         rooms["room"].chat_history.is_empty(),
         "whitespace-padded oversized input must still be rejected"
+    );
+}
+
+// ========== PRIVACY ==========
+
+/// Client addresses are stored as opaque digests, never in the clear.
+///
+/// The rate limiter, connection pool and ban list only ever compare addresses
+/// for equality, so none of them needs the real value. Hashing at the boundary
+/// means a memory dump of a running server yields no visitor addresses — which
+/// matters for a site whose entire premise is that you get an animal name
+/// instead of an account.
+#[test]
+fn client_addresses_are_hashed_not_stored_in_the_clear() {
+    let address = "203.0.113.42";
+    let digest = hash_client_address(address);
+
+    assert_ne!(digest, address);
+    assert!(
+        !digest.contains("203") && !digest.contains("113"),
+        "the digest must not carry the address it came from: {digest}"
+    );
+
+    // Stable within a process, so it works as a map key.
+    assert_eq!(digest, hash_client_address(address));
+    // Distinct addresses stay distinct.
+    assert_ne!(digest, hash_client_address("203.0.113.43"));
+}
+
+/// The upgrade path must hash before handing the address to anything that
+/// stores it.
+///
+/// Asserted over the source because the property is *where* the hash happens:
+/// a version that stored the raw address and hashed later would pass any
+/// behavioural test while losing the entire point.
+#[test]
+fn the_upgrade_path_hashes_the_address_at_the_boundary() {
+    const SESSION_SRC: &str = include_str!("session.rs");
+
+    assert!(
+        SESSION_SRC.contains(".map(hash_client_address)"),
+        "ws_handler must hash the client address before using it"
+    );
+    assert!(
+        !SESSION_SRC.contains("ip = ?ip"),
+        "the client address must never be written to a log line"
     );
 }

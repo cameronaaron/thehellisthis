@@ -3,6 +3,8 @@
 //! Two rules hold throughout: reject before allocating, and never store a
 //! string that has not been through [`render_message_html`].
 
+use std::collections::hash_map::RandomState;
+use std::hash::BuildHasher;
 use std::net::SocketAddr;
 use std::sync::LazyLock;
 
@@ -137,6 +139,29 @@ pub fn sanitize_reply(reply: ReplyInfo) -> Option<ReplyInfo> {
 pub fn render_message_html(text: &str) -> String {
     let rendered = markdown_to_html(text, &ComrakOptions::default());
     ammonia::clean(&rendered)
+}
+
+/// Keyed hasher for client addresses, seeded once per process.
+///
+/// `RandomState` is SipHash-1-3 with keys drawn at startup. The keys never
+/// leave this process and change on every restart, so the stored digests are
+/// not correlatable across restarts or against a precomputed table — which
+/// matters, because the IPv4 space is small enough to enumerate against an
+/// unkeyed hash.
+static ADDRESS_HASHER: LazyLock<RandomState> = LazyLock::new(RandomState::new);
+
+/// A client address reduced to an opaque, stable-per-process identifier.
+///
+/// The rate limiter, connection pool and ban list only ever compare addresses
+/// for equality — none of them needs to know the actual address. Hashing at the
+/// boundary means the raw address exists only as a local in
+/// [`extract_client_ip`]'s caller and is never stored, logged, or held in any
+/// map: a memory dump of a running server yields no visitor addresses.
+///
+/// This is a privacy decision, not a security one. Per-IP limits remain a
+/// courtesy bound (§5.6) — hashing changes nothing about their strength.
+pub fn hash_client_address(ip: &str) -> String {
+    format!("{:016x}", ADDRESS_HASHER.hash_one(ip))
 }
 
 /// The client's address, preferring proxy headers.
