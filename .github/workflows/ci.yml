@@ -7,6 +7,11 @@ on:
   # there is no `push` trigger here — it would run the same gate twice.
   workflow_call:
   workflow_dispatch:
+  # A dependency doesn't get less vulnerable between pushes: RUSTSEC and npm
+  # advisories are published against versions already pinned in the lockfile.
+  # Weekly is frequent enough to matter and rare enough not to be noise.
+  schedule:
+    - cron: '0 6 * * 1'
 
 env:
   CARGO_TERM_COLOR: always
@@ -85,3 +90,26 @@ jobs:
       - name: Typecheck
         working-directory: cloudflare
         run: npx tsc --noEmit
+
+      - name: Audit
+        working-directory: cloudflare
+        run: npm audit --audit-level=high
+
+  # Advisories are a moving target — new ones get published against crates
+  # already in Cargo.lock — so this runs on every push, not just when
+  # dependencies change. A green run today says nothing about tomorrow.
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Audit
+        run: cargo audit

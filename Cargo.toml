@@ -35,7 +35,12 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 
 # Content processing
-comrak = "0.49.0"
+# default-features pull in a CLI binary (clap, xdg, shell-words) and syntect-
+# based syntax highlighting — this server never invokes either: ComrakOptions
+# never configures a highlighting adapter, and nothing here is a CLI. Disabling
+# them drops ~15 transitive crates, including every crate behind three RUSTSEC
+# advisories (quick-xml, bincode) and one unmaintained warning (yaml-rust).
+comrak = { version = "0.49.0", default-features = false }
 ammonia = "4.1.2"
 
 [dev-dependencies]
