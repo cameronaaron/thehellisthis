@@ -10,7 +10,8 @@
 > before the measurement. §1 is the complexity doctrine (per-message and
 > per-event work is O(1); linear work runs rarely and never under contention),
 > §2 the lock-discipline law, §3 the memory-ceiling law, §4 the protocol law,
-> §5 the failure-blast-radius law, §6 the regression ratchet, §7 the engagement
+> §5 the failure-blast-radius law (including §5.6 privacy and §5.7 no
+> third-party assets), §6 the regression ratchet, §7 the engagement
 > doctrine (why rooms die and history fades — those are the product, not
 > bugs), §8 naming and organisation, §9 the shipped-artifact law, §10 the
 > client law. Every rule there is backed by a test in `src/tests.rs` — when one
@@ -30,7 +31,7 @@ Cloudflare Container behind a Worker.
 
 ```bash
 cargo run                       # dev server → http://localhost:3000/main
-cargo test --all-features       # 561 tests; all must pass before committing
+cargo test --all-features       # 565 tests; all must pass before committing
 cargo fmt --all -- --check      # formatting is a gate, not a preference
 cargo clippy --all-targets --all-features -- -D warnings   # warnings are failures
 cargo build --release           # LTO'd binary for the container image
@@ -312,7 +313,23 @@ ENGINEERING-STANDARDS.md §10.2.
 from centred to top-aligned — a reorientation on every load. The placeholder is
 an absolutely-positioned `::before`/`::after` overlay (§10.3).
 
-### 17. The real client IP is `CF-Connecting-IP`
+### 17. Client addresses are hashed, never stored
+
+`ws_handler` hashes the address the moment it has it; the raw value never
+outlives that expression. The limiter, connection pool and ban list only ever
+compare for equality, so none of them needs the real thing. The hash is keyed
+per process (std `RandomState`) — unkeyed would be theatre, since IPv4 is small
+enough to enumerate. See ENGINEERING-STANDARDS.md §5.6.
+
+### 18. The client fetches nothing from anyone else
+
+No webfonts, no CDN, no analytics. Icons are an inline SVG sprite in
+`index.html` (`<use href="#i-…">`); text uses the system stack. This is why the
+CSP can say `font-src 'none'` and name no `https://` origin at all. Adding a
+third-party asset is a privacy disclosure made by every visitor, and
+`the_client_makes_no_third_party_requests` fails if one appears (§5.7).
+
+### 19. The real client IP is `CF-Connecting-IP`
 
 Cloudflare sets it; the Worker forwards it and also fills `X-Forwarded-For`.
 The server checks `CF-Connecting-IP` first. Reading only `X-Forwarded-For`, as
@@ -360,7 +377,7 @@ Frame order on connect is **guaranteed**: `Welcome`, then history, then
 
 ## Tests
 
-`src/tests.rs` — 561 tests, one file, run with `cargo test --all-features`.
+`src/tests.rs` — 565 tests, one file, run with `cargo test --all-features`.
 Notable classes:
 
 | Class | Pins |

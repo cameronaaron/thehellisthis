@@ -39,9 +39,11 @@ concrete, executable version of "obsessive engineering quality." Concretely:
 | §4 Protocol | `first_frame_is_welcome_with_this_users_identity`, `client_takes_identity_from_welcome_frame_not_cookies` |
 | §5 Blast radius | `rejected_upgrade_releases_its_connection_slot`, `a_full_room_refuses_and_releases_its_reservations` |
 | §5.5 CSP | `every_response_carries_security_headers`, `client_script_is_external_so_csp_can_forbid_inline` |
-| §5.6 Trust boundary | `client_address_prefers_the_header_cloudflare_sets`, `worker_forwards_the_client_address` |
+| §5.6 Privacy | `client_addresses_are_hashed_not_stored_in_the_clear`, `the_upgrade_path_hashes_the_address_at_the_boundary` |
+| §5.7 No third parties | `the_client_makes_no_third_party_requests`, `the_policy_permits_no_third_party_origins` |
+| §5.8 Trust boundary | `client_address_prefers_the_header_cloudflare_sets`, `worker_forwards_the_client_address` |
 | §6 Ratchet | `cargo fmt`/`clippy -D warnings`/`cargo test`/`scripts/coverage.sh` in CI |
-| §6.7 Boundaries | `the_memory_ceiling_admits_exactly_the_limit`, `an_ip_is_banned_only_past_the_suspicion_threshold` |
+| §6.8 Boundaries | `the_memory_ceiling_admits_exactly_the_limit`, `an_ip_is_banned_only_past_the_suspicion_threshold` |
 | §7 Engagement | frontend/backend consistency tests (`SHIPPED_CLIENT`) |
 | §8 Naming | `animal_roster_is_sorted_unique_and_well_formed` |
 | §9 Shipped artifact | `router_mounts_every_public_route`, `page_references_the_versioned_script_url` |
@@ -442,7 +444,43 @@ The server sent no security headers at all before this. Cloudflare adds none of
 its own to a Worker-proxied origin, so "the CDN handles it" was an assumption
 nobody had checked — §0.5 applied to security rather than to performance.
 
-### 5.6 Trust boundaries are stated, not assumed
+### 5.6 Store the comparison, not the identity
+
+The server held every visitor's real IP address in memory — as keys in the
+connection pool and the ban list — and logged it on the upgrade path. None of
+that storage ever needed the actual address: the rate limiter, connection pool
+and ban list only compare addresses for **equality**.
+
+So the address is hashed at the boundary and the raw value never outlives the
+expression that produced it. It is in no map, no log line, and no memory dump.
+
+The hash must be **keyed** (std's `RandomState`, seeded per process) or it is
+theatre: the IPv4 space is small enough to enumerate exhaustively against an
+unkeyed hash, so an attacker with the digests would simply recover the
+addresses. Keyed and per-process also means digests cannot be correlated
+across restarts.
+
+The general rule: when the only operation on a piece of personal data is
+comparison, store something that compares equal and reveals nothing else.
+
+### 5.7 Every third-party asset is a disclosure
+
+The page loaded its typeface and icon font from `fonts.googleapis.com`. That is
+not a styling decision, it is a data-sharing one: every visitor's browser
+announced their IP address, and via the `Referer` the room they were opening,
+to a third party — on a server that otherwise goes out of its way to know
+nothing about anyone.
+
+An asset you serve yourself is a dependency. An asset the browser fetches from
+someone else is a **disclosure**, and it is made by every visitor, not by you.
+Self-host it, inline it, or do without it.
+
+The reward for having none is that the CSP stops being an allowlist and starts
+being a denial: `font-src 'none'`, no `https://` anywhere in the policy. A
+policy that names no external origin is enforcing something much stronger than
+one that names two.
+
+### 5.8 Trust boundaries are stated, not assumed
 
 `X-Forwarded-For` is the only place the real client IP appears, because
 Cloudflare terminates in front of the container. It is also entirely
@@ -534,7 +572,22 @@ most logic-dense modules leaves six, and each has a reason:
 | `end > 0` → `end >= 0` in `truncate_on_char_boundary` | **Equivalent in practice.** Index 0 is always a char boundary, so the walk always terminates first; the guard is defensive. |
 | Four `elapsed() < WINDOW` → `<=` comparisons | Differ only when a duration is *exactly* the threshold. Killing them needs an injected clock threaded through the limiters — a real abstraction bought for a one-nanosecond behavioural difference. Rejected on those terms, recorded in §9.4. |
 
-### 6.7 A boundary is a place to test, not a place to assume
+### 6.7 Assert on structure, never on a substring a comment can contain
+
+Three tests in this repo have failed because a **comment explaining why
+something was removed** necessarily names the thing it removed:
+`#chat:empty {`, `user-scalable=no`, `fonts.googleapis.com`.
+
+A `source.contains("...")` assertion cannot tell an active declaration from
+prose about one. Match on the structure that would actually take effect — the
+selector at the start of a line, the attribute inside the right tag, the origin
+inside a `src=`/`href=`/`url()` — not on the raw string anywhere in the file.
+
+This matters more than it sounds. A test that a comment can break is a test
+that gets weakened or deleted the next time someone documents a decision, and
+the coverage goes with it.
+
+### 6.8 A boundary is a place to test, not a place to assume
 
 Every mutant killed in the last round was an off-by-one at a threshold: the
 memory ceiling admitting exactly the limit, a sweep becoming due strictly after
@@ -543,7 +596,7 @@ and all of them are the kind of bug that only shows up under the load the limit
 exists to handle. When a comparison guards a limit, test the value *at* the
 limit and one past it.
 
-### 6.8 Build artifacts are never committed
+### 6.9 Build artifacts are never committed
 
 `target/` (including a 7.5 MB compiled binary) and 1.6 MB of tarpaulin coverage
 reports were tracked in git. They bloat every clone, produce meaningless diffs,
