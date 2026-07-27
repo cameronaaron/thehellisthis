@@ -1,25 +1,22 @@
 [package]
 name = "infinite-chat"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
+rust-version = "1.85"
+description = "Ephemeral multi-room WebSocket chat server"
+license = "MIT"
+publish = false
 
 [dependencies]
-# Async Runtime
-tokio = { version = "1.42.0", features = ["full"] }
+# Async runtime
+tokio = { version = "1.49.0", features = ["full"] }
 
-# Web Framework
+# Web framework
 axum = { version = "0.8.8", features = ["ws", "macros"] }
 axum-server = "0.8.0"
-tower = { version = "0.5.3", features = ["full"] }
-tower-http = { version = "0.6.8", features = [
-    "cors",
-    "trace",
-    "set-header",
-    "limit",
-    "auth"
-] }
-hyper = { version = "1.8.1", features = ["full"] }
-async-trait = "0.1.89"
+tower-http = { version = "0.6.8", features = ["cors"] }
+http = "1.4.0"
+tower-cookies = "0.11.0"
 
 # Serialization
 serde = { version = "1.0.228", features = ["derive"] }
@@ -30,27 +27,29 @@ futures = "0.3.31"
 uuid = { version = "1.19.0", features = ["v4", "serde"] }
 rand = "0.8.5"
 bytes = "1.11.0"
+regex = "1.12.2"
+thiserror = "2.0.17"
 
-# Logging & Monitoring
+# Logging
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
-metrics = "0.24.3"
-metrics-exporter-prometheus = { version = "0.18.1", features = ["http-listener"] }
 
-# Content Processing
+# Content processing
 comrak = "0.49.0"
 ammonia = "4.1.2"
 
-# Security
-tower-cookies = "0.11.0"
-http = "1.4.0"
-
-# Utilities
-regex = "1.12.2"
-lazy_static = "1.5.0"
-thiserror = "2.0.17"
-
 [dev-dependencies]
-tokio = { version = "1.49.0", features = ["full"] }
 tokio-tungstenite = "0.24.0"
+tower = { version = "0.5.3", features = ["util"] }
 url = "2.5.4"
+
+[profile.release]
+# The binary ships inside a Cloudflare Container: a smaller image is a faster
+# cold start. LTO and a single codegen unit cost build time, not runtime.
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+# panic = "abort" is deliberately NOT set. Tokio confines a panicking task to
+# that task; under abort, one panic in one connection handler would kill the
+# process and disconnect every user in every room. Unwinding here is a
+# blast-radius decision, not an oversight — see ENGINEERING-STANDARDS.md §5.
