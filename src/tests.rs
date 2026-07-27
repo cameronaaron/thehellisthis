@@ -18628,19 +18628,39 @@ fn no_css_selector_is_defined_twice() {
     );
 }
 
-/// Every class the renderer creates has a style.
+/// Every class the page uses has a style — in the markup and in the renderer.
 ///
-/// The client builds its DOM in JavaScript, so a class it sets and the
-/// stylesheet never mentions is invisible: the element renders unstyled and
-/// nothing errors. It happened while the message layout was being reworked —
-/// a sweep removing `.message*` rules also took `.message-image-faded` with
-/// it, and the placeholder for an aged-out picture silently lost its box.
+/// A class with no rule renders as an unstyled box: no error, no warning,
+/// nothing in the console. It simply looks wrong. Both halves have now failed
+/// this way during one stylesheet rework:
+///
+///   - `.message-image-faded`, set by the renderer, lost its box when a sweep
+///     over `.message*` matched it too (`\b` matches at a hyphen).
+///   - `.reply-preview`, in the markup, lost the base rule carrying
+///     `display: none`, leaving only its `.active` variant — so the
+///     placeholder text sat above the composer permanently, which is what a
+///     reader actually reported.
 #[test]
 fn every_class_the_client_renders_is_styled() {
     let css = embedded_html_without_comments();
     let js = EMBEDDED_JS;
 
     let mut rendered: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
+    // Classes in the page's own markup, too. Checking only the ones JavaScript
+    // sets is how `.reply-preview` lost its base rule unnoticed: the bulk sweep
+    // that removed the old `.message*` styles took it with it, leaving only
+    // `.reply-preview.active { display: flex }` — so with nothing hiding it,
+    // the placeholder text in the markup sat above the composer permanently.
+    for (index, _) in EMBEDDED_HTML.match_indices("class=\"") {
+        let rest = &EMBEDDED_HTML[index + "class=\"".len()..];
+        let Some(end) = rest.find('"') else { continue };
+        for word in rest[..end].split_whitespace() {
+            if word.starts_with(|c: char| c.is_ascii_lowercase()) {
+                rendered.insert(word.to_string());
+            }
+        }
+    }
 
     // `className = 'a b'` and `` className = `a ${x} b` `` both appear.
     for marker in ["className = '", "className = `"] {
@@ -18670,5 +18690,64 @@ fn every_class_the_client_renders_is_styled() {
         unstyled.is_empty(),
         "the client renders these classes and nothing styles them, so they \
          appear unstyled with no error anywhere: {unstyled:?}"
+    );
+}
+
+/// A rule that *shows* something implies a rule that hides it.
+///
+/// `.reply-preview.active { display: flex }` says "visible when active", which
+/// only means anything if the base `.reply-preview` is hidden. The base rule
+/// was removed by a bulk sweep and nothing noticed: the class was still
+/// mentioned all over the stylesheet, the page still parsed, and the reply
+/// preview — with the placeholder text baked into its markup — simply sat above
+/// the composer forever, reading "Replying to / Message text…" to every
+/// visitor.
+///
+/// This is the §10.3 rule stated the other way round. That one says a
+/// sometimes-present thing must not change the layout; this says a
+/// sometimes-*visible* thing must actually start invisible.
+#[test]
+fn every_conditional_display_rule_has_a_base_that_hides_it() {
+    let css = embedded_html_without_comments();
+
+    // Rules of the shape `.thing.state { display: … }`, where the state is a
+    // class the client toggles.
+    let mut missing: Vec<String> = Vec::new();
+
+    for (index, _) in css.match_indices(".active {") {
+        let head = &css[..index];
+        let Some(line_start) = head.rfind('\n') else {
+            continue;
+        };
+        let selector = css[line_start + 1..index].trim();
+
+        // Only simple `.base.active` selectors; a descendant selector is a
+        // different shape and hides for different reasons.
+        if !selector.starts_with('.') || selector.contains(' ') || selector.contains(',') {
+            continue;
+        }
+
+        // The declaration must actually be about visibility.
+        let body_end = css[index..].find('}').map_or(index, |e| index + e);
+        if !css[index..body_end].contains("display:") {
+            continue;
+        }
+
+        let base = selector.to_string();
+        let base_rule = css
+            .split_once(&format!("\n{base} {{"))
+            .and_then(|(_, rest)| rest.split_once('}'))
+            .map(|(body, _)| body.to_string());
+
+        match base_rule {
+            Some(body) if body.contains("display: none") => {}
+            _ => missing.push(base),
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "these have a rule making them visible in one state but no base rule \
+         hiding them, so they are visible in every state: {missing:?}"
     );
 }

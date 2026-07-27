@@ -2172,6 +2172,70 @@ h1 {
 
 
 
+
+/* ---- Restored: the reply preview is hidden until you reply ----------
+   The base rule carrying `display: none` was removed by a bulk sweep over the
+   `.message*` rules, leaving only `.reply-preview.active { display: flex }`.
+   With nothing hiding it, the placeholder text baked into the markup —
+   "Replying to" / "Message text..." — sat above the composer permanently. */
+
+.reply-preview {
+    display: none;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    background: var(--surface-container-high);
+    border-left: 3px solid var(--imessage-blue);
+    margin-bottom: -4px;
+    border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+    animation: slideUp 0.2s ease-out;
+}
+
+/* ---- Restored: the bridge that makes the reaction bar reachable ------
+   An invisible strip under the bar covering the gap to the message, so a
+   pointer travelling upward never crosses a region that counts as leaving
+   (§10.7). Removed by the same sweep. */
+
+.reaction-bar::before {
+    content: '';
+    position: absolute;
+    inset: 100% 0 auto 0;
+    height: 10px;
+}
+
+/* ---- Restored: history visibly fading in a dying room ---------------
+   §7 — a room going quiet is the product, and this is how it looks. The
+   oldest messages go first, so the conversation thins from the top while the
+   most recent stays legible. Retargeted from `.message` to `.stack`, since the
+   row now carries the avatar and only the stack should dim with the text. */
+
+.room-fading .stack {
+    transition: opacity 0.5s ease-in-out;
+}
+
+.room-fading .message:nth-last-child(n+20) .stack {
+    opacity: 0.1;
+}
+
+.room-fading .message:nth-last-child(n+15):nth-last-child(-n+19) .stack {
+    opacity: 0.2;
+}
+
+.room-fading .message:nth-last-child(n+10):nth-last-child(-n+14) .stack {
+    opacity: 0.35;
+}
+
+.room-fading .message:nth-last-child(n+7):nth-last-child(-n+9) .stack {
+    opacity: 0.5;
+}
+
+.room-fading .message:nth-last-child(n+4):nth-last-child(-n+6) .stack {
+    opacity: 0.65;
+}
+
+.room-fading .message:nth-last-child(-n+3) .stack {
+    opacity: 0.8;
+}
 </style>
 </head>
 <body>

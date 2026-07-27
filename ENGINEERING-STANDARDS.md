@@ -55,6 +55,7 @@ concrete, executable version of "obsessive engineering quality." Concretely:
 | §9.3 Docs are part of the artifact | `every_section_reference_resolves` |
 | §8 Naming | `animal_roster_is_sorted_unique_and_well_formed`, `the_roster_is_larger_than_a_room_can_ever_be`, `reaction_roster_is_sorted_unique_and_actually_emoji` |
 | §9 Shipped artifact | `router_mounts_every_public_route`, `page_references_the_versioned_script_url`, `every_element_the_client_looks_up_exists_in_the_page`, `the_client_declares_every_screaming_case_constant_it_uses` |
+| §10.9 Show implies hide | `every_conditional_display_rule_has_a_base_that_hides_it` |
 | §10.8 Rendered classes are styled | `every_class_the_client_renders_is_styled` |
 | §10.6 One rule per selector | `no_css_selector_is_defined_twice`, `the_conversation_is_a_readable_centred_column` |
 | §10.7 Hover targets are reachable | `the_reaction_bar_can_actually_be_clicked` |
@@ -1183,6 +1184,28 @@ The same edit is where §10.6 came from: the removal was necessary *because*
 thirteen selectors had been defined twice. Bulk edits to a stylesheet are where
 both of these failures come from, which is the argument for having them
 machine-checked rather than reviewed.
+
+### 10.9 A rule that shows something implies a rule that hides it
+
+`.reply-preview.active { display: flex }` says "visible when active", which
+means nothing unless the base `.reply-preview` is hidden. A bulk sweep removed
+the base rule and nothing noticed: the class was still mentioned throughout the
+stylesheet, the page still parsed, and the reply preview — with its placeholder
+text baked into the markup — sat above the composer permanently, telling every
+visitor "Replying to / Message text…". A reader reported it; no test could
+have, because §10.8's sweep only asks whether a class is *mentioned*.
+
+This is §10.3 stated the other way round. That one says a sometimes-present
+thing must not change the layout; this says a sometimes-*visible* thing must
+actually start invisible.
+
+The wider lesson is about the edit rather than the rule. Three separate
+regressions came out of one bulk stylesheet sweep — a duplicated selector, a
+class matched by accident through `\b` at a hyphen, and this. **A regex over a
+stylesheet does not know what a rule is for.** Each got its own contract
+afterwards, which is the right ratchet, but the cheaper lesson is that
+mechanical edits to CSS need mechanical verification in the same commit, not
+after somebody notices.
 
 ### 10.7 A control that appears on hover must survive being aimed at
 
