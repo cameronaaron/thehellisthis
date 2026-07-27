@@ -239,7 +239,31 @@ let taken: HashSet<&str> = self.users.values()
 
 Pinned by `assign_animal_never_repeats_a_connected_name`.
 
-### 1.4a Derive the answer; do not keep a second copy of it
+### 1.4a Share what is immutable; copy only what differs
+
+A stored message never changes, so there is no reason for every join to get its
+own copy of one. `chat_history` holds `Arc<OutgoingMessage>` and the join path
+clones refcounts.
+
+The number is what makes this worth writing down. Copying a full room's history
+— 500 messages, ~2 MB of attachments — measured **119 µs**, and it happened
+*under the room write lock*, so that cost was charged to every user in every
+room rather than to the one joining. The same copy as `Arc` clones is **1.3 µs**.
+It was the largest lock hold in the server and it was a type away from not
+existing.
+
+What could *not* be shared is the per-viewer part: whether **you** reacted has a
+different answer for each recipient. That is why `reactions` is not a field of
+`OutgoingMessage` — putting it there would have forced a full copy of the
+message per viewer just to fill it in, which is the copy this removed. It is
+carried alongside instead, and flattened onto the wire so the frame is
+byte-identical to a live one.
+
+**Split a structure along the line between what is shared and what differs**,
+then share the first half. §3.4's "self-heal where it is free" and §1.4a's "do
+not keep a second copy" are the same instinct applied to time and to state.
+
+### 1.4b Derive the answer; do not keep a second copy of it
 
 `available_animals` was a free list: names came out when assigned and callers
 put them back when a user was reclaimed. The bookkeeping did not balance. A name
@@ -848,6 +872,7 @@ lore.
 | --- | --- | --- |
 | `panic = "abort"` in release | **Rejected** (§5.1) — trades a per-connection failure for a total one | Never, while one process holds all rooms. Reopens if rooms are ever sharded across processes. |
 | Multiple container instances | **Blocked** — all state is in-process memory, so a second instance is a second, separate set of rooms behind the same URLs | Reopens only with shared state (Durable Objects, or rooms pinned to instances by name). `max_instances: 1` is correctness, not just cost. |
+| Owned `OutgoingMessage` in `chat_history` | **Replaced by `Arc`** — measured: copying a full room's history (500 messages, ~2 MB of attachments) took 119 µs *under the room write lock*, against 1.3 µs for the same copy as refcount clones. Total join-path cost 119 µs → 19.6 µs; the remainder is per-viewer reaction resolution | Closed. Reopens only if messages ever become mutable after storage, which would make the sharing unsound |
 | `chat_history` as `VecDeque` | **Deferred** — would make front-removal O(1) natively, but `drain(..k)` already made pruning O(n) once per prune, and `Vec` keeps slicing/indexing that ~40 tests use | Reopens if pruning ever moves onto the per-message path, where the constant factor would matter. |
 | Per-IP rate limiting as real protection | **Rejected as a security boundary** (§5.5) — `X-Forwarded-For` is attacker-controlled | Reopens if the container stops being reachable except through the Worker, verifiable at the network layer. |
 | Sliding-window rate limiter | **Rejected** — needs a timestamp per event; the fixed window's edge behaviour is imperceptible in chat | Reopens if burst abuse is observed crossing window boundaries in production. |

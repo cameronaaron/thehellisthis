@@ -31,7 +31,7 @@ Cloudflare Container behind a Worker.
 
 ```bash
 cargo run                       # dev server → http://localhost:3000/main
-cargo test --all-features       # 602 tests; all must pass before committing
+cargo test --all-features       # 604 tests; all must pass before committing
 cargo fmt --all -- --check      # formatting is a gate, not a preference
 cargo clippy --all-targets --all-features -- -D warnings   # warnings are failures
 cargo build --release           # LTO'd binary for the container image
@@ -464,7 +464,7 @@ Frame order on connect is **guaranteed**: `Welcome`, then history, then
 
 ## Tests
 
-`src/tests.rs` — 602 tests, one file, run with `cargo test --all-features`.
+`src/tests.rs` — 604 tests, one file, run with `cargo test --all-features`.
 Notable classes:
 
 | Class | Pins |

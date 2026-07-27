@@ -355,7 +355,6 @@ async fn test_message_added_to_room_history() {
         timestamp: "1000".to_string(),
         reply_to: None,
         attachment: None,
-        reactions: Vec::new(),
     };
 
     room.add_message(msg.clone(), &tracker);
@@ -375,7 +374,6 @@ async fn test_message_memory_tracking() {
         timestamp: "1000".to_string(),
         reply_to: None,
         attachment: None,
-        reactions: Vec::new(),
     };
 
     let msg_size = msg.estimate_size();
@@ -399,13 +397,12 @@ async fn test_preserve_messages_trims_and_updates_tracker() {
             timestamp: "1000".to_string(),
             reply_to: None,
             attachment: None,
-            reactions: Vec::new(),
         };
         let msg_size = msg.estimate_size();
         tracker.add_bytes(msg_size);
         room.total_memory_bytes
             .fetch_add(msg_size, Ordering::SeqCst);
-        room.chat_history.push(msg);
+        room.chat_history.push(Arc::new(msg));
     }
 
     let before_tracker = tracker.total_bytes.load(Ordering::Relaxed);
@@ -430,12 +427,11 @@ async fn test_trim_to_max_messages_limits_history() {
             timestamp: "1000".to_string(),
             reply_to: None,
             attachment: None,
-            reactions: Vec::new(),
         };
         let size = msg.estimate_size();
         tracker.add_bytes(size);
         room.total_memory_bytes.fetch_add(size, Ordering::SeqCst);
-        room.chat_history.push(msg);
+        room.chat_history.push(Arc::new(msg));
     }
 
     let before = tracker.total_bytes.load(Ordering::Relaxed);
@@ -572,7 +568,6 @@ async fn test_cleanup_messages_by_age() {
         timestamp: old_timestamp,
         reply_to: None,
         attachment: None,
-        reactions: Vec::new(),
     };
 
     // Fresh message
@@ -584,12 +579,11 @@ async fn test_cleanup_messages_by_age() {
         timestamp: format!("{}", now_ms),
         reply_to: None,
         attachment: None,
-        reactions: Vec::new(),
     };
 
     let old_size = old_msg.estimate_size();
-    room.chat_history.push(old_msg);
-    room.chat_history.push(fresh_msg);
+    room.chat_history.push(Arc::new(old_msg));
+    room.chat_history.push(Arc::new(fresh_msg));
     room.total_memory_bytes
         .store(old_size + 100, Ordering::SeqCst);
     tracker.add_bytes(old_size + 100);
@@ -614,7 +608,6 @@ async fn test_room_memory_accounting() {
         timestamp: "1000".to_string(),
         reply_to: None,
         attachment: None,
-        reactions: Vec::new(),
     };
     let msg1_size = msg1.estimate_size();
 
@@ -628,7 +621,6 @@ async fn test_room_memory_accounting() {
         timestamp: "2000".to_string(),
         reply_to: None,
         attachment: None,
-        reactions: Vec::new(),
     };
     let msg2_size = msg2.estimate_size();
 
@@ -807,7 +799,6 @@ async fn test_outgoing_message_size_estimation() {
         timestamp: "1234567890".to_string(),
         reply_to: None,
         attachment: None,
-        reactions: Vec::new(),
     };
 
     let size = msg.estimate_size();
@@ -838,7 +829,6 @@ async fn test_concurrent_message_additions() {
                 timestamp: "1000".to_string(),
                 reply_to: None,
                 attachment: None,
-                reactions: Vec::new(),
             };
             room_clone.lock().await.add_message(msg, &tracker_clone);
         }));
@@ -943,7 +933,6 @@ async fn test_message_ordering_by_timestamp() {
         timestamp: "1000".to_string(),
         reply_to: None,
         attachment: None,
-        reactions: Vec::new(),
     };
 
     let msg2 = OutgoingMessage {
@@ -954,11 +943,10 @@ async fn test_message_ordering_by_timestamp() {
         timestamp: "2000".to_string(),
         reply_to: None,
         attachment: None,
-        reactions: Vec::new(),
     };
 
-    room.chat_history.push(msg1);
-    room.chat_history.push(msg2);
+    room.chat_history.push(Arc::new(msg1));
+    room.chat_history.push(Arc::new(msg2));
 
     // Verify messages are in order
     assert_eq!(room.chat_history[0].timestamp, "1000");
@@ -1086,7 +1074,6 @@ async fn test_prune_old_messages_updates_tracker() {
         timestamp: "1000".to_string(),
         reply_to: None,
         attachment: None,
-        reactions: Vec::new(),
     };
     let msg2 = OutgoingMessage {
         message_id: uuid::Uuid::new_v4(),
@@ -1096,7 +1083,6 @@ async fn test_prune_old_messages_updates_tracker() {
         timestamp: "2000".to_string(),
         reply_to: None,
         attachment: None,
-        reactions: Vec::new(),
     };
     let msg3 = OutgoingMessage {
         message_id: uuid::Uuid::new_v4(),
@@ -1106,7 +1092,6 @@ async fn test_prune_old_messages_updates_tracker() {
         timestamp: "3000".to_string(),
         reply_to: None,
         attachment: None,
-        reactions: Vec::new(),
     };
 
     let size1 = msg1.estimate_size();
@@ -1114,9 +1099,9 @@ async fn test_prune_old_messages_updates_tracker() {
     let size3 = msg3.estimate_size();
     let total = size1 + size2 + size3;
 
-    room.chat_history.push(msg1);
-    room.chat_history.push(msg2);
-    room.chat_history.push(msg3);
+    room.chat_history.push(Arc::new(msg1));
+    room.chat_history.push(Arc::new(msg2));
+    room.chat_history.push(Arc::new(msg3));
     room.total_memory_bytes.store(total, Ordering::SeqCst);
     tracker.add_bytes(total);
 
@@ -1144,7 +1129,6 @@ async fn test_add_message_drops_when_global_memory_full() {
         timestamp: "1000".to_string(),
         reply_to: None,
         attachment: None,
-        reactions: Vec::new(),
     };
 
     room.add_message(msg, &tracker);
@@ -1178,11 +1162,10 @@ async fn test_cleanup_messages_keeps_invalid_timestamp() {
         timestamp: "not-a-number".to_string(),
         reply_to: None,
         attachment: None,
-        reactions: Vec::new(),
     };
 
     let size = msg.estimate_size();
-    room.chat_history.push(msg);
+    room.chat_history.push(Arc::new(msg));
     room.total_memory_bytes.store(size, Ordering::SeqCst);
     tracker.add_bytes(size);
 
@@ -2496,7 +2479,7 @@ async fn test_room_message_history_capacity() {
 
         // Add messages beyond MAX_MESSAGES_PER_ROOM
         for i in 0..MAX_MESSAGES_PER_ROOM + 10 {
-            room.chat_history.push(OutgoingMessage {
+            room.chat_history.push(Arc::new(OutgoingMessage {
                 message_id: Uuid::new_v4(),
                 user_id: Uuid::new_v4().to_string(),
                 animal_name: "Lion".to_string(),
@@ -2508,8 +2491,7 @@ async fn test_room_message_history_capacity() {
                     .to_string(),
                 reply_to: None,
                 attachment: None,
-                reactions: Vec::new(),
-            });
+            }));
         }
 
         rooms.insert(room_name.clone(), room);
@@ -2907,7 +2889,7 @@ async fn test_room_cleanup_preserves_recent_messages() {
 
         // Add some recent messages
         for i in 0..10 {
-            room.chat_history.push(OutgoingMessage {
+            room.chat_history.push(Arc::new(OutgoingMessage {
                 message_id: Uuid::new_v4(),
                 user_id: Uuid::new_v4().to_string(),
                 animal_name: "Lion".to_string(),
@@ -2919,8 +2901,7 @@ async fn test_room_cleanup_preserves_recent_messages() {
                     .to_string(),
                 reply_to: None,
                 attachment: None,
-                reactions: Vec::new(),
-            });
+            }));
         }
 
         rooms.insert(room_name.clone(), room);
@@ -3316,7 +3297,6 @@ async fn test_message_history_ordering() {
         timestamp: "1000000000".to_string(),
         reply_to: None,
         attachment: None,
-        reactions: Vec::new(),
     };
 
     let msg2 = OutgoingMessage {
@@ -3327,11 +3307,10 @@ async fn test_message_history_ordering() {
         timestamp: "1000000001".to_string(),
         reply_to: None,
         attachment: None,
-        reactions: Vec::new(),
     };
 
-    room_state.chat_history.push(msg1.clone());
-    room_state.chat_history.push(msg2.clone());
+    room_state.chat_history.push(Arc::new(msg1.clone()));
+    room_state.chat_history.push(Arc::new(msg2.clone()));
 
     assert_eq!(room_state.chat_history[0].text, "First");
     assert_eq!(room_state.chat_history[1].text, "Second");
@@ -4376,7 +4355,6 @@ async fn test_outgoing_event_serialization() {
         timestamp: "1234567890".to_string(),
         reply_to: None,
         attachment: None,
-        reactions: Vec::new(),
     };
 
     let event = OutgoingEvent::Message {
@@ -4521,7 +4499,6 @@ async fn test_room_state_add_message_updates_memory() {
         timestamp: "1234567890".to_string(),
         reply_to: None,
         attachment: None,
-        reactions: Vec::new(),
     };
 
     let initial_memory = room_state.total_memory_bytes.load(Ordering::Relaxed);
@@ -4547,7 +4524,6 @@ async fn test_room_state_preserve_messages() {
             timestamp: "1234567890".to_string(),
             reply_to: None,
             attachment: None,
-            reactions: Vec::new(),
         };
         room_state.add_message(msg, &memory_tracker);
     }
@@ -4574,7 +4550,6 @@ async fn test_room_state_trim_messages_over_limit() {
             timestamp: "1234567890".to_string(),
             reply_to: None,
             attachment: None,
-            reactions: Vec::new(),
         };
         room_state.add_message(msg, &memory_tracker);
     }
@@ -4993,9 +4968,8 @@ async fn test_trigger_cleanup_when_memory_high() {
             timestamp: "1234567890".to_string(),
             reply_to: None,
             attachment: None,
-            reactions: Vec::new(),
         };
-        room_state.chat_history.push(msg);
+        room_state.chat_history.push(Arc::new(msg));
     }
 
     // Should trigger cleanup
@@ -5023,9 +4997,8 @@ async fn test_trigger_cleanup_when_memory_low() {
             timestamp: "1234567890".to_string(),
             reply_to: None,
             attachment: None,
-            reactions: Vec::new(),
         };
-        room_state.chat_history.push(msg);
+        room_state.chat_history.push(Arc::new(msg));
     }
 
     let history_len_before = room_state.chat_history.len();
@@ -5072,7 +5045,6 @@ async fn test_prune_old_messages_empties_when_all_old() {
             timestamp: old_time.to_string(),
             reply_to: None,
             attachment: None,
-            reactions: Vec::new(),
         };
         room_state.add_message(msg, &memory_tracker);
     }
@@ -5127,7 +5099,6 @@ async fn test_outgoing_message_large_text_size_estimation() {
         timestamp: "1234567890".to_string(),
         reply_to: None,
         attachment: None,
-        reactions: Vec::new(),
     };
 
     let size = msg.estimate_size();
@@ -5300,9 +5271,8 @@ async fn test_cleanup_batch_size_limit() {
             timestamp: old_time.to_string(),
             reply_to: None,
             attachment: None,
-            reactions: Vec::new(),
         };
-        room_state.chat_history.push(msg);
+        room_state.chat_history.push(Arc::new(msg));
         memory_tracker.add_bytes(50);
     }
 
@@ -5488,9 +5458,8 @@ async fn test_prune_old_messages_partial() {
             timestamp: old_time.to_string(),
             reply_to: None,
             attachment: None,
-            reactions: Vec::new(),
         };
-        room_state.chat_history.push(msg);
+        room_state.chat_history.push(Arc::new(msg));
         memory_tracker.add_bytes(50);
     }
 
@@ -5504,9 +5473,8 @@ async fn test_prune_old_messages_partial() {
             timestamp: new_time.to_string(),
             reply_to: None,
             attachment: None,
-            reactions: Vec::new(),
         };
-        room_state.chat_history.push(msg);
+        room_state.chat_history.push(Arc::new(msg));
         memory_tracker.add_bytes(50);
     }
 
@@ -5934,7 +5902,6 @@ async fn test_message_contains_user_id_for_alignment() {
         timestamp: "1234567890".to_string(),
         reply_to: None,
         attachment: None,
-        reactions: Vec::new(),
     };
 
     // user_id must be present and non-empty
@@ -5967,7 +5934,6 @@ async fn test_message_user_id_matches_cookie_format() {
         timestamp: "1000".to_string(),
         reply_to: None,
         attachment: None,
-        reactions: Vec::new(),
     };
 
     // Cookie should contain exact user_id value
@@ -6573,7 +6539,6 @@ async fn test_outgoing_event_message_serialization() {
         timestamp: "1234567890".to_string(),
         reply_to: None,
         attachment: None,
-        reactions: Vec::new(),
     };
 
     let event = OutgoingEvent::Message { message: msg };
@@ -6637,7 +6602,6 @@ async fn test_memory_pressure_message_pruning() {
             timestamp: format!("{}", i * 1000),
             reply_to: None,
             attachment: None,
-            reactions: Vec::new(),
         };
         room.add_message(msg, &tracker);
     }
@@ -6766,10 +6730,9 @@ async fn test_prune_old_messages_removes_oldest_first() {
             timestamp: format!("{}", i * 1000),
             reply_to: None,
             attachment: None,
-            reactions: Vec::new(),
         };
         let size = msg.estimate_size();
-        room.chat_history.push(msg);
+        room.chat_history.push(Arc::new(msg));
         room.total_memory_bytes.fetch_add(size, Ordering::SeqCst);
         tracker.add_bytes(size);
     }
@@ -6837,7 +6800,6 @@ async fn test_outgoing_message_estimate_size() {
         timestamp: "1234567890123".to_string(),
         reply_to: None,
         attachment: None,
-        reactions: Vec::new(),
     };
 
     let size = msg.estimate_size();
@@ -6868,7 +6830,6 @@ async fn test_room_state_last_activity_updates() {
             timestamp: "1000".to_string(),
             reply_to: None,
             attachment: None,
-            reactions: Vec::new(),
         },
         &tracker,
     );
@@ -7340,7 +7301,7 @@ async fn test_claim_no_disk_persistence() {
         let mut rooms = app_state.rooms.write().await;
         let room_state = RoomState {
             sender: tokio::sync::broadcast::channel(1000).0,
-            chat_history: vec![OutgoingMessage {
+            chat_history: vec![Arc::new(OutgoingMessage {
                 message_id: uuid::Uuid::new_v4(),
                 user_id: "test".to_string(),
                 animal_name: "Lion".to_string(),
@@ -7348,8 +7309,7 @@ async fn test_claim_no_disk_persistence() {
                 timestamp: "12345".to_string(),
                 reply_to: None,
                 attachment: None,
-                reactions: Vec::new(),
-            }],
+            })],
             users: std::collections::HashMap::new(),
             available_animals: std::collections::VecDeque::new(),
             last_activity: Instant::now(),
@@ -7379,7 +7339,6 @@ async fn test_claim_max_500_messages_per_room() {
             timestamp: i.to_string(),
             reply_to: None,
             attachment: None,
-            reactions: Vec::new(),
         });
     }
 
@@ -7540,7 +7499,6 @@ async fn test_message_timestamps_are_numeric_strings() {
         timestamp: "1705276800000".to_string(),
         reply_to: None,
         attachment: None,
-        reactions: Vec::new(),
     };
 
     // Should parse as a number
@@ -7986,7 +7944,6 @@ async fn test_outgoing_message_size_calculation() {
         reply_to: None,
         user_id: uuid::Uuid::new_v4().to_string(),
         attachment: None,
-        reactions: Vec::new(),
     };
 
     let size = msg.estimate_size();
@@ -8546,7 +8503,6 @@ async fn test_outgoing_message_with_reply() {
         timestamp: "1234567890".to_string(),
         reply_to: Some(reply),
         attachment: None,
-        reactions: Vec::new(),
     };
 
     let json = serde_json::to_string(&msg).unwrap();
@@ -8565,7 +8521,6 @@ async fn test_outgoing_message_without_reply_omits_field() {
         timestamp: "1234567890".to_string(),
         reply_to: None,
         attachment: None,
-        reactions: Vec::new(),
     };
 
     let json = serde_json::to_string(&msg).unwrap();
@@ -8600,7 +8555,6 @@ async fn test_message_estimate_size_with_reply() {
         timestamp: "1000".to_string(),
         reply_to: None,
         attachment: None,
-        reactions: Vec::new(),
     };
 
     let msg_with_reply = OutgoingMessage {
@@ -8615,7 +8569,6 @@ async fn test_message_estimate_size_with_reply() {
             preview_text: "This is a preview".to_string(),
         }),
         attachment: None,
-        reactions: Vec::new(),
     };
 
     // Message with reply should be larger
@@ -8694,7 +8647,6 @@ async fn test_room_state_add_message_drops_when_memory_exceeded() {
         timestamp: "1000".to_string(),
         reply_to: None,
         attachment: None,
-        reactions: Vec::new(),
     };
 
     // This should trigger pruning or dropping
@@ -8826,9 +8778,8 @@ async fn test_room_state_trim_to_max_messages() {
             timestamp: "1000".to_string(),
             reply_to: None,
             attachment: None,
-            reactions: Vec::new(),
         };
-        room.chat_history.push(msg);
+        room.chat_history.push(Arc::new(msg));
     }
 
     room.trim_to_max_messages(&tracker);
@@ -9534,7 +9485,6 @@ async fn test_add_message_dropped_when_memory_exceeded() {
                 timestamp: "12345".to_string(),
                 reply_to: None,
                 attachment: None,
-                reactions: Vec::new(),
             };
 
             let initial_history_len = room_state.chat_history.len();
@@ -9703,7 +9653,7 @@ async fn test_cleanup_rooms_with_messages_no_users() {
         let mut room_state = create_room();
 
         // Add a message
-        room_state.chat_history.push(OutgoingMessage {
+        room_state.chat_history.push(Arc::new(OutgoingMessage {
             message_id: uuid::Uuid::new_v4(),
             user_id: "user1".to_string(),
             animal_name: "Lion".to_string(),
@@ -9711,8 +9661,7 @@ async fn test_cleanup_rooms_with_messages_no_users() {
             timestamp: "12345".to_string(),
             reply_to: None,
             attachment: None,
-            reactions: Vec::new(),
-        });
+        }));
 
         // Set last_activity to be old enough for cleanup
         room_state.last_activity =
@@ -9737,7 +9686,7 @@ async fn test_prune_old_messages_with_existing_messages() {
 
     // Add several messages
     for i in 0..10 {
-        room.chat_history.push(OutgoingMessage {
+        room.chat_history.push(Arc::new(OutgoingMessage {
             message_id: uuid::Uuid::new_v4(),
             user_id: format!("user{}", i),
             animal_name: format!("Animal{}", i),
@@ -9745,8 +9694,7 @@ async fn test_prune_old_messages_with_existing_messages() {
             timestamp: format!("{}", i * 1000),
             reply_to: None,
             attachment: None,
-            reactions: Vec::new(),
-        });
+        }));
         tracker.add_bytes(100);
         room.total_memory_bytes
             .fetch_add(100, std::sync::atomic::Ordering::SeqCst);
@@ -10132,7 +10080,7 @@ async fn test_add_message_at_max_capacity() {
 
     // Fill room to MAX_MESSAGES_PER_ROOM
     for i in 0..MAX_MESSAGES_PER_ROOM {
-        room.chat_history.push(OutgoingMessage {
+        room.chat_history.push(Arc::new(OutgoingMessage {
             message_id: uuid::Uuid::new_v4(),
             user_id: format!("user{}", i),
             animal_name: format!("Animal{}", i),
@@ -10140,8 +10088,7 @@ async fn test_add_message_at_max_capacity() {
             timestamp: format!("{}", i * 1000),
             reply_to: None,
             attachment: None,
-            reactions: Vec::new(),
-        });
+        }));
     }
 
     // Add one more message
@@ -10153,7 +10100,6 @@ async fn test_add_message_at_max_capacity() {
         timestamp: "999999".to_string(),
         reply_to: None,
         attachment: None,
-        reactions: Vec::new(),
     };
 
     room.add_message(new_msg.clone(), &tracker);
@@ -10475,7 +10421,6 @@ async fn test_outgoing_message_size_with_reply() {
         timestamp: "1234567890".to_string(),
         reply_to: None,
         attachment: None,
-        reactions: Vec::new(),
     };
 
     let size = msg.estimate_size();
@@ -10494,7 +10439,6 @@ async fn test_outgoing_message_size_with_reply() {
             preview_text: "Previous message".to_string(),
         }),
         attachment: None,
-        reactions: Vec::new(),
     };
 
     let size_with_reply = msg_with_reply.estimate_size();
@@ -10525,7 +10469,7 @@ async fn test_room_trigger_cleanup() {
 
     // Add many messages
     for i in 0..100 {
-        room.chat_history.push(OutgoingMessage {
+        room.chat_history.push(Arc::new(OutgoingMessage {
             message_id: uuid::Uuid::new_v4(),
             user_id: format!("user{}", i),
             animal_name: format!("Animal{}", i),
@@ -10533,8 +10477,7 @@ async fn test_room_trigger_cleanup() {
             timestamp: format!("{}", i * 1000),
             reply_to: None,
             attachment: None,
-            reactions: Vec::new(),
-        });
+        }));
         tracker.add_bytes(100);
         room.total_memory_bytes.fetch_add(100, Ordering::SeqCst);
     }
@@ -10829,7 +10772,7 @@ async fn test_app_state_cleanup_with_high_memory() {
             let mut room = create_room();
             // Add messages to increase memory
             for j in 0..50 {
-                room.chat_history.push(OutgoingMessage {
+                room.chat_history.push(Arc::new(OutgoingMessage {
                     message_id: uuid::Uuid::new_v4(),
                     user_id: format!("user{}", j),
                     animal_name: format!("Animal{}", j),
@@ -10837,8 +10780,7 @@ async fn test_app_state_cleanup_with_high_memory() {
                     timestamp: "12345".to_string(),
                     reply_to: None,
                     attachment: None,
-                    reactions: Vec::new(),
-                });
+                }));
             }
             rooms.insert(format!("room{}", i), room);
         }
@@ -11087,13 +11029,12 @@ async fn test_prune_old_messages_keeps_recent() {
             timestamp: format!("{}", i * 1000 + 1000000),
             reply_to: None,
             attachment: None,
-            reactions: Vec::new(),
         };
         let msg_size = msg.estimate_size();
         tracker.add_bytes(msg_size);
         room.total_memory_bytes
             .fetch_add(msg_size, Ordering::SeqCst);
-        room.chat_history.push(msg);
+        room.chat_history.push(Arc::new(msg));
     }
 
     let initial_count = room.chat_history.len();
@@ -11122,7 +11063,6 @@ async fn test_add_message_triggers_prune_on_memory_limit() {
             timestamp: "12345".to_string(),
             reply_to: None,
             attachment: None,
-            reactions: Vec::new(),
         };
         room.add_message(msg, &tracker);
     }
@@ -11370,7 +11310,6 @@ async fn test_outgoing_message_basic_size() {
         timestamp: "1234567890".to_string(),
         reply_to: None,
         attachment: None,
-        reactions: Vec::new(),
     };
 
     let size = msg.estimate_size();
@@ -11394,7 +11333,6 @@ async fn test_outgoing_message_with_reply_info() {
             preview_text: "Original message preview".to_string(),
         }),
         attachment: None,
-        reactions: Vec::new(),
     };
 
     let size = msg.estimate_size();
@@ -12278,7 +12216,7 @@ async fn main_room_history_fades_when_idle_instead_of_being_deleted() {
         let mut room = create_room();
 
         for i in 0..(MAIN_ROOM_FADE_KEEP + 120) {
-            room.chat_history.push(OutgoingMessage {
+            room.chat_history.push(Arc::new(OutgoingMessage {
                 message_id: Uuid::new_v4(),
                 user_id: "u".to_string(),
                 animal_name: "otter".to_string(),
@@ -12286,8 +12224,7 @@ async fn main_room_history_fades_when_idle_instead_of_being_deleted() {
                 timestamp: "1".to_string(),
                 reply_to: None,
                 attachment: None,
-                reactions: Vec::new(),
-            });
+            }));
         }
         // Idle long enough to trigger the fade.
         room.last_activity = Instant::now() - MAIN_ROOM_FADE_IDLE - Duration::from_secs(30);
@@ -12421,7 +12358,6 @@ fn pruning_zero_bytes_changes_nothing() {
             timestamp: "1".to_string(),
             reply_to: None,
             attachment: None,
-            reactions: Vec::new(),
         },
         &tracker,
     );
@@ -12446,7 +12382,7 @@ async fn message_cleanup_is_capped_at_one_batch_per_pass() {
 
     // Every message far older than MAX_MESSAGE_AGE.
     for _ in 0..(CLEANUP_BATCH_SIZE + 50) {
-        room.chat_history.push(OutgoingMessage {
+        room.chat_history.push(Arc::new(OutgoingMessage {
             message_id: Uuid::new_v4(),
             user_id: "u".to_string(),
             animal_name: "otter".to_string(),
@@ -12454,8 +12390,7 @@ async fn message_cleanup_is_capped_at_one_batch_per_pass() {
             timestamp: "1".to_string(),
             reply_to: None,
             attachment: None,
-            reactions: Vec::new(),
-        });
+        }));
     }
     let before = room.chat_history.len();
 
@@ -13407,7 +13342,7 @@ fn adding_a_message_near_the_memory_ceiling_prunes_proactively() {
     let mut room = create_room();
 
     for i in 0..50 {
-        room.chat_history.push(OutgoingMessage {
+        room.chat_history.push(Arc::new(OutgoingMessage {
             message_id: Uuid::new_v4(),
             user_id: "u".to_string(),
             animal_name: "otter".to_string(),
@@ -13415,8 +13350,7 @@ fn adding_a_message_near_the_memory_ceiling_prunes_proactively() {
             timestamp: "1".to_string(),
             reply_to: None,
             attachment: None,
-            reactions: Vec::new(),
-        });
+        }));
     }
     let before = room.chat_history.len();
 
@@ -13435,7 +13369,6 @@ fn adding_a_message_near_the_memory_ceiling_prunes_proactively() {
             timestamp: "1".to_string(),
             reply_to: None,
             attachment: None,
-            reactions: Vec::new(),
         },
         &tracker,
     );
@@ -13457,7 +13390,7 @@ async fn joining_user_triggers_a_trim_of_oversized_history() {
         let mut rooms = state.rooms.write().await;
         let mut room = create_room();
         for i in 0..(MAX_MESSAGES_PER_ROOM + 50) {
-            room.chat_history.push(OutgoingMessage {
+            room.chat_history.push(Arc::new(OutgoingMessage {
                 message_id: Uuid::new_v4(),
                 user_id: "u".to_string(),
                 animal_name: "otter".to_string(),
@@ -13465,8 +13398,7 @@ async fn joining_user_triggers_a_trim_of_oversized_history() {
                 timestamp: "1".to_string(),
                 reply_to: None,
                 attachment: None,
-                reactions: Vec::new(),
-            });
+            }));
         }
         rooms.insert("crowded-room".to_string(), room);
     }
@@ -13694,7 +13626,6 @@ async fn every_room_history_is_bounded_by_housekeeping_not_only_by_joins() {
                     timestamp: "1".to_string(),
                     reply_to: None,
                     attachment: None,
-                    reactions: Vec::new(),
                 },
                 &state.memory_tracker,
             );
@@ -14365,7 +14296,6 @@ async fn a_rooms_oldest_images_fade_once_it_is_over_its_attachment_budget() {
                     height: 10,
                     faded: false,
                 }),
-                reactions: Vec::new(),
             },
             &tracker,
         );
@@ -14461,7 +14391,6 @@ async fn reactions_never_outlive_the_messages_they_belong_to() {
                 timestamp: "1".to_string(),
                 reply_to: None,
                 attachment: None,
-                reactions: Vec::new(),
             },
             &tracker,
         );
@@ -14486,7 +14415,6 @@ async fn reactions_never_outlive_the_messages_they_belong_to() {
             timestamp: "1".to_string(), // 1970 — far older than MAX_MESSAGE_AGE
             reply_to: None,
             attachment: None,
-            reactions: Vec::new(),
         },
         &tracker,
     );
@@ -14514,7 +14442,6 @@ async fn reactions_never_outlive_the_messages_they_belong_to() {
             timestamp: "1".to_string(),
             reply_to: None,
             attachment: None,
-            reactions: Vec::new(),
         },
         &tracker,
     );
@@ -14540,7 +14467,7 @@ async fn a_reaction_must_be_on_the_roster() {
             "u1".to_string(),
             connected_user("u1", "otter", "c1", Instant::now()),
         );
-        room.chat_history.push(OutgoingMessage {
+        room.chat_history.push(Arc::new(OutgoingMessage {
             message_id,
             user_id: "u1".to_string(),
             animal_name: "otter".to_string(),
@@ -14548,8 +14475,7 @@ async fn a_reaction_must_be_on_the_roster() {
             timestamp: "1".to_string(),
             reply_to: None,
             attachment: None,
-            reactions: Vec::new(),
-        });
+        }));
         rooms.insert("react-room".to_string(), room);
     }
 
@@ -15190,7 +15116,6 @@ async fn fading_skips_images_that_already_faded() {
                     height: 10,
                     faded: false,
                 }),
-                reactions: Vec::new(),
             },
             &tracker,
         );
@@ -15213,7 +15138,6 @@ async fn fading_skips_images_that_already_faded() {
             timestamp: "1".to_string(),
             reply_to: None,
             attachment: None,
-            reactions: Vec::new(),
         },
         &tracker,
     );
@@ -15229,4 +15153,120 @@ async fn fading_skips_images_that_already_faded() {
         "an already-faded image must not be faded again"
     );
     assert!(room.attachment_bytes <= MAX_ROOM_ATTACHMENT_BYTES);
+}
+
+/// History carries each viewer's own reaction state, and nobody else's.
+///
+/// The stored message has no `reactions` field precisely because the answer to
+/// "did you react" differs per recipient; it is resolved as history is sent.
+/// This is also the path that pairs each message with its buckets, which the
+/// no-reactions fast path skips.
+#[tokio::test]
+async fn history_resolves_reactions_for_the_viewer_receiving_it() {
+    let tracker = MemoryTracker::new();
+    let mut room = create_room();
+
+    for i in 0..3 {
+        room.add_message(
+            OutgoingMessage {
+                message_id: Uuid::new_v4(),
+                user_id: "author".to_string(),
+                animal_name: "otter".to_string(),
+                text: format!("m{i}"),
+                timestamp: "1".to_string(),
+                reply_to: None,
+                attachment: None,
+            },
+            &tracker,
+        );
+    }
+
+    // With nothing reacted to, every message comes back with no buckets.
+    let bare = room.history_for("alice");
+    assert_eq!(bare.len(), 3);
+    assert!(bare.iter().all(|(_, r)| r.is_empty()));
+
+    let target = room.chat_history[1].message_id;
+    room.toggle_reaction(target, "🔥", "alice");
+    room.toggle_reaction(target, "🔥", "bob");
+    room.toggle_reaction(target, "🎉", "bob");
+
+    let for_alice = room.history_for("alice");
+    let (_, alice_reactions) = &for_alice[1];
+    assert_eq!(alice_reactions.len(), 2, "both buckets should be visible");
+
+    let fire = alice_reactions.iter().find(|r| r.emoji == "🔥").unwrap();
+    assert_eq!(fire.count, 2);
+    assert!(fire.reacted, "alice is in the fire bucket");
+
+    let party = alice_reactions.iter().find(|r| r.emoji == "🎉").unwrap();
+    assert_eq!(party.count, 1);
+    assert!(!party.reacted, "alice is not in the party bucket");
+
+    // Same room, different viewer, different answer — from the same stored
+    // messages, which were never copied to say so.
+    let for_bob = room.history_for("bob");
+    let (_, bob_reactions) = &for_bob[1];
+    assert!(
+        bob_reactions.iter().all(|r| r.reacted),
+        "bob is in both buckets"
+    );
+
+    // Messages with no reactions still come back, in order, with empty vecs.
+    assert!(for_alice[0].1.is_empty() && for_alice[2].1.is_empty());
+}
+
+/// Fading is a no-op when there is nothing left to fade.
+///
+/// Reachable when the byte total says the room is over budget but every
+/// attachment has already been emptied — an accounting drift rather than a
+/// normal state, which is exactly when a loop that assumed it would find work
+/// would spin or subtract something it did not free.
+#[tokio::test]
+async fn fading_with_nothing_left_to_fade_changes_nothing() {
+    let tracker = MemoryTracker::new();
+    let mut room = create_room();
+
+    room.add_message(
+        OutgoingMessage {
+            message_id: Uuid::new_v4(),
+            user_id: "u".to_string(),
+            animal_name: "otter".to_string(),
+            text: "already gone".to_string(),
+            timestamp: "1".to_string(),
+            reply_to: None,
+            attachment: Some(Attachment {
+                mime: "image/png".to_string(),
+                data: String::new(),
+                width: 10,
+                height: 10,
+                faded: true,
+            }),
+        },
+        &tracker,
+    );
+
+    // Claim the room is over budget with nothing un-faded to reclaim.
+    room.attachment_bytes = MAX_ROOM_ATTACHMENT_BYTES + 1;
+    let before = room.total_memory_bytes.load(Ordering::SeqCst);
+
+    room.add_message(
+        OutgoingMessage {
+            message_id: Uuid::new_v4(),
+            user_id: "u".to_string(),
+            animal_name: "otter".to_string(),
+            text: "just words".to_string(),
+            timestamp: "1".to_string(),
+            reply_to: None,
+            attachment: None,
+        },
+        &tracker,
+    );
+
+    assert!(
+        room.total_memory_bytes.load(Ordering::SeqCst) > before,
+        "the new message should have been accounted for, not cancelled out by \
+         a fade that freed nothing"
+    );
+    assert_eq!(room.chat_history.len(), 2);
 }

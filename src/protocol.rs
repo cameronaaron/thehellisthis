@@ -82,10 +82,29 @@ pub struct OutgoingMessage {
     pub reply_to: Option<ReplyInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attachment: Option<Attachment>,
-    /// Populated only when history is sent; live reaction changes arrive as
-    /// [`SystemEvent::Reaction`] deltas rather than as a whole message again.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub reactions: Vec<Reaction>,
+}
+
+/// A history message together with the reactions *this viewer* should see.
+///
+/// Borrowed, and flattened onto the wire so the frame is byte-identical to a
+/// live `Message`. Reactions are not a field of [`OutgoingMessage`] because a
+/// stored message has no single answer to "did you react" — the answer differs
+/// per recipient, and putting it in the stored struct would mean copying the
+/// whole message per viewer to fill it in.
+#[derive(Serialize)]
+pub struct HistoryMessage<'a> {
+    #[serde(flatten)]
+    pub message: &'a OutgoingMessage,
+    #[serde(skip_serializing_if = "<[Reaction]>::is_empty")]
+    pub reactions: &'a [Reaction],
+}
+
+/// The history replay frame. Same `type` tag and shape as
+/// [`OutgoingEvent::Message`], so the client needs no second code path.
+#[derive(Serialize)]
+#[serde(tag = "type")]
+pub enum HistoryEvent<'a> {
+    Message { message: HistoryMessage<'a> },
 }
 
 impl OutgoingMessage {

@@ -71,7 +71,7 @@ src/
   cleanup.rs      Room housekeeping pass
   emoji.rs        Reaction emoji roster (the closed set a reaction may be)
   security.rs     Security headers, CSP, WebSocket origin policy
-  tests.rs        602 tests
+  tests.rs        604 tests
 index.html        The page, compiled into the binary
 client.js         The client script, served from /app.js so the CSP can
                   forbid inline script entirely
@@ -135,7 +135,7 @@ its value. The ones worth knowing:
 ## Testing
 
 ```bash
-cargo test --all-features        # 602 tests
+cargo test --all-features        # 604 tests
 cargo test --all-features roster # a subset
 scripts/coverage.sh              # line-coverage floor (95%)
 cargo mutants                    # mutation testing (manual sweep, slow)

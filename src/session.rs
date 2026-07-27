@@ -33,7 +33,9 @@ use crate::emoji::is_reaction_emoji;
 use crate::error::ChatError;
 use crate::identity::{OptionalUserCookie, UserCookie, create_user_cookies};
 use crate::limits::RateLimiter;
-use crate::protocol::{ClientEvent, OutgoingEvent, OutgoingMessage, SystemEvent};
+use crate::protocol::{
+    ClientEvent, HistoryEvent, HistoryMessage, OutgoingEvent, OutgoingMessage, SystemEvent,
+};
 use crate::room::{ConnectionState, RoomState, UserData, create_room, user_idle_for_too_long};
 use crate::security::is_allowed_origin;
 use crate::state::AppState;
@@ -383,9 +385,11 @@ async fn run_session(
     }
 
     debug!(count = chat_history.len(), user_id = %user_id, "sending history");
-    for message in &chat_history {
-        let Ok(json) = serde_json::to_string(&OutgoingEvent::Message {
-            message: message.clone(),
+    for (message, reactions) in &chat_history {
+        // Serialised from borrows: the history was handed over as refcounts,
+        // and nothing here copies a message just to put a `type` around it.
+        let Ok(json) = serde_json::to_string(&HistoryEvent::Message {
+            message: HistoryMessage { message, reactions },
         }) else {
             continue;
         };
@@ -662,8 +666,6 @@ pub async fn apply_client_event(
                 // as attacker-controlled as the message body.
                 reply_to: reply_to.and_then(sanitize_reply),
                 attachment,
-                // Nobody can have reacted to a message that does not exist yet.
-                reactions: Vec::new(),
             };
 
             user.last_message_time = now;

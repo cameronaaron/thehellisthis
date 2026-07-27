@@ -14,7 +14,6 @@ use crate::config::{
     DISCONNECTED_USER_RETENTION, EMPTY_ROOM_CLEANUP_DELAY, MAIN_ROOM, MAIN_ROOM_FADE_IDLE,
     MAIN_ROOM_FADE_KEEP, MAX_MESSAGES_PER_ROOM,
 };
-use crate::protocol::OutgoingMessage;
 use crate::state::AppState;
 
 /// One housekeeping pass over every room.
@@ -104,11 +103,7 @@ pub async fn cleanup_rooms(state: &Arc<AppState>) {
 
         info!(room = %name, "deleted inactive room");
 
-        let freed: usize = room
-            .chat_history
-            .iter()
-            .map(OutgoingMessage::estimate_size)
-            .sum();
+        let freed: usize = room.chat_history.iter().map(|m| m.estimate_size()).sum();
         if freed > 0 {
             state.memory_tracker.remove_bytes(freed);
         }
