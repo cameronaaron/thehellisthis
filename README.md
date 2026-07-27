@@ -46,7 +46,11 @@ Deliberate product decisions, not resource management.
 - `HttpOnly`, `SameSite=Strict`, `Secure` identity cookies; the client learns
   who it is from the `Welcome` frame, never from `document.cookie`
 - HTML sanitisation applied to rendered output, not to input
-- 8 KB message cap, 512 KB frame cap
+- Content-Security-Policy with `script-src 'self'` — no inline script anywhere
+- HSTS, `X-Frame-Options: DENY`, `nosniff`, Referrer-Policy, Permissions-Policy
+- WebSocket `Origin` checking (upgrades are not covered by the same-origin
+  policy, so the server has to enforce it)
+- 8 KB message cap, 512 KB frame cap, bounded and sanitised quoted replies
 
 ## Project structure
 
@@ -65,8 +69,11 @@ src/
   routes.rs       HTTP handlers
   session.rs      WebSocket lifecycle: admission, four tasks, teardown
   cleanup.rs      Room housekeeping pass
-  tests.rs        510 tests
-index.html        The client: vanilla JS, compiled into the binary
+  security.rs     Security headers, CSP, WebSocket origin policy
+  tests.rs        556 tests
+index.html        The page, compiled into the binary
+client.js         The client script, served from /app.js so the CSP can
+                  forbid inline script entirely
 cloudflare/       Worker + Container deployment
 ```
 
@@ -127,8 +134,10 @@ its value. The ones worth knowing:
 ## Testing
 
 ```bash
-cargo test --all-features        # 510 tests
+cargo test --all-features        # 556 tests
 cargo test --all-features roster # a subset
+scripts/coverage.sh              # line-coverage floor (93%)
+cargo mutants                    # mutation testing (manual sweep, slow)
 ```
 
 Covers room lifecycle, rate limiting, memory accounting and pruning, connection
@@ -145,6 +154,7 @@ cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-features
 cargo build --release
+scripts/coverage.sh
 ```
 
 ## Deployment

@@ -12,9 +12,9 @@
 > §2 the lock-discipline law, §3 the memory-ceiling law, §4 the protocol law,
 > §5 the failure-blast-radius law, §6 the regression ratchet, §7 the engagement
 > doctrine (why rooms die and history fades — those are the product, not
-> bugs), §8 naming and organisation, §9 the shipped-artifact law. Every rule
-> there is backed by a test in `src/tests.rs` — when one fails, fix the source,
-> not the test.
+> bugs), §8 naming and organisation, §9 the shipped-artifact law, §10 the
+> client law. Every rule there is backed by a test in `src/tests.rs` — when one
+> fails, fix the source, not the test.
 
 ## What this is
 
@@ -30,14 +30,27 @@ Cloudflare Container behind a Worker.
 
 ```bash
 cargo run                       # dev server → http://localhost:3000/main
-cargo test --all-features       # 510 tests; all must pass before committing
+cargo test --all-features       # 556 tests; all must pass before committing
 cargo fmt --all -- --check      # formatting is a gate, not a preference
 cargo clippy --all-targets --all-features -- -D warnings   # warnings are failures
 cargo build --release           # LTO'd binary for the container image
+scripts/coverage.sh             # line-coverage floor (93%), ratchets up only
 ```
 
-The gate is those four commands. They are exactly what
-`.github/workflows/ci.yml` runs, so a green local run means a green CI run.
+Those five are the gate, and they are exactly what `.github/workflows/ci.yml`
+runs — a green local run means a green CI run.
+
+**Mutation testing** is a manual sweep, not a gate (a full run takes far longer
+than a commit should wait):
+
+```bash
+cargo mutants                   # everything
+cargo mutants -f src/room.rs    # one file, while iterating
+```
+
+Coverage says a line ran; mutation testing says something would have noticed if
+it were wrong. See ENGINEERING-STANDARDS.md §6.6, including the classification
+of the six mutants that currently survive.
 
 ## Commits
 
@@ -69,8 +82,9 @@ Before ending a session that touched code or made a real decision:
 - **Rust 2024 edition** (MSRV 1.85), **Tokio** async runtime
 - **Axum 0.8** + `axum-server` — HTTP routes and the WebSocket upgrade
 - **comrak** (Markdown) → **ammonia** (HTML sanitisation) message pipeline
-- **Vanilla JS client** in a single `index.html`, compiled into the binary with
-  `include_str!` — no build step, no framework, no bundler
+- **Vanilla JS client** — `index.html` + `client.js`, both compiled into the
+  binary with `include_str!`; no build step, no framework, no bundler. The
+  script is a separate file so the CSP can forbid inline script (constraint #13)
 - **Cloudflare Workers + Containers** — a Worker proxies to the Rust container
 - **No database.** No Redis. No persistence of any kind.
 
@@ -143,15 +157,19 @@ security_manager.check_ip(ip)?;
 connection_pool.can_accept(ip);
 resource_monitor.can_accept_connection();
 validate_input(&room, MAX_ROOM_NAME_LEN)?;
-room_state.connected_user_count() >= MAX_USERS_PER_ROOM  // → RoomFull
 
 // 2. Only then, the reservations.
 connection_pool.add_connection(ip).await?;
 resource_monitor.total_connections.fetch_add(1, SeqCst);
+
+// 3. The one fallible step that must come after: admission under the room
+//    write lock. On refusal it calls release_connection_slot explicitly.
 ```
 
-The one fallible step that must happen after (admission under the room write
-lock) calls `release_connection_slot` explicitly before returning.
+Room capacity is decided **once**, by `is_user_allowed` under the write lock.
+There used to be a second capacity check before the reservations, which made the
+release path unreachable — the redundant guard was hiding the code that existed
+to handle its own failure.
 
 **This was a real bug.** The reservations used to be taken *first*, with
 several checks that could fail running after and returning without releasing.
@@ -252,6 +270,55 @@ actually do. A set of `EMBEDDED_HTML`-based tests asserts the user-facing text
 matches the backend constant. If the UI says "ten minutes" and the constant
 says sixty seconds, the UI is lying — and that has happened.
 
+### 13. The client script is external so the CSP can forbid inline script
+
+`index.html` loads `/app.js`; neither contains an inline `<script>` block or an
+`onclick=` handler. That is what lets the policy be `script-src 'self'` with no
+`'unsafe-inline'` — the capability an injected `<script>` needs, on a server
+whose job is rendering user Markdown to HTML.
+
+`/app.js` is served with a content-hash version (`?v=…`), `immutable` caching,
+and an ETag; the page is rewritten once at startup to reference the stamped URL.
+Adding an inline script or an inline handler breaks the policy, and
+`client_script_is_external_so_csp_can_forbid_inline` fails.
+
+### 14. Client identity is the `Welcome` frame; the client never counts
+
+Two client rules that were each a real bug:
+
+- **Never read `document.cookie`** (constraint #2). Identity comes from the
+  `Welcome` frame.
+- **Never keep a running count of rendered messages.** The old `messageCount`
+  was incremented for system messages, which remove themselves after 8s without
+  decrementing it. The count drifted above the real number of nodes and started
+  deleting live chat messages. `pruneRenderedMessages()` counts the DOM instead.
+
+### 15. The client owns the scroll position, and does it instantly
+
+`#chat` is `scroll-behavior: auto` and `overflow-anchor: none`. Pinning to the
+bottom is instant and coalesced into one animation frame; smooth scrolling is
+opt-in per call (`scrollToMessage`). Two flags suppress false "the user scrolled
+up" readings: `programmaticScroll` (the client's own writes) and
+`isLoadingHistory` (the replay, which ends at the `ReconnectToken` frame, with a
+5s failsafe).
+
+This is what fixed the chat visibly shifting on reload. See
+ENGINEERING-STANDARDS.md §10.2.
+
+### 16. Anything that appears only sometimes is an overlay
+
+`#chat:empty` must not restyle the container. It used to set
+`justify-content: center`, so the first history message flipped the whole column
+from centred to top-aligned — a reorientation on every load. The placeholder is
+an absolutely-positioned `::before`/`::after` overlay (§10.3).
+
+### 17. The real client IP is `CF-Connecting-IP`
+
+Cloudflare sets it; the Worker forwards it and also fills `X-Forwarded-For`.
+The server checks `CF-Connecting-IP` first. Reading only `X-Forwarded-For`, as
+it used to, meant every visitor arrived as the same address — turning the
+per-IP connection limit into a global limit of three.
+
 ## Protocol
 
 ### Client → Server
@@ -293,7 +360,7 @@ Frame order on connect is **guaranteed**: `Welcome`, then history, then
 
 ## Tests
 
-`src/tests.rs` — 510 tests, one file, run with `cargo test --all-features`.
+`src/tests.rs` — 556 tests, one file, run with `cargo test --all-features`.
 Notable classes:
 
 | Class | Pins |

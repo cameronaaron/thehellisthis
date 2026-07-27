@@ -37,11 +37,15 @@ concrete, executable version of "obsessive engineering quality." Concretely:
 | §2 Lock discipline | WebSocket integration tests (a held lock deadlocks them) |
 | §3 Memory ceiling | `test_memory_tracker_*`, pruning and trim tests |
 | §4 Protocol | `first_frame_is_welcome_with_this_users_identity`, `client_takes_identity_from_welcome_frame_not_cookies` |
-| §5 Blast radius | `rejected_upgrade_releases_its_connection_slot` |
-| §6 Ratchet | `cargo fmt`/`clippy -D warnings`/`cargo test` in CI |
-| §7 Engagement | frontend/backend consistency tests (`EMBEDDED_HTML`) |
+| §5 Blast radius | `rejected_upgrade_releases_its_connection_slot`, `a_full_room_refuses_and_releases_its_reservations` |
+| §5.5 CSP | `every_response_carries_security_headers`, `client_script_is_external_so_csp_can_forbid_inline` |
+| §5.6 Trust boundary | `client_address_prefers_the_header_cloudflare_sets`, `worker_forwards_the_client_address` |
+| §6 Ratchet | `cargo fmt`/`clippy -D warnings`/`cargo test`/`scripts/coverage.sh` in CI |
+| §6.7 Boundaries | `the_memory_ceiling_admits_exactly_the_limit`, `an_ip_is_banned_only_past_the_suspicion_threshold` |
+| §7 Engagement | frontend/backend consistency tests (`SHIPPED_CLIENT`) |
 | §8 Naming | `animal_roster_is_sorted_unique_and_well_formed` |
-| §9 Shipped artifact | `router_mounts_every_public_route` |
+| §9 Shipped artifact | `router_mounts_every_public_route`, `page_references_the_versioned_script_url` |
+| §10 Client | `empty_chat_placeholder_does_not_alter_container_layout`, `rendered_history_is_trimmed_from_the_dom_not_a_counter`, `the_page_does_not_block_pinch_zoom` |
 
 ---
 
@@ -421,7 +425,24 @@ before the old session's teardown ran already has a *newer* live connection;
 marking them disconnected would evict the session that is currently working.
 Any teardown that can race a re-establish needs this guard.
 
-### 5.5 Trust boundaries are stated, not assumed
+### 5.5 The browser gets a policy, not just sanitised output
+
+The message pipeline turns user input into HTML. Sanitising is the first line of
+defence; the Content-Security-Policy is the second, and it is the one that still
+holds if the first is bypassed.
+
+`script-src 'self'` is the directive that matters, and it is the reason the
+client's JavaScript lives in `/app.js` rather than in an inline `<script>`
+block. While the script was inline, any policy that let the page work had to
+include `'unsafe-inline'` — which grants exactly the capability an injected
+`<script>` needs. **A CSP that permits inline script on a page that renders user
+HTML is decoration.** Moving one script tag is what turned it into a control.
+
+The server sent no security headers at all before this. Cloudflare adds none of
+its own to a Worker-proxied origin, so "the CDN handles it" was an assumption
+nobody had checked — §0.5 applied to security rather than to performance.
+
+### 5.6 Trust boundaries are stated, not assumed
 
 `X-Forwarded-For` is the only place the real client IP appears, because
 Cloudflare terminates in front of the container. It is also entirely
@@ -487,7 +508,42 @@ that inherits whatever `main.rs` happened to import. When a test fails, the
 import list says which part of the server it belongs to; and the server's
 internal organisation can change without the test file silently depending on it.
 
-### 6.6 Build artifacts are never committed
+### 6.6 Coverage says a line ran; mutation testing says it mattered
+
+Two different questions, and the second is the one that catches bad tests.
+
+`scripts/coverage.sh` enforces a **line-coverage floor** (currently 93%). The
+floor only ratchets up. If coverage drops, the fix is a test, not a smaller
+number.
+
+`cargo mutants` edits the source — flips a comparison, replaces a return value —
+and fails when the suite still passes. That is the check that catches the class
+of test this repo has already shipped: `assert!(result || !result)` had 100%
+coverage of the line it exercised and asserted nothing about it.
+
+Run it scoped while iterating (`cargo mutants -f src/room.rs`) and unscoped
+periodically; it is a manual sweep, not a commit gate, because a full run takes
+far longer than a commit should wait.
+
+**Surviving mutants get classified, not ignored.** The current run of the two
+most logic-dense modules leaves six, and each has a reason:
+
+| Survivor | Why it survives |
+| --- | --- |
+| `while total > peak` → `>=` | **Equivalent.** One redundant compare-and-swap writing the value already there; identical result. |
+| `end > 0` → `end >= 0` in `truncate_on_char_boundary` | **Equivalent in practice.** Index 0 is always a char boundary, so the walk always terminates first; the guard is defensive. |
+| Four `elapsed() < WINDOW` → `<=` comparisons | Differ only when a duration is *exactly* the threshold. Killing them needs an injected clock threaded through the limiters — a real abstraction bought for a one-nanosecond behavioural difference. Rejected on those terms, recorded in §9.4. |
+
+### 6.7 A boundary is a place to test, not a place to assume
+
+Every mutant killed in the last round was an off-by-one at a threshold: the
+memory ceiling admitting exactly the limit, a sweep becoming due strictly after
+its interval, an IP banned strictly past the allowance. None of them had a test,
+and all of them are the kind of bug that only shows up under the load the limit
+exists to handle. When a comparison guards a limit, test the value *at* the
+limit and one past it.
+
+### 6.8 Build artifacts are never committed
 
 `target/` (including a 7.5 MB compiled binary) and 1.6 MB of tarpaulin coverage
 reports were tracked in git. They bloat every clone, produce meaningless diffs,
@@ -613,6 +669,80 @@ lore.
 | `cargo-audit` / `cargo-deny` in CI | **Not yet added** — CI currently gates fmt, clippy, tests, build | Add when a dependency CVE is missed by manual review, or before the dependency count grows materially. |
 | Removing the double `ammonia::clean` | **Deferred** — `validate_message` sanitises to detect markup-only messages, then `render_message_html` sanitises the rendered HTML. Two passes over ≤8 KB, microseconds | Reopens if message throughput is ever measured as CPU-bound. |
 | Load testing | **Never done** — every performance claim here is structural (complexity, lock duration), not empirical throughput | Before raising `MAX_CONCURRENT_USERS` (400) or `MAX_USERS_PER_ROOM` (100). Those numbers are currently unvalidated assumptions, and §0.5 says so out loud. |
+| Injectable clock for the limiters | **Rejected** (§6.6) — would kill four surviving mutants that differ only when a duration is *exactly* its threshold | Reopens if a timing bug is ever observed at a limit boundary in production, or if the limiters need testable time for another reason. |
+| 100% line coverage | **Not the target** — the floor is 93% and ratchets. The remainder is the process shell (`main`, signal handling) and socket-failure paths inside the four connection tasks, which need a socket to fail at an exact instant | Reopens for any *reachable* branch: those are gaps, not exclusions. Chasing the rest would mean flaky timing tests, which §6.4 rules out as worse than none. |
+| Edge-caching the room pages | **Rejected** — the page is per-room and sets identity cookies, so a shared cache would serve one visitor's `Set-Cookie` to another | Reopens only if identity moves entirely to the socket and the page becomes byte-identical for all visitors. |
+
+---
+
+## 10. The client law
+
+The client is one HTML file and one JavaScript file with no framework, no build
+step and no tests of its own beyond assertions over the shipped bytes. That
+makes a small number of rules load-bearing.
+
+### 10.1 Never derive state you can read
+
+The client kept a running `messageCount` to decide when to trim rendered
+history. System messages incremented it and then removed themselves from the
+DOM eight seconds later without decrementing it, so on a busy room the counter
+drifted far above the number of nodes actually present — and began deleting
+**live chat messages** that were nowhere near the limit. Messages silently
+vanishing from a conversation is close to the worst failure a chat client has,
+and it was invisible because the page was right and the counter was wrong.
+
+The fix is not a matching decrement. It is to stop keeping the number at all and
+count `querySelectorAll('.message')` at the point of use. A derived value that
+can drift from its source will.
+
+### 10.2 Never fight the browser for the scroll position
+
+Three separate mechanisms were moving the chat's scroll position at once:
+`scroll-behavior: smooth` animating every programmatic jump, the client pinning
+to the bottom on each message, and the browser's own scroll anchoring adjusting
+for inserted content. During history replay — one frame per message — they
+produced visible sliding, and the scroll events from the client's *own* writes
+were read back as "the user scrolled up", switching auto-scroll off partway
+through. That race is why the symptom was intermittent.
+
+The rules that came out of it:
+
+- Programmatic scrolling is **instant**; smooth is opt-in per call, for
+  scrolling the user asked for (`scrollToMessage`).
+- `overflow-anchor: none` where the client manages the scroll itself.
+- Scroll events caused by the client's own writes are ignored
+  (`programmaticScroll`), and so is everything during history replay
+  (`isLoadingHistory`).
+- The replay is bracketed by a protocol frame — `ReconnectToken` marks its end —
+  with a timeout failsafe, because a missing frame must never leave the UI
+  permanently degraded.
+
+### 10.3 A state that only exists sometimes must not change the layout
+
+`#chat:empty` used to set `justify-content: center` on the container. The moment
+the first history message arrived the selector stopped matching and the whole
+column snapped from centred to top-aligned: a visible reorientation on every
+load of a room with any history.
+
+An empty state, a loading state, or anything else that appears only sometimes is
+an **overlay**, positioned out of flow. It must not be able to change the layout
+of the content that replaces it.
+
+### 10.4 Escape for the sink you are writing to
+
+`textContent` does not interpret markup; passing it escaped text double-escapes,
+so an animal name containing `&` displayed as `&amp;`. `innerHTML` does
+interpret markup and must always receive escaped values. The client had
+`escapeHtml` on both, which was simultaneously a display bug everywhere and no
+extra safety anywhere. One escape helper, used only where markup is built as a
+string.
+
+### 10.5 Accessibility is not negotiable for convenience
+
+`user-scalable=no` was blocking pinch-zoom, which fails WCAG 1.4.4. The reason
+people set it — stopping iOS zooming when an input is focused — is solved
+properly by a 16px input font, which this client already had. The workaround had
+outlived the problem it was for.
 
 ---
 
