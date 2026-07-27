@@ -314,6 +314,20 @@ Two client rules that were each a real bug:
   decrementing it. The count drifted above the real number of nodes and started
   deleting live chat messages. `pruneRenderedMessages()` counts the DOM instead.
 
+### 15a. A message is a row, not a bubble
+
+Only the *bubble* is the coloured, tailed part. The sender's name sits above
+it, the avatar beside it, tapbacks overlap its top corner and the time sits
+under it — all outside the bubble and none of them tinted by it, which is why
+`renderMessage` builds a row containing a stack rather than one element
+carrying a background.
+
+Runs are grouped by **speaker and message time**, and only the last bubble of a
+run gets a tail and an avatar. Grouping used to be "anything rendered within
+three seconds", so two people talking at once were drawn as one person's run
+and the entire history replay — which arrives in a single tick — was grouped
+into one. §10.6-§10.8.
+
 ### 15. The client owns the scroll position, and does it instantly
 
 `#chat` is `scroll-behavior: auto` and `overflow-anchor: none`. Pinning to the

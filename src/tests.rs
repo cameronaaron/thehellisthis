@@ -18627,3 +18627,48 @@ fn no_css_selector_is_defined_twice() {
          silently overrides the other: {duplicated:?}"
     );
 }
+
+/// Every class the renderer creates has a style.
+///
+/// The client builds its DOM in JavaScript, so a class it sets and the
+/// stylesheet never mentions is invisible: the element renders unstyled and
+/// nothing errors. It happened while the message layout was being reworked —
+/// a sweep removing `.message*` rules also took `.message-image-faded` with
+/// it, and the placeholder for an aged-out picture silently lost its box.
+#[test]
+fn every_class_the_client_renders_is_styled() {
+    let css = embedded_html_without_comments();
+    let js = EMBEDDED_JS;
+
+    let mut rendered: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
+    // `className = 'a b'` and `` className = `a ${x} b` `` both appear.
+    for marker in ["className = '", "className = `"] {
+        for (index, _) in js.match_indices(marker) {
+            let rest = &js[index + marker.len()..];
+            let end = rest.find(['\'', '`']).unwrap_or(0);
+            for word in rest[..end].split_whitespace() {
+                let word = word.trim();
+                if word.starts_with(|c: char| c.is_ascii_lowercase()) && !word.contains('$') {
+                    rendered.insert(word.to_string());
+                }
+            }
+        }
+    }
+
+    assert!(
+        rendered.len() > 15,
+        "expected to find the renderer's classes; found {rendered:?}"
+    );
+
+    let unstyled: Vec<&String> = rendered
+        .iter()
+        .filter(|class| !css.contains(&format!(".{class}")))
+        .collect();
+
+    assert!(
+        unstyled.is_empty(),
+        "the client renders these classes and nothing styles them, so they \
+         appear unstyled with no error anywhere: {unstyled:?}"
+    );
+}

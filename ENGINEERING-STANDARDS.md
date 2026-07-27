@@ -55,6 +55,7 @@ concrete, executable version of "obsessive engineering quality." Concretely:
 | §9.3 Docs are part of the artifact | `every_section_reference_resolves` |
 | §8 Naming | `animal_roster_is_sorted_unique_and_well_formed`, `the_roster_is_larger_than_a_room_can_ever_be`, `reaction_roster_is_sorted_unique_and_actually_emoji` |
 | §9 Shipped artifact | `router_mounts_every_public_route`, `page_references_the_versioned_script_url`, `every_element_the_client_looks_up_exists_in_the_page`, `the_client_declares_every_screaming_case_constant_it_uses` |
+| §10.8 Rendered classes are styled | `every_class_the_client_renders_is_styled` |
 | §10.6 One rule per selector | `no_css_selector_is_defined_twice`, `the_conversation_is_a_readable_centred_column` |
 | §10.7 Hover targets are reachable | `the_reaction_bar_can_actually_be_clicked` |
 | §10 Client | `empty_chat_placeholder_does_not_alter_container_layout`, `rendered_history_is_trimmed_from_the_dom_not_a_counter`, `the_page_does_not_block_pinch_zoom`, `images_reserve_their_space_before_they_load` |
@@ -1164,6 +1165,24 @@ spanned the full width with bubbles capped at 560px, so on a wide monitor one
 message sat against the left edge and the next against the right with a metre of
 nothing between. The composer is laid out against the same width, or it drifts
 away from the messages it belongs to.
+
+### 10.8 A class the renderer sets and the stylesheet never mentions
+
+The client builds its DOM in JavaScript, so the two halves of every element
+live in different files with nothing connecting them. A class that is set and
+never styled renders as an unstyled box: no error, no warning, nothing in the
+console — it simply looks wrong.
+
+It happened during the iMessage rework. A sweep removing the `.message*` rules
+matched `.message-image-faded` too, because `\b` after "message" matches at a
+hyphen, and the placeholder shown for a picture that has aged out of the room's
+budget silently lost its box. `every_class_the_client_renders_is_styled` reads
+the classes out of `client.js` and checks each against the stylesheet.
+
+The same edit is where §10.6 came from: the removal was necessary *because*
+thirteen selectors had been defined twice. Bulk edits to a stylesheet are where
+both of these failures come from, which is the argument for having them
+machine-checked rather than reviewed.
 
 ### 10.7 A control that appears on hover must survive being aimed at
 

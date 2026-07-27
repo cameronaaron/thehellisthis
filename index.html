@@ -76,6 +76,12 @@
     --shadow-2: 0 2px 6px 2px rgba(0,0,0,0.15), 0 1px 2px 0 rgba(0,0,0,0.3);
     --shadow-3: 0 4px 8px 3px rgba(0,0,0,0.15), 0 1px 3px 0 rgba(0,0,0,0.3);
     --shadow-4: 0 6px 10px 4px rgba(0,0,0,0.15), 0 2px 3px 0 rgba(0,0,0,0.3);
+    /* iMessage's own two colours. The blue is Apple's system blue; the grey is
+       the receiving bubble, which is a touch lighter than the page in light
+       mode and considerably lighter in dark. */
+    --imessage-blue: #0b84ff;
+    --composer-radius: 20px;
+    --imessage-grey: #e9e9eb;
     --radius-xs: 4px;
     --radius-sm: 8px;
     --radius-md: 12px;
@@ -126,6 +132,8 @@
         --error: #f2b8b5;
         --error-container: #8c1d18;
         --on-error: #601410;
+        --imessage-blue: #0a84ff;
+        --imessage-grey: #26262a;
         --shadow-1: 0 1px 3px 1px rgba(0,0,0,0.4), 0 1px 2px 0 rgba(0,0,0,0.6);
         --shadow-2: 0 2px 6px 2px rgba(0,0,0,0.4), 0 1px 2px 0 rgba(0,0,0,0.6);
         --shadow-3: 0 4px 8px 3px rgba(0,0,0,0.4), 0 1px 3px 0 rgba(0,0,0,0.6);
@@ -444,66 +452,6 @@ h1 {
     font-size: 20px;
 }
 
-/* Reply feature styles */
-.message .reply-btn {
-    position: absolute;
-    top: 8px;
-    /* Offset outside the bubble edge to avoid overlap */
-    right: -28px;
-    width: 28px;
-    height: 28px;
-    border-radius: var(--radius-full);
-    border: none;
-    background: var(--surface-container-highest);
-    color: var(--on-surface-variant);
-    cursor: pointer;
-    display: none;
-    align-items: center;
-    justify-content: center;
-    transition: all var(--transition-short);
-    opacity: 0;
-    z-index: 10;
-}
-
-.message:hover .reply-btn,
-.message .reply-btn:hover {
-    display: flex;
-    opacity: 1;
-    background: var(--primary-container);
-    color: var(--on-primary-container);
-}
-
-
-.message .reply-btn .icon {
-    font-size: 16px;
-}
-
-.message.sent .reply-btn {
-    right: auto;
-    /* Offset outside the bubble edge to avoid overlap for sent (right-aligned) */
-    left: -28px;
-    background: rgba(255,255,255,0.2);
-    color: var(--on-primary);
-}
-
-.message.sent .reply-btn:hover {
-    background: rgba(255,255,255,0.35);
-}
-
-/* Reply preview bar above input */
-.reply-preview {
-    display: none;
-    align-items: center;
-    gap: 12px;
-    padding: 10px 16px;
-    background: var(--surface-container-high);
-    border-left: 3px solid var(--primary);
-    margin: 0 16px;
-    margin-bottom: -4px;
-    border-radius: var(--radius-sm) var(--radius-sm) 0 0;
-    animation: slideUp 0.2s ease-out;
-}
-
 @keyframes slideUp {
     from { opacity: 0; transform: translateY(8px); }
     to { opacity: 1; transform: translateY(0); }
@@ -567,103 +515,10 @@ h1 {
     font-size: 18px;
 }
 
-/* Replied-to message display in message bubble */
-.message .replied-to {
-    display: flex;
-    align-items: flex-start;
-    gap: 8px;
-    padding: 8px 10px;
-    margin-bottom: 8px;
-    background: rgba(0,0,0,0.06);
-    border-radius: var(--radius-sm);
-    border-left: 2px solid var(--primary);
-    cursor: pointer;
-    transition: background var(--transition-short);
-}
-
-.message .replied-to:hover {
-    background: rgba(0,0,0,0.1);
-}
-
-.message.sent .replied-to {
-    background: rgba(255,255,255,0.15);
-    border-left-color: rgba(255,255,255,0.6);
-}
-
-.message.sent .replied-to:hover {
-    background: rgba(255,255,255,0.22);
-}
-
-.replied-to-icon {
-    flex-shrink: 0;
-    opacity: 0.7;
-}
-
-.replied-to-icon .icon {
-    font-size: 14px;
-}
-
-.replied-to-content {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-}
-
-.replied-to-author {
-    font-size: 11px;
-    font-weight: 500;
-    opacity: 0.8;
-    margin-bottom: 2px;
-}
-
-.replied-to-text {
-    font-size: 12px;
-    opacity: 0.75;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 100%;
-}
-
-/* Highlight animation when scrolling to replied message */
-.message.highlight {
-    animation: highlightPulse 1.5s ease-out;
-}
-
 @keyframes highlightPulse {
     0%, 100% { box-shadow: none; }
     25% { box-shadow: 0 0 0 3px var(--primary); }
     75% { box-shadow: 0 0 0 3px var(--primary); }
-}
-
-/* Fading messages when room is dying - cascading gradient fade */
-.room-fading .message {
-    transition: opacity 0.5s ease-in-out;
-}
-
-/* Oldest messages fade out first */
-.room-fading .message:nth-last-child(n+20) {
-    opacity: 0.1;
-}
-
-.room-fading .message:nth-last-child(n+15):nth-last-child(-n+19) {
-    opacity: 0.2;
-}
-
-.room-fading .message:nth-last-child(n+10):nth-last-child(-n+14) {
-    opacity: 0.35;
-}
-
-.room-fading .message:nth-last-child(n+7):nth-last-child(-n+9) {
-    opacity: 0.5;
-}
-
-.room-fading .message:nth-last-child(n+4):nth-last-child(-n+6) {
-    opacity: 0.65;
-}
-
-.room-fading .message:nth-last-child(-n+3) {
-    opacity: 0.8;
 }
 
 /* Extra: gradient animation effect */
@@ -671,19 +526,10 @@ h1 {
     background: linear-gradient(to bottom, rgba(26, 115, 232, 0.02) 0%, rgba(26, 115, 232, 0.01) 100%);
 }
 
-/* Message combo burst effect */
-.message.combo {
-    animation: messageSlide 0.3s var(--transition-medium), combo-burst 0.5s ease-out;
-}
-
 @keyframes combo-burst {
     0% { box-shadow: 0 0 0 0 var(--primary); }
     50% { box-shadow: 0 0 0 8px transparent; }
     100% { box-shadow: 0 0 0 0 transparent; }
-}
-
-.message.sent.combo {
-    animation: messageSlide 0.3s var(--transition-medium), combo-burst-sent 0.5s ease-out;
 }
 
 @keyframes combo-burst-sent {
@@ -824,24 +670,6 @@ h1 {
     pointer-events: none;
 }
 
-.message {
-    /* Read at conversational width rather than stretched to the column. */
-    max-width: min(72%, 560px);
-    padding: 10px 14px;
-    margin-block: 1px;
-    /* A softer, more even radius than the previous 24px pill: at that size a
-       large bubble looked like a button and a small one like a lozenge. */
-    border-radius: 18px;
-    font-size: 14px;
-    line-height: 1.45;
-    word-wrap: break-word;
-    overflow-wrap: break-word;
-    animation: messageSlide 0.3s var(--transition-medium);
-    position: relative;
-    /* The reply button hangs outside the bubble and must stay clickable. */
-    overflow: visible;
-}
-
 @keyframes messageSlide {
     from { 
         opacity: 0; 
@@ -851,145 +679,6 @@ h1 {
         opacity: 1; 
         transform: translateY(0) scale(1); 
     }
-}
-
-.message.sent {
-    background: var(--primary);
-    color: var(--on-primary);
-    align-self: flex-end;
-    border-bottom-right-radius: 18px;
-    margin-left: auto;
-}
-
-.message.received {
-    background: var(--surface-container-high);
-    color: var(--on-surface);
-    align-self: flex-start;
-    border-bottom-left-radius: 18px;
-    margin-right: auto;
-}
-
-.message + .message.sent:not(.received + .sent),
-.message + .message.received:not(.sent + .received) {
-    margin-top: 2px;
-}
-
-.message.sent + .message.received,
-.message.received + .message.sent {
-    margin-top: 12px;
-}
-
-.message .header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 4px;
-}
-
-.message .header strong {
-    font-size: 12px;
-    font-weight: 500;
-    letter-spacing: 0.1px;
-}
-
-.message.sent .header {
-    justify-content: flex-end;
-}
-
-.message .avatar {
-    width: 24px;
-    height: 24px;
-    border-radius: 50%;
-    background: var(--primary);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 11px;
-    color: var(--on-primary);
-    font-weight: 600;
-    flex-shrink: 0;
-    text-transform: uppercase;
-}
-
-.message.sent .avatar {
-    background: rgba(255,255,255,0.25);
-    order: 2;
-}
-
-.message .message-content {
-    word-break: break-word;
-    hyphens: auto;
-}
-
-.message .message-content p {
-    margin: 0;
-}
-
-.message .message-content p + p {
-    margin-top: 8px;
-}
-
-.message .message-content a {
-    color: inherit;
-    text-decoration: underline;
-    text-underline-offset: 2px;
-}
-
-.message.received .message-content a {
-    color: var(--primary);
-}
-
-.message .message-content code {
-    background: rgba(0,0,0,0.08);
-    padding: 2px 6px;
-    border-radius: var(--radius-xs);
-    font-family: var(--font-mono);
-    font-size: 0.875em;
-}
-
-.message.sent .message-content code {
-    background: rgba(255,255,255,0.2);
-}
-
-.message .message-content pre {
-    background: rgba(0,0,0,0.08);
-    padding: 12px;
-    border-radius: var(--radius-sm);
-    overflow-x: auto;
-    margin: 8px 0;
-    font-size: 13px;
-}
-
-.message.sent .message-content pre {
-    background: rgba(255,255,255,0.15);
-}
-
-.message .timestamp {
-    font-size: 11px;
-    opacity: 0.65;
-    margin-top: 2px;
-    text-align: right;
-    font-variant-numeric: tabular-nums;
-    /* Inline with the last line where it fits, rather than always below. */
-    float: right;
-    margin-left: 10px;
-    line-height: 1.9;
-}
-
-.system-message {
-    text-align: center;
-    padding: 10px 20px;
-    margin: 16px auto;
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--on-surface-variant);
-    background: var(--surface-container);
-    border-radius: var(--radius-full);
-    max-width: fit-content;
-    animation: systemFade 0.3s ease;
-    display: flex;
-    align-items: center;
-    gap: 8px;
 }
 
 @keyframes systemFade {
@@ -1082,23 +771,27 @@ h1 {
 }
 
 .send-button {
-    width: 48px;
-    height: 48px;
+    width: 34px;
+    height: 34px;
     min-width: 56px;
     min-height: 56px;
     flex-shrink: 0;
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-full);
     border: none;
-    background: var(--primary-container);
-    color: var(--on-primary-container);
+    background: var(--imessage-blue);
+    color: #ffffff;
     cursor: pointer;
-    display: flex;
+    display: grid;
     align-items: center;
     justify-content: center;
-    transition: all var(--transition-short);
+    transition: transform var(--transition-short), opacity var(--transition-short);
     box-shadow: var(--shadow-3);
     -webkit-tap-highlight-color: transparent;
     flex: none;
+    font-size: 17px;
+    place-items: center;
+    align-self: flex-end;
+    margin-bottom: 6px;
 }
 
 .send-button .icon {
@@ -1125,7 +818,7 @@ h1 {
     background: var(--surface-container-highest);
     color: var(--on-surface-variant);
     box-shadow: none;
-    cursor: not-allowed;
+    cursor: default;
     opacity: 0.38;
 }
 
@@ -1189,10 +882,8 @@ h1 {
 }
 
 @media (max-width: 600px) {
-    .message {
-        max-width: 90%;
-        margin-left: 0 !important;
-        margin-right: 0 !important;
+    .bubble {
+        max-width: 85%;
     }
     
     .input-container {
@@ -1238,17 +929,21 @@ h1 {
 }
 
 .typing-dots {
-    display: flex;
+    display: inline-flex;
     gap: 4px;
     align-items: center;
+    background: var(--imessage-grey);
+    border-radius: var(--radius-full);
+    padding: 9px 13px;
 }
 
 .typing-dot {
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: var(--primary);
+    background: var(--on-surface-variant);
     animation: typingBounce 1.4s infinite ease-in-out;
+    opacity: 0.55;
 }
 
 .typing-dot:nth-child(1) { animation-delay: 0s; }
@@ -1407,7 +1102,7 @@ h1 {
         --outline-variant: #000000;
     }
     
-    .message.received {
+    .bubble {
         border: 1px solid var(--outline);
     }
 }
@@ -1425,18 +1120,21 @@ h1 {
 .composer {
     flex: 1;
     display: flex;
-    align-items: flex-end;
+    align-items: center;
     gap: 4px;
-    background: var(--surface-container-high);
-    border-radius: var(--radius-xxl);
-    padding: 4px;
+    background: var(--surface);
+    border-radius: var(--composer-radius);
+    padding: 3px 4px 3px 6px;
     transition: box-shadow var(--transition-short), background var(--transition-short);
     max-width: none;
+    border: 1px solid var(--outline-variant);
+    box-shadow: none;
 }
 
 .composer:focus-within {
-    background: var(--surface-container-highest);
-    box-shadow: 0 0 0 2px var(--primary);
+    background: var(--surface);
+    box-shadow: none;
+    border-color: var(--imessage-blue);
 }
 
 .composer .input-wrapper {
@@ -1452,8 +1150,8 @@ h1 {
 
 .composer-action {
     flex: none;
-    width: 40px;
-    height: 40px;
+    width: 34px;
+    height: 34px;
     display: grid;
     place-items: center;
     border: none;
@@ -1461,7 +1159,7 @@ h1 {
     color: var(--on-surface-variant);
     border-radius: var(--radius-full);
     cursor: pointer;
-    font-size: 22px;
+    font-size: 20px;
     transition: background var(--transition-short), color var(--transition-short);
 }
 
@@ -1558,112 +1256,9 @@ h1 {
    so the space an image will occupy is reserved before a single byte of it
    decodes. Without it every arriving picture shoves the conversation
    downward as it loads — the layout shift §10.3 is about. */
-.message-image-wrap {
-    display: block;
-    margin-top: 6px;
-    border-radius: var(--radius-md);
-    overflow: hidden;
-    background: var(--surface-container-highest);
-    max-width: min(320px, 100%);
-    cursor: zoom-in;
-    border: none;
-    padding: 0;
-    position: relative;
-    line-height: 0;
-}
-
-.message.sent .message-image-wrap {
-    background: color-mix(in srgb, var(--on-primary) 15%, transparent);
-}
-
-.message-image {
-    width: 100%;
-    height: 100%;
-    display: block;
-    object-fit: cover;
-}
-
-.message-image-wrap:focus-visible {
-    outline: 2px solid var(--primary);
-    outline-offset: 2px;
-}
 
 /* A picture that aged out of the room's budget. The message stays, so the
    conversation keeps its shape; the space stays too, so nothing reflows. */
-.message-image-faded {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    width: 100%;
-    height: 100%;
-    color: var(--on-surface-variant);
-    font-size: 12px;
-    text-align: center;
-    padding: 12px;
-    line-height: 1.4;
-}
-
-.message-image-faded .icon {
-    font-size: 24px;
-    opacity: 0.7;
-}
-
-/* ---- Reactions --------------------------------------------------- */
-
-.reactions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-    margin-top: 4px;
-    margin-bottom: 2px;
-}
-
-.reactions:empty {
-    display: none;
-}
-
-.reaction-pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    padding: 2px 8px;
-    min-height: 26px;
-    border-radius: var(--radius-full);
-    border: 1px solid var(--outline-variant);
-    background: var(--surface-container-low);
-    color: var(--on-surface);
-    font-size: 13px;
-    font-family: inherit;
-    cursor: pointer;
-    transition: background var(--transition-short), border-color var(--transition-short),
-                transform var(--transition-short);
-}
-
-.reaction-pill:hover {
-    background: var(--surface-container-high);
-}
-
-.reaction-pill:active {
-    transform: scale(0.94);
-}
-
-.reaction-pill.mine {
-    background: var(--primary-container);
-    border-color: var(--primary);
-    color: var(--on-primary-container);
-}
-
-.reaction-emoji {
-    font-size: 14px;
-    line-height: 1;
-}
-
-.reaction-count {
-    font-variant-numeric: tabular-nums;
-    font-weight: 500;
-}
 
 /* The hover toolbar. Fixed-positioned so it is never part of any message's
    box — a bar that reserved space would resize every row it touched. */
@@ -1996,14 +1591,18 @@ h1 {
     gap: 12px;
     margin: 20px 0 12px;
     color: var(--on-surface-variant);
-    font-size: 12px;
-    font-weight: 500;
+    font-size: 11px;
+    font-weight: 600;
     position: sticky;
     top: 0;
     z-index: 5;
     /* Its own backdrop, so text scrolling underneath does not show through. */
     padding: 2px 0;
     background: linear-gradient(var(--surface) 60%, transparent);
+    justify-content: center;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    opacity: 0.8;
 }
 
 .date-separator::before,
@@ -2012,6 +1611,7 @@ h1 {
     flex: 1;
     height: 1px;
     background: var(--outline-variant);
+    display: none;
 }
 
 /* ---- Motion preferences ------------------------------------------ */
@@ -2072,55 +1672,8 @@ h1 {
 
 .message.sent:last-child,
 .message.sent:has(+ .message.received),
-.message.sent:has(+ .date-separator) {
-    border-bottom-right-radius: 6px;
-}
 
 .message.received:last-child,
-.message.received:has(+ .message.sent),
-.message.received:has(+ .date-separator) {
-    border-bottom-left-radius: 6px;
-}
-
-/* A clear break between speakers, a tight run within one. */
-.message.sent + .message.received,
-
-/* ---- Grouping: the header repeats only when the speaker changes --- */
-
-.message.combo .header {
-    display: none;
-}
-
-
-/* ---- Timestamps stop taking a line of their own ------------------- */
-
-
-.message .message-content::after {
-    content: '';
-    display: block;
-    clear: both;
-}
-
-/* ---- Date separators stay visible while you scroll past them ------ */
-
-
-/* ---- Reactions sit under the bubble, not inside it ---------------- */
-
-
-.message.sent .reactions {
-    justify-content: flex-end;
-}
-
-/* ---- The reaction bar is reachable ------------------------------- */
-
-.reaction-bar::before {
-    /* An invisible bridge under the bar, covering the few pixels between it
-       and the message so a pointer travelling upward never crosses a gap. */
-    content: '';
-    position: absolute;
-    inset: 100% 0 auto 0;
-    height: 10px;
-}
 
 /* ---- Composer proportions ---------------------------------------- */
 
@@ -2154,10 +1707,471 @@ h1 {
         padding-inline: 12px;
     }
 
-    .message {
-        max-width: 84%;
+    .stack {
+        max-width: 85%;
     }
 }
+
+/* ===================================================================
+   Messages — iMessage
+   ===================================================================
+   The bubble is the only coloured, tailed part. The sender's name sits above
+   it, the avatar beside it, tapbacks overlap its top corner and the receipt
+   sits below — all outside the bubble and none of them tinted by it. That is
+   why a message is a row containing a stack, rather than one element carrying
+   a background.
+
+       .message            row: avatar | stack
+         .avatar           received only, at the foot of a run
+         .stack
+           .sender         received only, at the head of a run
+           .replied-to
+           .bubble         the coloured, tailed part
+           .reactions      tapbacks, overlapping the bubble's top corner
+           .receipt        the time, under the last of a run
+*/
+
+.message {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    position: relative;
+    max-width: 100%;
+    /* Tight within a run; the run itself is spaced by `.run-end` below. */
+    margin-block: 1px 0;
+    animation: bubbleIn 220ms cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
+}
+
+@keyframes bubbleIn {
+    from { opacity: 0; transform: translateY(8px) scale(0.94); }
+    to   { opacity: 1; transform: none; }
+}
+
+.message.sent {
+    align-self: flex-end;
+    flex-direction: row-reverse;
+}
+
+.message.received {
+    align-self: flex-start;
+}
+
+/* The gap between one person's run and the next person's. */
+.message.run-end {
+    margin-bottom: 10px;
+}
+
+.stack {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    max-width: min(75%, 520px);
+}
+
+.message.sent .stack {
+    align-items: flex-end;
+}
+
+/* ---- Avatar: once per run, at the foot, like a group conversation --- */
+
+.avatar {
+    width: 28px;
+    height: 28px;
+    flex: none;
+    border-radius: var(--radius-full);
+    display: grid;
+    place-items: center;
+    font-size: 12px;
+    font-weight: 600;
+    background: var(--surface-container-highest);
+    color: var(--on-surface-variant);
+    /* Reserved on every row so the column never shifts, shown on the last. */
+    visibility: hidden;
+    margin-bottom: 2px;
+}
+
+.message.run-end .avatar {
+    visibility: visible;
+}
+
+.sender {
+    font-size: 12px;
+    color: var(--on-surface-variant);
+    margin: 0 0 3px 12px;
+    font-weight: 400;
+}
+
+/* ---- The bubble ---------------------------------------------------- */
+
+.bubble {
+    position: relative;
+    padding: 7px 13px 8px;
+    border-radius: 18px;
+    font-size: 17px;
+    line-height: 1.3;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    max-width: 100%;
+    /* The tail is drawn outside the box. */
+    overflow: visible;
+}
+
+.message.sent .bubble {
+    background: var(--imessage-blue);
+    color: #ffffff;
+}
+
+.message.received .bubble {
+    background: var(--imessage-grey);
+    color: var(--on-surface);
+}
+
+/* An image fills its bubble edge to edge, the way an attachment does. */
+.bubble.has-image {
+    padding: 0;
+    background: transparent;
+    overflow: hidden;
+    border-radius: 18px;
+}
+
+.bubble.has-image .message-content {
+    padding: 7px 13px 6px;
+}
+
+/* ---- The tail ------------------------------------------------------
+   Two pseudo-elements: one draws the curved flick of colour, the other
+   masks its outer edge with the page background. Only the last bubble of
+   a run gets one, which is what makes a burst read as a single utterance. */
+
+.message.run-end .bubble::before,
+.message.run-end .bubble::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    height: 20px;
+}
+
+.message.sent.run-end .bubble::before {
+    right: -7px;
+    width: 20px;
+    background: var(--imessage-blue);
+    border-bottom-left-radius: 16px 14px;
+}
+
+.message.sent.run-end .bubble::after {
+    right: -26px;
+    width: 26px;
+    background: var(--surface);
+    border-bottom-left-radius: 10px;
+}
+
+.message.received.run-end .bubble::before {
+    left: -7px;
+    width: 20px;
+    background: var(--imessage-grey);
+    border-bottom-right-radius: 16px 14px;
+}
+
+.message.received.run-end .bubble::after {
+    left: -26px;
+    width: 26px;
+    background: var(--surface);
+    border-bottom-right-radius: 10px;
+}
+
+/* An image bubble has no tail: the picture is the shape. */
+.bubble.has-image::before,
+.bubble.has-image::after {
+    display: none;
+}
+
+/* ---- Text inside a bubble ------------------------------------------ */
+
+.message-content p {
+    margin: 0;
+}
+
+.message-content p + p {
+    margin-top: 0.6em;
+}
+
+.message-content a {
+    color: inherit;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
+.message.received .message-content a {
+    color: var(--imessage-blue);
+}
+
+.message-content code {
+    font-family: var(--font-mono);
+    font-size: 0.88em;
+    padding: 1px 5px;
+    border-radius: var(--radius-xs);
+    background: rgba(127, 127, 127, 0.22);
+}
+
+.message-content pre {
+    margin: 6px 0 2px;
+    padding: 10px 12px;
+    border-radius: var(--radius-sm);
+    background: rgba(127, 127, 127, 0.18);
+    overflow-x: auto;
+}
+
+.message-content pre code {
+    background: none;
+    padding: 0;
+}
+
+.message-content blockquote {
+    margin: 4px 0;
+    padding-left: 10px;
+    border-left: 3px solid currentColor;
+    opacity: 0.85;
+}
+
+.message-content ul,
+.message-content ol {
+    margin: 4px 0;
+    padding-left: 20px;
+}
+
+/* ---- Quoted reply --------------------------------------------------- */
+
+.replied-to {
+    font-size: 13px;
+    padding: 6px 12px;
+    margin-bottom: 3px;
+    border-radius: 14px;
+    background: var(--surface-container);
+    color: var(--on-surface-variant);
+    cursor: pointer;
+    max-width: 100%;
+    opacity: 0.9;
+}
+
+.replied-to:hover {
+    opacity: 1;
+}
+
+.replied-to-author {
+    font-weight: 600;
+    font-size: 12px;
+}
+
+.replied-to-text {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* ---- Tapbacks ------------------------------------------------------
+   Overlapping the bubble's top corner rather than sitting below it, which
+   is what makes them read as attached to the message. */
+
+.reactions {
+    display: flex;
+    gap: 3px;
+    margin-top: -10px;
+    margin-bottom: 2px;
+    position: relative;
+    z-index: 2;
+    padding-inline: 6px;
+}
+
+.reactions:empty {
+    display: none;
+}
+
+.reaction-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 2px 7px;
+    min-height: 24px;
+    border-radius: var(--radius-full);
+    border: 2px solid var(--surface);
+    background: var(--surface-container-high);
+    color: var(--on-surface);
+    font-size: 13px;
+    font-family: inherit;
+    cursor: pointer;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.14);
+    transition: transform var(--transition-short), background var(--transition-short);
+}
+
+.reaction-pill:hover {
+    transform: scale(1.08);
+}
+
+.reaction-pill.mine {
+    background: var(--imessage-blue);
+    color: #ffffff;
+}
+
+.reaction-emoji {
+    font-size: 13px;
+    line-height: 1;
+}
+
+.reaction-count {
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    font-size: 11px;
+}
+
+/* ---- The time, under the last of a run ------------------------------ */
+
+.receipt {
+    font-size: 11px;
+    color: var(--on-surface-variant);
+    margin: 2px 4px 0;
+    opacity: 0;
+    height: 0;
+    overflow: hidden;
+    transition: opacity var(--transition-short);
+}
+
+.message.run-end .receipt {
+    opacity: 0.75;
+    height: auto;
+}
+
+/* ---- Reply affordance ----------------------------------------------- */
+
+.reply-btn {
+    align-self: center;
+    width: 30px;
+    height: 30px;
+    flex: none;
+    display: grid;
+    place-items: center;
+    border: none;
+    background: transparent;
+    color: var(--on-surface-variant);
+    border-radius: var(--radius-full);
+    cursor: pointer;
+    font-size: 15px;
+    opacity: 0;
+    transition: opacity var(--transition-short), background var(--transition-short);
+}
+
+.message:hover .reply-btn,
+.reply-btn:focus-visible {
+    opacity: 0.7;
+}
+
+.reply-btn:hover {
+    opacity: 1;
+    background: var(--surface-container-high);
+}
+
+/* ---- Highlight when a reply is followed ----------------------------- */
+
+.message.highlight .bubble {
+    animation: bubbleFlash 1.4s ease-out;
+}
+
+@keyframes bubbleFlash {
+    0%, 100% { box-shadow: none; }
+    30%      { box-shadow: 0 0 0 4px color-mix(in srgb, var(--imessage-blue) 45%, transparent); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .message { animation: none; }
+    .message.highlight .bubble { animation: none; }
+    .reaction-pill:hover { transform: none; }
+}
+
+/* ---- Images in a bubble --------------------------------------------
+   The wrapper carries an aspect-ratio built from the server's dimensions, so
+   the space is reserved before a byte of the image decodes. Without it every
+   arriving picture shoves the conversation downward as it loads (§10.3). */
+
+.message-image-wrap {
+    display: block;
+    border: none;
+    padding: 0;
+    margin: 0;
+    background: var(--surface-container-highest);
+    max-width: min(280px, 100%);
+    cursor: zoom-in;
+    position: relative;
+    line-height: 0;
+    border-radius: 18px;
+    overflow: hidden;
+}
+
+.message-image-wrap:focus-visible {
+    outline: 2px solid var(--imessage-blue);
+    outline-offset: 2px;
+}
+
+.message-image {
+    width: 100%;
+    height: 100%;
+    display: block;
+    object-fit: cover;
+}
+
+/* A picture that aged out of the room's budget. The message stays, so the
+   conversation keeps its shape; the space stays too, so nothing reflows. */
+.message-image-faded {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: 100%;
+    height: 100%;
+    color: var(--on-surface-variant);
+    font-size: 12px;
+    text-align: center;
+    padding: 12px;
+    line-height: 1.4;
+}
+
+.message-image-faded .icon {
+    font-size: 24px;
+    opacity: 0.7;
+}
+
+/* ---- Composer — iMessage --------------------------------------------
+   A pill that holds the text, with the attach and emoji controls inside it and
+   a round blue arrow outside. The send button is circular and only blue when
+   there is something to send, which is the affordance that tells you the
+   message is ready. */
+
+
+
+
+.input-wrapper input::placeholder {
+    color: var(--on-surface-variant);
+    opacity: 0.75;
+}
+
+
+
+.send-button:not(:disabled):hover {
+    transform: scale(1.06);
+}
+
+.send-button:not(:disabled):active {
+    transform: scale(0.94);
+}
+
+/* ---- Date separator, centred and quiet ------------------------------- */
+
+
+.date-separator::before,
+
+/* ---- Typing indicator as a bubble ------------------------------------ */
+
+
+
 </style>
 </head>
 <body>

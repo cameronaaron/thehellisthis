@@ -104,6 +104,11 @@ const REACTION_BAR_GRACE_MS = 400;
 /// A gap is a strip the pointer has to cross, and crossing it reads as leaving.
 const REACTION_BAR_OVERLAP = 8;
 
+/// How far apart two messages from one person can be and still be drawn as a
+/// single run. A burst then reads as one utterance rather than a stack of
+/// separate cards, which is what iMessage does and why it feels continuous.
+const GROUPING_WINDOW_MS = 60000;
+
 /// Search keywords, so typing "fire" finds 🔥 without shipping a full
 /// annotation database. Only the emoji people actually search for by name.
 const EMOJI_KEYWORDS = {
@@ -161,6 +166,8 @@ class ChatApp {
         this.lastActivityTime = Date.now();
         this.lastMessageTime = 0;
         this.recentMessageCount = 0;
+        this.lastSenderId = null;
+        this.lastSentAt = 0;
         this.heartbeatIntervalId = null;
         this.fadeWarningShown = false;
         
@@ -620,22 +627,26 @@ class ChatApp {
             this.updateJumpLatest();
         }
         
-        // Combo detection: rapid messages within 3 seconds
-        const now = Date.now();
-        const isCombo = (now - this.lastMessageTime) < 3000;
-        this.lastMessageTime = now;
-        if (isCombo) {
-            this.recentMessageCount++;
-        } else {
-            this.recentMessageCount = 1;
-        }
-        
+        this.lastMessageTime = Date.now();
+
         // Identity comes from the Welcome frame, which the server sends before
         // any history. The cookies are HttpOnly, so document.cookie is empty by
         // design — never reintroduce a read of it here.
         const isSent = Boolean(this.myUserId) && msg.user_id === this.myUserId;
 
-        this.renderMessage(msg, isSent, isCombo && this.recentMessageCount >= 2);
+        // Grouping is by *speaker and message time*, not arrival time. It used
+        // to be "anything within three seconds of the last render", which meant
+        // two people talking at once were drawn as one person's run and — worse
+        // — the whole history replay arrived inside one tick, so every message
+        // after the first was grouped with the one before it whoever sent it.
+        const sentAt = this.parseTimestamp(msg.timestamp);
+        const continuesRun =
+            msg.user_id === this.lastSenderId &&
+            Math.abs(sentAt - this.lastSentAt) < GROUPING_WINDOW_MS;
+        this.lastSenderId = msg.user_id;
+        this.lastSentAt = sentAt;
+
+        this.renderMessage(msg, isSent, continuesRun);
 
         // During history replay nothing scrolls; finishHistoryLoad does it once
         // at the end.
@@ -654,7 +665,23 @@ class ChatApp {
         }
     }
     
-    renderMessage(msg, isSent, isCombo = false) {
+    /// Draws one message.
+    ///
+    /// The shape is iMessage's, and the reason it is not one flat element is
+    /// that only the *bubble* is the coloured, tailed part. The sender's name
+    /// sits above it, the avatar beside it, tapbacks overlap its top corner and
+    /// the time sits under it — all outside the bubble, none of them tinted by
+    /// it. One element carrying the background cannot do that.
+    ///
+    ///   .message        row: avatar | stack
+    ///     .avatar       received only, at the foot of a run
+    ///     .stack
+    ///       .sender     received only, at the head of a run
+    ///       .replied-to
+    ///       .bubble     the coloured, tailed part
+    ///       .reactions  tapbacks, overlapping the bubble's top corner
+    ///       .receipt    the time, under the last of a run
+    renderMessage(msg, isSent, continuesRun = false) {
         // Prevent duplicate message renders
         if (this.chat.querySelector(`[data-message-id="${msg.message_id}"]`)) {
             return;
@@ -663,76 +690,63 @@ class ChatApp {
         const sentAt = this.parseTimestamp(msg.timestamp);
         const timestamp = this.formatTimestamp(sentAt);
         this.maybeRenderDateSeparator(sentAt);
-        
-        const div = document.createElement('div');
-        div.className = `message ${isSent ? 'sent' : 'received'}${isCombo ? ' combo' : ''}`;
-        div.dataset.messageId = msg.message_id;
-        div.dataset.userId = msg.user_id;
-        div.setAttribute('role', 'article');
-        div.setAttribute('aria-label', `Message from ${msg.animal_name} at ${timestamp}`);
-        
-        // Reply button
-        const replyBtn = document.createElement('button');
-        replyBtn.className = 'reply-btn';
-        replyBtn.setAttribute('aria-label', 'Reply to this message');
-        replyBtn.innerHTML = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-reply"/></svg>';
-        replyBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            this.startReply(msg.message_id, msg.animal_name, msg.text);
-        });
-        div.appendChild(replyBtn);
-        
-        // If this message is a reply, show the replied-to content
+
+        // Only the last bubble of a run carries a tail and an avatar. Adding
+        // this one may end the previous one's run, or extend it.
+        const previous = this.chat.querySelector('.message:last-of-type');
+        if (previous) {
+            previous.classList.toggle('run-end', !continuesRun);
+        }
+
+        const row = document.createElement('div');
+        row.className = `message ${isSent ? 'sent' : 'received'} run-end`;
+        row.dataset.messageId = msg.message_id;
+        row.dataset.userId = msg.user_id;
+        row.setAttribute('role', 'article');
+        row.setAttribute('aria-label', `Message from ${msg.animal_name} at ${timestamp}`);
+
+        const stack = document.createElement('div');
+        stack.className = 'stack';
+
+        // Received messages are labelled once per run, as in a group chat.
+        if (!isSent && !continuesRun) {
+            const sender = document.createElement('div');
+            sender.className = 'sender';
+            sender.textContent = msg.animal_name;
+            stack.appendChild(sender);
+        }
+
         if (msg.reply_to) {
             const repliedTo = document.createElement('div');
             repliedTo.className = 'replied-to';
             repliedTo.innerHTML = `
-                <div class="replied-to-icon"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-reply"/></svg></div>
-                <div class="replied-to-content">
-                    <div class="replied-to-author">${this.escapeHtml(msg.reply_to.author_name || 'Unknown')}</div>
-                    <div class="replied-to-text">${this.escapeHtml(msg.reply_to.preview_text || '')}</div>
-                </div>
+                <div class="replied-to-author">${this.escapeHtml(msg.reply_to.author_name || 'Unknown')}</div>
+                <div class="replied-to-text">${this.escapeHtml(msg.reply_to.preview_text || '')}</div>
             `;
-            repliedTo.addEventListener('click', () => {
-                this.scrollToMessage(msg.reply_to.message_id);
-            });
-            div.appendChild(repliedTo);
+            repliedTo.addEventListener('click', () => this.scrollToMessage(msg.reply_to.message_id));
+            stack.appendChild(repliedTo);
         }
-        
-        const avatar = document.createElement('div');
-        avatar.className = 'avatar';
-        avatar.setAttribute('aria-hidden', 'true');
-        avatar.textContent = msg.animal_name[0].toUpperCase();
-        
-        const header = document.createElement('div');
-        header.className = 'header';
-        const name = document.createElement('strong');
-        name.textContent = msg.animal_name;
-        name.style.textOverflow = 'ellipsis';
-        name.style.whiteSpace = 'nowrap';
-        name.style.overflow = 'hidden';
-        header.appendChild(avatar);
-        header.appendChild(name);
-        
-        const content = document.createElement('div');
-        content.className = 'message-content';
-        content.innerHTML = msg.text; // Already sanitized by server
 
-        const tsDiv = document.createElement('div');
-        tsDiv.className = 'timestamp';
-        tsDiv.textContent = timestamp;
+        const bubble = document.createElement('div');
+        bubble.className = 'bubble';
+        bubble.title = timestamp;
 
-        div.appendChild(header);
-        div.appendChild(content);
+        if (msg.text.trim()) {
+            const content = document.createElement('div');
+            content.className = 'message-content';
+            content.innerHTML = msg.text; // Already sanitized by server
+            bubble.appendChild(content);
+        }
 
         if (msg.attachment) {
-            div.appendChild(this.renderAttachment(msg.attachment));
+            bubble.classList.add('has-image');
+            bubble.appendChild(this.renderAttachment(msg.attachment));
         }
 
-        // Always present, even when empty: `.reactions:empty` hides it in CSS,
-        // so a reaction arriving later has somewhere to go without the message
-        // being rebuilt (and without the row changing height until there is
-        // actually something to show).
+        stack.appendChild(bubble);
+
+        // Always present, even when empty: `.reactions:empty` hides it, so a
+        // tapback arriving later has somewhere to go without a rebuild.
         const reactions = document.createElement('div');
         reactions.className = 'reactions';
         for (const reaction of msg.reactions || []) {
@@ -740,12 +754,34 @@ class ChatApp {
                 this.buildReactionPill(msg.message_id, reaction.emoji, reaction.count, reaction.reacted)
             );
         }
-        div.appendChild(reactions);
+        stack.appendChild(reactions);
 
-        div.appendChild(tsDiv);
-        
-        this.chat.appendChild(div);
-        
+        const receipt = document.createElement('div');
+        receipt.className = 'receipt';
+        receipt.textContent = timestamp;
+        stack.appendChild(receipt);
+
+        if (!isSent) {
+            const avatar = document.createElement('div');
+            avatar.className = 'avatar';
+            avatar.setAttribute('aria-hidden', 'true');
+            avatar.textContent = msg.animal_name[0].toUpperCase();
+            row.appendChild(avatar);
+        }
+
+        row.appendChild(stack);
+
+        const replyBtn = document.createElement('button');
+        replyBtn.className = 'reply-btn';
+        replyBtn.setAttribute('aria-label', `Reply to ${msg.animal_name}`);
+        replyBtn.innerHTML = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-reply"/></svg>';
+        replyBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.startReply(msg.message_id, msg.animal_name, msg.text);
+        });
+        row.appendChild(replyBtn);
+
+        this.chat.appendChild(row);
         this.pruneRenderedMessages();
     }
 
