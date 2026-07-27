@@ -23,9 +23,9 @@ docker builder prune -af > /dev/null 2>&1 || true
 cd cloudflare
 
 echo "📦 Installing worker dependencies..."
-npm ci
+pnpm install --frozen-lockfile
 
 echo "🚢 Deploying..."
-npx wrangler deploy
+pnpm exec wrangler deploy
 
 echo "✅ Deployment complete — https://thehellisthis.com"

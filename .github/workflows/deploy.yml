@@ -20,16 +20,21 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          package_json_file: cloudflare/package.json
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: 'cloudflare/package-lock.json'
+          cache: 'pnpm'
+          cache-dependency-path: 'cloudflare/pnpm-lock.yaml'
 
       - name: Install dependencies
         working-directory: cloudflare
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Deploy to Cloudflare
         working-directory: cloudflare
@@ -42,4 +47,4 @@ jobs:
         # from one). The container image build already has no persistent cache
         # to invalidate in a fresh runner, so there is nothing this flag would
         # have bought even if it existed.
-        run: npx wrangler deploy
+        run: pnpm exec wrangler deploy

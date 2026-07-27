@@ -104,16 +104,16 @@ cargo clippy --all-targets --all-features -- -D warnings  # Lint
 
 **Cloudflare Workers + Containers** (edge, WebSocket-native, scales to zero)
 ```bash
-cd cloudflare && npm install && npm run deploy
+cd cloudflare && pnpm install && pnpm run deploy
 ```
 Architecture:
 - **Worker**: [cloudflare/src/index.ts](cloudflare/src/index.ts) proxies all traffic to container at port 3000
 - **Config**: [cloudflare/wrangler.jsonc](cloudflare/wrangler.jsonc) — sets `max_instances: 5`
 - **Container**: [Dockerfile.cloudflare](Dockerfile.cloudflare) builds Rust server image
 - **Environment**: Worker passes `PORT=3000` and `RUST_LOG=info` to container
-- **Dev mode**: `npm run dev` (builds locally & proxies through Worker)
-- **Production**: `npm run deploy` (builds, pushes to registry, deploys Worker+Container)
-- **Logs**: `npx wrangler tail` streams real-time logs from production
+- **Dev mode**: `pnpm run dev` (builds locally & proxies through Worker)
+- **Production**: `pnpm run deploy` (builds, pushes to registry, deploys Worker+Container)
+- **Logs**: `pnpm exec wrangler tail` streams real-time logs from production
 
 **Cloudflare Advantages**:
 - 300+ edge locations worldwide
@@ -229,7 +229,7 @@ All limits enforced in [src/main.rs](src/main.rs):
 - Container doesn't start? Verify `docker build -f Dockerfile.cloudflare .` succeeds locally.
 - WebSocket connection fails? Check Worker is proxying upgrade requests ([cloudflare/src/index.ts](cloudflare/src/index.ts)).
 - Cold starts slow? Rust binary takes ~500ms to initialize. Keep at least 1 instance warm with periodic health checks.
-- Deploy fails? Run `npm run deploy` from `cloudflare/` directory; ensure `wrangler login` is authenticated.
+- Deploy fails? Run `pnpm run deploy` from `cloudflare/` directory; ensure `wrangler login` is authenticated.
 
 ### General
 - High memory usage? Reduce `MAX_TOTAL_ROOMS_MEMORY` in [src/main.rs](src/main.rs) — currently 400 MB.
