@@ -70,7 +70,7 @@ src/
   session.rs      WebSocket lifecycle: admission, four tasks, teardown
   cleanup.rs      Room housekeeping pass
   security.rs     Security headers, CSP, WebSocket origin policy
-  tests.rs        556 tests
+  tests.rs        561 tests
 index.html        The page, compiled into the binary
 client.js         The client script, served from /app.js so the CSP can
                   forbid inline script entirely
@@ -134,9 +134,9 @@ its value. The ones worth knowing:
 ## Testing
 
 ```bash
-cargo test --all-features        # 556 tests
+cargo test --all-features        # 561 tests
 cargo test --all-features roster # a subset
-scripts/coverage.sh              # line-coverage floor (93%)
+scripts/coverage.sh              # line-coverage floor (94%)
 cargo mutants                    # mutation testing (manual sweep, slow)
 ```
 

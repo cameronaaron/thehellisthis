@@ -178,7 +178,7 @@ pub async fn ws_handler_inner(
 ///
 /// Holds the room write lock for the whole call — it creates the room if
 /// needed, so it cannot be split into read-then-write without a race.
-async fn admit_user(
+pub(crate) async fn admit_user(
     state: &Arc<AppState>,
     room: &str,
     connection_id: &str,

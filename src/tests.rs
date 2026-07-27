@@ -17,7 +17,7 @@ use crate::routes::{
     root_redirect,
 };
 use crate::security::is_allowed_origin;
-use crate::session::{apply_client_event, cleanup_user, ws_handler};
+use crate::session::{admit_user, apply_client_event, cleanup_user, ws_handler};
 use crate::state::AppState;
 use crate::validation::{extract_client_ip, sanitize_reply, validate_input, validate_message};
 use crate::{
@@ -13180,5 +13180,137 @@ fn deploy_workflow_does_not_pass_wrangler_an_unrecognised_flag() {
     assert!(
         DEPLOY_WORKFLOW.contains("wrangler deploy"),
         "the deploy step must still actually deploy"
+    );
+}
+
+/// A message that would push total memory over the ceiling triggers a
+/// proactive prune before it is added, not after.
+///
+/// Reaching this branch through real message traffic would mean accumulating
+/// close to MAX_TOTAL_ROOMS_MEMORY (400MB) of history; setting the tracker's
+/// counter directly exercises the same branch without needing that much data.
+#[test]
+fn adding_a_message_near_the_memory_ceiling_prunes_proactively() {
+    let tracker = MemoryTracker::new();
+    let mut room = create_room();
+
+    for i in 0..50 {
+        room.chat_history.push(OutgoingMessage {
+            message_id: Uuid::new_v4(),
+            user_id: "u".to_string(),
+            animal_name: "otter".to_string(),
+            text: format!("padding {i}"),
+            timestamp: "1".to_string(),
+            reply_to: None,
+        });
+    }
+    let before = room.chat_history.len();
+
+    // Park the *room's* counter just under the ceiling so the next message
+    // crosses it. The branch reads the room's own total, not the global
+    // tracker's — they are separate counters and only one gates this path.
+    room.total_memory_bytes
+        .store(MAX_TOTAL_ROOMS_MEMORY - 10, Ordering::SeqCst);
+
+    room.add_message(
+        OutgoingMessage {
+            message_id: Uuid::new_v4(),
+            user_id: "u".to_string(),
+            animal_name: "otter".to_string(),
+            text: "the message that crosses the ceiling".to_string(),
+            timestamp: "1".to_string(),
+            reply_to: None,
+        },
+        &tracker,
+    );
+
+    assert!(
+        room.chat_history.len() < before,
+        "crossing the ceiling must prune older history, not merely append"
+    );
+}
+
+// ========== MORE COVERAGE: REACHABLE SESSION BRANCHES ==========
+
+/// History is trimmed for a joining user if it is already over the cap —
+/// not just during the periodic housekeeping sweep.
+#[tokio::test]
+async fn joining_user_triggers_a_trim_of_oversized_history() {
+    let state = Arc::new(AppState::new());
+    {
+        let mut rooms = state.rooms.write().await;
+        let mut room = create_room();
+        for i in 0..(MAX_MESSAGES_PER_ROOM + 50) {
+            room.chat_history.push(OutgoingMessage {
+                message_id: Uuid::new_v4(),
+                user_id: "u".to_string(),
+                animal_name: "otter".to_string(),
+                text: format!("m{i}"),
+                timestamp: "1".to_string(),
+                reply_to: None,
+            });
+        }
+        rooms.insert("crowded-room".to_string(), room);
+    }
+
+    let admitted = admit_user(&state, "crowded-room", "conn-1", None).await;
+    assert!(admitted.is_some());
+
+    let rooms = state.rooms.read().await;
+    assert!(
+        rooms["crowded-room"].chat_history.len() <= MAX_MESSAGES_PER_ROOM,
+        "joining should trim history that is already over the cap"
+    );
+}
+
+/// A frame larger than the payload cap is dropped at the frame level, before
+/// it is even parsed as an event.
+#[tokio::test]
+async fn oversized_frame_is_dropped_without_killing_the_session() {
+    let (addr, _state, handle) = start_ws_server_with_state().await;
+    let (mut ws, _) = connect_async(format!("ws://{addr}/ws/oversize-room"))
+        .await
+        .expect("connect failed");
+
+    assert_eq!(recv_json_event(&mut ws).await["type"], "Welcome");
+
+    let huge = "x".repeat(MAX_PAYLOAD_SIZE + 1024);
+    ws.send(WsMessage::Text(huge)).await.expect("send failed");
+
+    // The socket must still be usable afterwards, not torn down.
+    ws.send(WsMessage::Ping(vec![9])).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    handle.abort();
+}
+
+/// Whitespace padding cannot smuggle a message past the length cap.
+///
+/// `validate_message` checks the *trimmed* length; this is the second gate,
+/// on the untrimmed length, that exists because a message could trim down to
+/// something short while still costing MAX_MESSAGE_LEN+ bytes on the wire and
+/// in memory. Padding with whitespace instead of content is exactly the shape
+/// of input that would slip past a trimmed-only check.
+#[tokio::test]
+async fn whitespace_padded_messages_cannot_bypass_the_length_cap() {
+    let state = state_with_user("room", "user", Instant::now()).await;
+
+    let padded = " ".repeat(MAX_MESSAGE_LEN + 500) + "hi";
+    apply_client_event(
+        &state,
+        "room",
+        "user",
+        "otter",
+        ClientEvent::Message {
+            text: padded,
+            reply_to: None,
+        },
+    )
+    .await;
+
+    let rooms = state.rooms.read().await;
+    assert!(
+        rooms["room"].chat_history.is_empty(),
+        "whitespace-padded oversized input must still be rejected"
     );
 }

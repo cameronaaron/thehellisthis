@@ -30,11 +30,11 @@ Cloudflare Container behind a Worker.
 
 ```bash
 cargo run                       # dev server → http://localhost:3000/main
-cargo test --all-features       # 556 tests; all must pass before committing
+cargo test --all-features       # 561 tests; all must pass before committing
 cargo fmt --all -- --check      # formatting is a gate, not a preference
 cargo clippy --all-targets --all-features -- -D warnings   # warnings are failures
 cargo build --release           # LTO'd binary for the container image
-scripts/coverage.sh             # line-coverage floor (93%), ratchets up only
+scripts/coverage.sh             # line-coverage floor (94%), ratchets up only
 ```
 
 Those five are the gate, and they are exactly what `.github/workflows/ci.yml`
@@ -360,7 +360,7 @@ Frame order on connect is **guaranteed**: `Welcome`, then history, then
 
 ## Tests
 
-`src/tests.rs` — 556 tests, one file, run with `cargo test --all-features`.
+`src/tests.rs` — 561 tests, one file, run with `cargo test --all-features`.
 Notable classes:
 
 | Class | Pins |
