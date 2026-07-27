@@ -1,12 +1,11 @@
 #!/bin/bash
 # Line-coverage gate.
 #
-# Both this and scripts/coverage-full.sh sit at **98%**. They used to differ,
-# because the `#[ignore]`d time-dependent tests were the only thing covering the
-# idle eviction. Making the connection tasks generic over their sink moved that
-# coverage into ordinary tests, so CI now reaches everything the slow run does
-# and the two numbers agree. The slow tests still earn their place: they are the
-# only thing proving the *real* heartbeat and housekeeping intervals fire.
+# **100%**, and the same with or without the `#[ignore]`d tests — making the
+# connection tasks and `run_session` generic over their sink moved every branch
+# that used to need a real socket into an ordinary test. The slow tests still
+# earn their place: they are the only thing proving the *real* heartbeat and
+# housekeeping intervals fire, rather than that the code inside them works.
 #
 # The floor is If coverage drops the fix is a test, or — for code that
 # genuinely cannot be exercised — an entry in scripts/coverage-exemptions.toml
@@ -20,7 +19,7 @@
 
 set -euo pipefail
 
-MINIMUM="${1:-98}"
+MINIMUM="${1:-100}"
 
 cd "$(dirname "$0")/.."
 

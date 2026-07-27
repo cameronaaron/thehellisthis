@@ -169,7 +169,22 @@ pub async fn ws_handler_inner(
         .into_response();
 
     // Both cookies, so a reload keeps the same identity.
-    for cookie in [user_id_cookie, animal_name_cookie] {
+    attach_cookies(&mut response, &[user_id_cookie, animal_name_cookie]);
+
+    Ok(response)
+}
+
+/// Attaches `Set-Cookie` headers, skipping any that cannot be encoded.
+///
+/// A function rather than a loop inside the handler so the failure arm is
+/// reachable from a test. It should not be reachable in production: since
+/// identity became a closed set — a UUID and a roster name (§5.9) — there is no
+/// longer a way for one of these to contain a character invalid in a header
+/// value. It stays as the thing that catches that closed set being widened,
+/// and dropping the cookie is the right response, because a visitor with no
+/// cookie is a new visitor rather than a broken one.
+pub(crate) fn attach_cookies(response: &mut Response, cookies: &[String]) {
+    for cookie in cookies {
         match cookie.parse() {
             Ok(value) => {
                 response.headers_mut().append("Set-Cookie", value);
@@ -177,8 +192,6 @@ pub async fn ws_handler_inner(
             Err(e) => error!(error = ?e, "failed to encode Set-Cookie header"),
         }
     }
-
-    Ok(response)
 }
 
 /// Places the connecting visitor in the room, reusing their cookie identity
@@ -280,6 +293,23 @@ fn insert_user(
     );
 }
 
+/// Serialises a frame the server is about to send.
+///
+/// Every outgoing type is a plain struct or enum of owned strings, numbers and
+/// UUIDs — no map with non-string keys, no float that could be NaN — so this
+/// cannot fail. Saying that in one place, once, is better than an unreachable
+/// error arm at each of the four call sites, each of which a reader has to
+/// work out is unreachable for themselves.
+pub(crate) fn encode_event<T: serde::Serialize>(value: &T) -> String {
+    serde_json::to_string(value).unwrap_or_else(|e| {
+        // Reached only if an outgoing type gains a field that cannot be
+        // represented. An empty frame is dropped by the client; a panic here
+        // would take the whole connection task with it (§5.1).
+        error!(error = %e, "failed to serialise an outgoing frame");
+        String::new()
+    })
+}
+
 /// A sink this session can write frames to.
 ///
 /// The four tasks are generic over this rather than tied to a `WebSocket`, so a
@@ -305,10 +335,7 @@ pub(crate) async fn forward_broadcasts<S: FrameSink>(
     sink: Arc<Mutex<S>>,
 ) {
     while let Ok(event) = receiver.recv().await {
-        let Ok(json) = serde_json::to_string(&event) else {
-            error!("failed to serialise outgoing event");
-            continue;
-        };
+        let json = encode_event(&event);
 
         let mut tx = sink.lock().await;
         if tx.send_frame(Message::Text(json.into())).await.is_err() {
@@ -320,12 +347,15 @@ pub(crate) async fn forward_broadcasts<S: FrameSink>(
 /// WebSocket-level pings, until the socket stops accepting them.
 pub(crate) async fn send_pings<S: FrameSink>(sink: Arc<Mutex<S>>) {
     let mut interval = tokio::time::interval(HEARTBEAT_INTERVAL);
-    loop {
+    let mut alive = true;
+
+    // A `while` rather than `loop`/`break`: the condition *is* the thing that
+    // ends this task, so saying it once reads better than a jump out of the
+    // middle — and there is no unreachable exit left for a reader to wonder at.
+    while alive {
         interval.tick().await;
         let mut tx = sink.lock().await;
-        if tx.send_frame(Message::Ping(Bytes::new())).await.is_err() {
-            break;
-        }
+        alive = tx.send_frame(Message::Ping(Bytes::new())).await.is_ok();
     }
 }
 
@@ -357,11 +387,9 @@ pub(crate) async fn send_history<S: FrameSink>(
     for (message, reactions) in history {
         // Serialised from borrows: the history was handed over as refcounts,
         // and nothing here copies a message just to put a `type` around it.
-        let Ok(json) = serde_json::to_string(&HistoryEvent::Message {
+        let json = encode_event(&HistoryEvent::Message {
             message: HistoryMessage { message, reactions },
-        }) else {
-            continue;
-        };
+        });
 
         let mut tx = sink.lock().await;
         if tx.send_frame(Message::Text(json.into())).await.is_err() {
@@ -385,45 +413,60 @@ pub(crate) async fn beat_and_evict_idle<S: FrameSink>(
     sink: Arc<Mutex<S>>,
 ) {
     let mut interval = tokio::time::interval(HEARTBEAT_INTERVAL);
-    loop {
+    let mut running = true;
+
+    while running {
         interval.tick().await;
 
-        {
+        let delivered = {
             let mut tx = sink.lock().await;
-            let Ok(beat) = serde_json::to_string(&OutgoingEvent::Heartbeat) else {
-                break;
-            };
-            if tx.send_frame(Message::Text(beat.into())).await.is_err() {
-                break;
-            }
-        }
-
-        let idle_too_long = {
-            let mut rooms = state.rooms.write().await;
-            rooms
-                .get_mut(&room)
-                .and_then(|rs| rs.users.get_mut(&user_id))
-                .is_some_and(|user| {
-                    let now = Instant::now();
-                    if let ConnectionState::Connected {
-                        ref mut last_heartbeat,
-                        ..
-                    } = user.connection_state
-                    {
-                        *last_heartbeat = now;
-                    }
-                    user_idle_for_too_long(user, now)
-                })
+            tx.send_frame(Message::Text(
+                encode_event(&OutgoingEvent::Heartbeat).into(),
+            ))
+            .await
+            .is_ok()
         };
 
-        if idle_too_long {
+        if !delivered {
+            running = false;
+            continue;
+        }
+
+        if touch_and_check_idle(&state, &room, &user_id).await {
             let timeout_s = USER_IDLE_MESSAGE_TIMEOUT.as_secs();
             info!(user_id = %user_id, room = %room, timeout_s, "disconnecting idle user");
             let mut tx = sink.lock().await;
             let _ = tx.send_frame(idle_close_frame()).await;
-            break;
+            running = false;
         }
     }
+}
+
+/// Marks this user as still connected, and says whether they have gone quiet.
+///
+/// Extracted so the decision is a function of the room's state rather than
+/// something only reachable from inside a timer loop. Returns false when the
+/// room or the user has gone, which is not idleness — the session is ending
+/// for another reason and the heartbeat should not claim otherwise.
+pub(crate) async fn touch_and_check_idle(state: &Arc<AppState>, room: &str, user_id: &str) -> bool {
+    let mut rooms = state.rooms.write().await;
+    let Some(user) = rooms
+        .get_mut(room)
+        .and_then(|room_state| room_state.users.get_mut(user_id))
+    else {
+        return false;
+    };
+
+    let now = Instant::now();
+    if let ConnectionState::Connected {
+        ref mut last_heartbeat,
+        ..
+    } = user.connection_state
+    {
+        *last_heartbeat = now;
+    }
+
+    user_idle_for_too_long(user, now)
 }
 
 /// Takes the connection's place in the room and returns what it needs to run.
@@ -501,12 +544,14 @@ pub async fn handle_websocket(
     connection_id: String,
     client_ip: Option<String>,
 ) {
+    let (ws_tx, ws_rx) = socket.split();
     run_session(
         room.clone(),
         state.clone(),
         user_id.clone(),
         animal_name,
-        socket,
+        ws_tx,
+        ws_rx,
         connection_id.clone(),
     )
     .await;
@@ -527,20 +572,24 @@ pub async fn handle_websocket(
 ///
 /// The tasks are raced rather than joined: a dead socket shows up in exactly
 /// one of them, and the first to notice should tear the whole session down.
-async fn run_session(
+pub(crate) async fn run_session<S, R>(
     room: String,
     state: Arc<AppState>,
     user_id: String,
     animal_name: String,
-    socket: WebSocket,
+    ws_tx: S,
+    mut ws_rx: R,
     connection_id: String,
-) {
-    let (ws_tx, mut ws_rx) = socket.split();
-
-    let Some((receiver, chat_history)) =
-        join_room(&state, &room, &user_id, &animal_name, &connection_id).await
-    else {
-        return;
+) where
+    S: FrameSink + 'static,
+    R: futures::Stream<Item = Result<Message, axum::Error>> + Unpin + Send,
+{
+    let joined = join_room(&state, &room, &user_id, &animal_name, &connection_id).await;
+    let (receiver, chat_history) = match joined {
+        Some(joined) => joined,
+        // The room went between admission and the upgrade. There is nothing to
+        // join; the caller's teardown still runs.
+        None => return,
     };
 
     let ws_tx = Arc::new(Mutex::new(ws_tx));
@@ -549,12 +598,11 @@ async fn run_session(
     // before it renders any history.
     {
         let mut tx = ws_tx.lock().await;
-        if let Ok(json) = serde_json::to_string(&OutgoingEvent::Welcome {
+        let json = encode_event(&OutgoingEvent::Welcome {
             user_id: user_id.clone(),
             animal_name: animal_name.clone(),
-        }) {
-            let _ = tx.send(Message::Text(json.into())).await;
-        }
+        });
+        let _ = tx.send_frame(Message::Text(json.into())).await;
     }
 
     if !send_history(&chat_history, &ws_tx, &user_id).await {
@@ -563,11 +611,10 @@ async fn run_session(
 
     {
         let mut tx = ws_tx.lock().await;
-        if let Ok(json) = serde_json::to_string(&OutgoingEvent::ReconnectToken {
+        let json = encode_event(&OutgoingEvent::ReconnectToken {
             token: Uuid::new_v4().to_string(),
-        }) {
-            let _ = tx.send(Message::Text(json.into())).await;
-        }
+        });
+        let _ = tx.send_frame(Message::Text(json.into())).await;
     }
 
     // ---- Task 1: room broadcasts → this client ---------------------------
@@ -604,14 +651,12 @@ async fn run_session(
                     }
                     Message::Ping(payload) => {
                         let mut tx = ws_tx.lock().await;
-                        if tx.send(Message::Pong(payload)).await.is_err() {
+                        if tx.send_frame(Message::Pong(payload)).await.is_err() {
                             break;
                         }
                     }
                     Message::Pong(_) => trace!(user_id = %user_id, "pong"),
-                    Message::Binary(_) => {
-                        debug!(user_id = %user_id, "ignoring binary frame")
-                    }
+                    Message::Binary(_) => debug!(user_id = %user_id, "ignoring binary frame"),
                     Message::Close(_) => break,
                 }
             }

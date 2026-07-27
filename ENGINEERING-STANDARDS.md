@@ -762,6 +762,31 @@ parameter in one function at the boundary of the process.
 What is left is genuinely racy — a socket dying between two frames — and is
 exempted line by line with reasons, not rounded away.
 
+### 6.1d Every "untestable" line here turned out to be a misplaced one
+
+`session.rs` went 21 exempted lines → 12 → 3 → 0, and not one of them was
+finally covered by a cleverer test. Each was covered by *moving the code*:
+
+- The four connection tasks and `run_session` are generic over their sink, so
+  "the client stopped accepting frames" is a fixture rather than a race.
+- `join_room`, `send_history`, `touch_and_check_idle`, `attach_cookies` and
+  `encode_event` became functions instead of blocks buried in a loop or a
+  handler.
+- `loop`/`break` became `while running`, which says the exit condition once
+  rather than jumping out of the middle.
+
+The pattern is the same one as §6.1c and worth stating as a rule: **when a line
+looks untestable, the first question is whether it is in the right place.** The
+answer here was no, twelve times out of twelve.
+
+And two of the last three were not untestable at all — they were the instrument
+disagreeing with the code. `Message::Binary(_) => { … }` reported its arm
+uncovered while its body demonstrably ran, because tarpaulin attributes a
+brace-wrapped arm to the body alone; written as a single expression, like the
+`Pong` arm directly beside it, it reports honestly. §0.5 says to validate the
+instrument before trusting the number, and that applies to a coverage tool
+exactly as much as to a stopwatch.
+
 ### 6.2 A fix and its test are one commit
 
 Non-negotiable. A fix without a test is a fix with an expiry date. The commit
@@ -1099,7 +1124,7 @@ lore.
 | 100% mutation coverage | **Rejected as a target, pursued as a direction** — six mutants survive and are classified in §6.6. Four differ only when a duration is *exactly* its threshold and would need an injectable clock, which is separately rejected because the indirection costs more than the mutants are worth. Killing the last few would mean testing the clock rather than the behaviour | Reopens if a *reachable* mutant appears that is not one of the six classified, which is a real gap rather than an exclusion |
 | Load testing | **Never done** — every performance claim here is structural (complexity, lock duration), not empirical throughput | Before raising `MAX_CONCURRENT_USERS` (400) or `MAX_USERS_PER_ROOM` (100). Those numbers are currently unvalidated assumptions, and §0.5 says so out loud. |
 | Injectable clock for the limiters | **Rejected** (§6.6) — would kill four surviving mutants that differ only when a duration is *exactly* its threshold | Reopens if a timing bug is ever observed at a limit boundary in production, or if the limiters need testable time for another reason. |
-| 100% line coverage | **Now the target, with a reasoned exemption list** — 98.18%, every module at 100% except `session.rs` (352/373). `main.rs` was reduced to an entry point and `startup.rs` split out of it so the exclusion is honest rather than a hiding place; the test file is excluded the way `*.test.ts` is on cameronaaron.com. The 21 remaining lines are listed individually in scripts/coverage-exemptions.toml | Reopens for any of those 21 that becomes reachable — the registry's line count is asserted, so it fails if the number moves either way. The old entry read: **Not the target** — the floor is 95% and ratchets. The remainder is the process shell (`main`, signal handling) and socket-failure paths inside the four connection tasks, which need a socket to fail at an exact instant | Reopens for any *reachable* branch: those are gaps, not exclusions. Chasing the rest would mean flaky timing tests, which §6.4 rules out as worse than none. |
+| 100% line coverage | **Reached, and now the floor** — 100.00%, with the same number whether or not the `#[ignore]`d tests run. Two whole-file exemptions remain and both are structural: `tests.rs` is the suite, `main.rs` is an entry point a test can never call. Previously read: **Now the target, with a reasoned exemption list** — 98.18%, every module at 100% except `session.rs` (352/373). `main.rs` was reduced to an entry point and `startup.rs` split out of it so the exclusion is honest rather than a hiding place; the test file is excluded the way `*.test.ts` is on cameronaaron.com. The 21 remaining lines are listed individually in scripts/coverage-exemptions.toml | Reopens for any of those 21 that becomes reachable — the registry's line count is asserted, so it fails if the number moves either way. The old entry read: **Not the target** — the floor is 95% and ratchets. The remainder is the process shell (`main`, signal handling) and socket-failure paths inside the four connection tasks, which need a socket to fail at an exact instant | Reopens for any *reachable* branch: those are gaps, not exclusions. Chasing the rest would mean flaky timing tests, which §6.4 rules out as worse than none. |
 | Edge-caching the room pages | **Rejected** — the page is per-room and sets identity cookies, so a shared cache would serve one visitor's `Set-Cookie` to another | Reopens only if identity moves entirely to the socket and the page becomes byte-identical for all visitors. |
 
 ---

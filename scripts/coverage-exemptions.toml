@@ -40,54 +40,19 @@ module and this exemption stops being honest.
 """
 
 # ---------------------------------------------------------------------------
-# Lines, not files.
+# No line exemptions.
 #
-# tarpaulin can only exclude whole files, and `session.rs` is 94% covered — the
-# module holding the message path, admission and teardown. Excluding it to
-# reach a round number would hide far more than it exempted, so it stays in the
-# measurement and the floor sits at what is actually achieved.
+# `session.rs` had 21, then 12, then 3, and now none. Every one turned out to be
+# a misplaced line rather than an untestable one (§6.1c): the four connection
+# tasks and `run_session` itself are generic over their sink, so "the client
+# stopped accepting frames" is a test fixture rather than a race; `join_room`,
+# `send_history`, `touch_and_check_idle`, `attach_cookies` and `encode_event`
+# are functions rather than blocks buried inside a loop.
 #
-# The 21 lines below are listed individually with reasons.
-# `session_coverage_gap_is_still_what_it_claims` fails if the count changes in
-# either direction: a new uncovered line is a missing test, and a smaller
-# number means an entry here has stopped being true and should be deleted.
+# Two of the last three were not untestable at all — they were the instrument
+# disagreeing with the code. `Message::Binary(_) => { … }` reported its arm
+# uncovered while its body ran, because tarpaulin attributes a brace-wrapped arm
+# to the body alone; written as a single expression, like the `Pong` arm beside
+# it, it reports honestly. Worth remembering before believing the next
+# "impossible" line (§0.5).
 # ---------------------------------------------------------------------------
-
-[[exempt]]
-path = "src/session.rs"
-lines = 12
-reason = """
-Down from 21. Everything that could be reached by moving the untestable thing
-to a parameter has been (§6.1c): the four connection tasks are now generic over
-their sink, so "the client stopped accepting frames" is a test fixture rather
-than a race, and `join_room` and `send_history` are functions rather than
-blocks. What is left is four kinds of genuinely unreachable line.
-
-**Serialisation that cannot fail** (309-310, 363). `serde_json::to_string` of an
-`OutgoingEvent` or a `HistoryEvent` — plain structs and enums of owned strings,
-numbers and UUIDs, with no map keys that could be non-strings and no float that
-could be NaN. The arms stay because the signature is fallible and silently
-ignoring an error is worse than a branch nothing reaches.
-
-**Encoding an identity as a cookie** (177). Reachable only if a `user_id` or
-`animal_name` contained a character invalid in a header value — which, since
-identity became a closed set of UUIDs and roster names (§5.9), has no way to
-happen. It is unreachable *because* the guard above it holds, and it should
-stay as the thing that catches that guard being widened.
-
-**Two `return`s inside `run_session`** (543, 561), taken when `join_room`
-refuses or the client leaves mid-replay. Both decisions are covered directly —
-`joining_a_room_that_vanished_is_refused_rather_than_panicking` and
-`a_client_that_leaves_mid_replay_stops_the_replay` — but the two statements that
-act on them live in a function that needs a real upgraded `WebSocket`, which
-only axum can construct from a live handshake.
-
-**Loop headers and a `break` tarpaulin attributes oddly** (323, 388, 394, 408,
-410, 608). These sit inside `send_pings` and `beat_and_evict_idle`, both of
-which have tests that demonstrably enter the loop, send frames and exit through
-the branch in question — `pinging_stops_when_the_client_is_gone`,
-`a_quiet_user_is_evicted_with_the_close_frame`,
-`the_heartbeat_stops_when_the_client_is_gone`. The instrument and the code
-disagree here, and §0.5 says to say so rather than write a worse test to please
-the instrument.
-"""

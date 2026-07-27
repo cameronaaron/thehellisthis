@@ -35,7 +35,7 @@ cargo test --all-features       # 612 tests; all must pass before committing
 cargo fmt --all -- --check      # formatting is a gate, not a preference
 cargo clippy --all-targets --all-features -- -D warnings   # warnings are failures
 cargo build --release           # LTO'd binary for the container image
-scripts/coverage.sh             # line-coverage floor (98%), ratchets up only
+scripts/coverage.sh             # line-coverage floor: 100%
 ```
 
 Two more that CI deliberately does **not** run, because they depend on real
@@ -43,7 +43,7 @@ elapsed time and a loaded shared runner is where such a test becomes a flake:
 
 ```bash
 scripts/slow-tests.sh           # the #[ignore]d time-dependent tests
-scripts/coverage-full.sh        # coverage including them (floor 98%)
+scripts/coverage-full.sh        # coverage including them (also 100%)
 ```
 
 Run both before pushing anything that touches the heartbeat, the housekeeping

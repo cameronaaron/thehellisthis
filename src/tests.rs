@@ -16919,9 +16919,11 @@ async fn the_process_exit_code_reports_a_clean_stop() {
 ///
 ///   1. An entry with no reason — a number being hidden rather than explained.
 ///   2. An entry naming a path that no longer exists.
-///   3. A line count that has drifted. Larger means a new uncovered line got
-///      absorbed into an old exemption; smaller means part of it became
-///      reachable and the entry should shrink or go.
+///   3. A third entry appearing. Only `tests.rs` and `main.rs` are exempt, and
+///      both for the same structural reason — one is the suite, the other is an
+///      entry point a test can never call. Everything else reached 100%, so a
+///      new entry is a claim that something is untestable, and the first
+///      question is whether the code can move instead (§6.1c).
 #[test]
 fn coverage_exemptions_are_justified_and_current() {
     const EXEMPTIONS: &str = include_str!("../scripts/coverage-exemptions.toml");
@@ -16958,7 +16960,13 @@ fn coverage_exemptions_are_justified_and_current() {
         );
     }
 
-    assert!(entries >= 3, "the registry should not have been emptied");
+    assert_eq!(
+        entries, 2,
+        "only the two whole-file exemptions remain. `session.rs` had 21 line \
+         exemptions, then 12, then 3, then none — every one turned out to be a \
+         misplaced line rather than an untestable one. If a third file appears \
+         here, the question to ask first is whether the code can move (§6.1c)."
+    );
 
     // Whole-file exclusions must be exactly the ones the script passes to
     // tarpaulin, or the registry describes a gate that is not running.
@@ -17378,6 +17386,10 @@ async fn joining_again_rebinds_the_existing_slot_to_the_new_connection() {
 struct RecordingSink {
     sent: Vec<crate::session::Message>,
     fail_after: Option<usize>,
+    /// Fail on a particular kind of frame rather than a count. The four tasks
+    /// race, so "the third frame" is whichever task happened to win — refusing
+    /// a *pong* is the only way to test the pong path deterministically.
+    fail_on_pong: bool,
 }
 
 impl RecordingSink {
@@ -17385,6 +17397,7 @@ impl RecordingSink {
         Self {
             sent: Vec::new(),
             fail_after: Some(0),
+            fail_on_pong: false,
         }
     }
 
@@ -17392,12 +17405,34 @@ impl RecordingSink {
         Self {
             sent: Vec::new(),
             fail_after: Some(n),
+            fail_on_pong: false,
         }
+    }
+
+    fn refusing_pongs() -> Self {
+        Self {
+            sent: Vec::new(),
+            fail_after: None,
+            fail_on_pong: true,
+        }
+    }
+}
+
+/// Lets one `RecordingSink` be both handed to a session and inspected by the
+/// test, since `run_session` takes ownership of its sink.
+struct SharedSink(Arc<tokio::sync::Mutex<RecordingSink>>);
+
+impl crate::session::FrameSink for SharedSink {
+    async fn send_frame(&mut self, message: crate::session::Message) -> Result<(), ()> {
+        self.0.lock().await.send_frame(message).await
     }
 }
 
 impl crate::session::FrameSink for RecordingSink {
     async fn send_frame(&mut self, message: crate::session::Message) -> Result<(), ()> {
+        if self.fail_on_pong && matches!(message, crate::session::Message::Pong(_)) {
+            return Err(());
+        }
         if self.fail_after.is_some_and(|n| self.sent.len() >= n) {
             return Err(());
         }
@@ -18907,4 +18942,309 @@ fn the_servers_public_surface_still_exists() {
             "the route {route} is no longer mounted"
         );
     }
+}
+
+/// A cookie that cannot be a header value is dropped, not fatal.
+///
+/// Unreachable in production since identity became a closed set — a UUID and a
+/// roster name have no character that is invalid in a header value (§5.9). It
+/// stays as the thing that catches that closed set being widened, and this is
+/// what it does when it fires: drop the one cookie and carry on, because a
+/// visitor with no cookie is a new visitor rather than a broken one.
+#[test]
+fn a_cookie_that_cannot_be_encoded_is_dropped_and_the_rest_still_set() {
+    use axum::response::IntoResponse;
+
+    let mut response = "body".into_response();
+
+    crate::session::attach_cookies(
+        &mut response,
+        &[
+            "user_id=valid; Path=/".to_string(),
+            // A newline cannot appear in a header value.
+            "animal_name=bro\nken; Path=/".to_string(),
+            "third=also-valid; Path=/".to_string(),
+        ],
+    );
+
+    let set: Vec<&str> = response
+        .headers()
+        .get_all("Set-Cookie")
+        .iter()
+        .map(|v| v.to_str().unwrap())
+        .collect();
+
+    assert_eq!(
+        set.len(),
+        2,
+        "the two encodable cookies are set and the broken one is skipped: {set:?}"
+    );
+    assert!(set.iter().any(|c| c.starts_with("user_id=")));
+    assert!(set.iter().any(|c| c.starts_with("third=")));
+}
+
+/// Serialising an outgoing frame yields a frame, and never panics.
+///
+/// Every outgoing type is a plain struct of owned strings, numbers and UUIDs,
+/// so this cannot fail — which is exactly why the fallback needs a test: it is
+/// the arm that would otherwise be reasoned about rather than run. A panic here
+/// would take the connection task with it (§5.1), so the fallback is an empty
+/// frame the client drops.
+#[test]
+fn encoding_an_outgoing_frame_never_panics() {
+    let json = crate::session::encode_event(&OutgoingEvent::UserCount { count: 7 });
+    let parsed: JsonValue = serde_json::from_str(&json).expect("valid JSON");
+    assert_eq!(parsed["type"], "UserCount");
+    assert_eq!(parsed["count"], 7);
+
+    // A type whose Serialize impl fails, which no outgoing type does — the
+    // point is that reaching that arm produces an empty frame rather than a
+    // panic in a connection task.
+    struct Unserialisable;
+    impl serde::Serialize for Unserialisable {
+        fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+            Err(serde::ser::Error::custom("cannot be represented"))
+        }
+    }
+
+    assert_eq!(
+        crate::session::encode_event(&Unserialisable),
+        "",
+        "an unrepresentable frame becomes an empty one, not a panic"
+    );
+}
+
+/// Touching a user who is no longer there is not idleness.
+///
+/// The heartbeat asks "is this user quiet" every few seconds. If the room or
+/// the user has gone, the session is ending for some other reason and the
+/// answer must be no — reporting idleness would send an eviction frame to a
+/// connection that is already tearing down, and tell the client it went quiet
+/// when it did not.
+#[tokio::test]
+async fn a_missing_user_is_not_reported_as_idle() {
+    let state = Arc::new(AppState::new());
+
+    assert!(
+        !crate::session::touch_and_check_idle(&state, "no-such-room", "u1").await,
+        "no room means no idleness"
+    );
+
+    {
+        let mut rooms = state.rooms.write().await;
+        rooms.insert("empty".to_string(), create_room());
+    }
+    assert!(
+        !crate::session::touch_and_check_idle(&state, "empty", "u1").await,
+        "no user means no idleness"
+    );
+
+    // A user who is present and talking is not idle, and gets touched.
+    {
+        let mut rooms = state.rooms.write().await;
+        let room = rooms.get_mut("empty").unwrap();
+        room.users.insert(
+            "u1".to_string(),
+            connected_user("u1", "otter", "c1", Instant::now()),
+        );
+    }
+    assert!(!crate::session::touch_and_check_idle(&state, "empty", "u1").await);
+}
+
+/// The whole session, driven end to end without a socket.
+///
+/// `run_session` is generic over its sink and stream, so a test can play the
+/// part of a client: hand it frames, watch what comes back, and stop. Three
+/// exits that previously needed a real peer to fail at an exact instant are
+/// reachable this way — the room vanishing before the session starts, the
+/// client leaving during the history replay, and a ping that cannot be
+/// answered.
+#[tokio::test]
+async fn a_session_runs_and_ends_on_each_of_its_exits() {
+    // ---- The room vanished between admission and upgrade -----------------
+    let state = Arc::new(AppState::new());
+    let sink = Arc::new(tokio::sync::Mutex::new(RecordingSink::default()));
+
+    timeout(
+        Duration::from_secs(5),
+        crate::session::run_session(
+            "gone".to_string(),
+            state.clone(),
+            "u1".to_string(),
+            "otter".to_string(),
+            SharedSink(sink.clone()),
+            futures::stream::empty(),
+            "c1".to_string(),
+        ),
+    )
+    .await
+    .expect("with no room there is nothing to run");
+
+    assert!(
+        sink.lock().await.sent.is_empty(),
+        "a session with no room sends nothing at all — not even a Welcome"
+    );
+
+    // ---- The client leaves during the history replay ---------------------
+    let state = Arc::new(AppState::new());
+    {
+        let mut rooms = state.rooms.write().await;
+        let mut room = create_room();
+        for i in 0..6 {
+            message_in(&mut room, &state.memory_tracker, &format!("m{i}"));
+        }
+        rooms.insert("replay".to_string(), room);
+    }
+
+    // Welcome, then two history frames, then the client is gone.
+    let sink = Arc::new(tokio::sync::Mutex::new(RecordingSink::failing_after(3)));
+    timeout(
+        Duration::from_secs(5),
+        crate::session::run_session(
+            "replay".to_string(),
+            state.clone(),
+            "u1".to_string(),
+            "otter".to_string(),
+            SharedSink(sink.clone()),
+            futures::stream::empty(),
+            "c1".to_string(),
+        ),
+    )
+    .await
+    .expect("a client leaving mid-replay ends the session");
+
+    let sent = &sink.lock().await.sent;
+    assert_eq!(
+        sent.len(),
+        3,
+        "the replay stops at the refused frame rather than pushing the rest"
+    );
+
+    // The first frame is always Welcome — the client cannot tell its own
+    // messages apart until it has one (constraint #2).
+    let crate::session::Message::Text(first) = &sent[0] else {
+        panic!("frames are text");
+    };
+    let welcome: JsonValue = serde_json::from_str(first.as_str()).unwrap();
+    assert_eq!(welcome["type"], "Welcome");
+}
+
+/// A ping the server cannot answer ends the session.
+///
+/// The client pings, the server replies with a pong — and if that write fails
+/// the peer is gone, so there is nothing left to run.
+#[tokio::test]
+async fn a_ping_that_cannot_be_answered_ends_the_session() {
+    let state = Arc::new(AppState::new());
+    {
+        let mut rooms = state.rooms.write().await;
+        rooms.insert("ping-room".to_string(), create_room());
+    }
+
+    // Everything succeeds except the pong. Counting frames instead would be a
+    // race: the four tasks run concurrently, so "the third frame" is whichever
+    // of them happened to win.
+    let sink = Arc::new(tokio::sync::Mutex::new(RecordingSink::refusing_pongs()));
+    let incoming = futures::stream::iter(vec![Ok(crate::session::Message::Ping(
+        bytes::Bytes::from_static(b"hi"),
+    ))]);
+
+    timeout(
+        Duration::from_secs(5),
+        crate::session::run_session(
+            "ping-room".to_string(),
+            state.clone(),
+            "u1".to_string(),
+            "otter".to_string(),
+            SharedSink(sink.clone()),
+            incoming,
+            "c1".to_string(),
+        ),
+    )
+    .await
+    .expect("a pong that cannot be written ends the session");
+
+    let sent = &sink.lock().await.sent;
+    assert!(
+        !sent
+            .iter()
+            .any(|m| matches!(m, crate::session::Message::Pong(_))),
+        "the pong was refused, so it never appears in what was sent"
+    );
+    assert!(
+        sent.iter()
+            .any(|m| matches!(m, crate::session::Message::Text(_))),
+        "the Welcome still got through before the ping arrived"
+    );
+}
+
+/// Every kind of frame a client can send, and what the session does with it.
+///
+/// Driving `run_session` directly makes this deterministic. Through a real
+/// socket these arms are a race between four concurrent tasks, so a test can
+/// only hope to reach them; here the frames are simply handed over in order.
+///
+/// What matters is that none of them ends the session except the one that
+/// should: a client sending nonsense, or something the server does not
+/// understand, is a client that stays connected.
+#[tokio::test]
+async fn the_session_handles_every_kind_of_client_frame() {
+    let state = Arc::new(AppState::new());
+    {
+        let mut rooms = state.rooms.write().await;
+        rooms.insert("frames".to_string(), create_room());
+    }
+
+    let oversized = "x".repeat(MAX_PAYLOAD_SIZE + 1);
+    let incoming = futures::stream::iter(vec![
+        // A frame the server has no use for, which must not end the session.
+        Ok(crate::session::Message::Binary(bytes::Bytes::from_static(
+            b"\x00\x01\x02",
+        ))),
+        // The client answering our ping.
+        Ok(crate::session::Message::Pong(bytes::Bytes::from_static(
+            b"p",
+        ))),
+        // Larger than the payload ceiling: dropped without parsing.
+        Ok(crate::session::Message::Text(oversized.into())),
+        // Not JSON at all.
+        Ok(crate::session::Message::Text("{not json".into())),
+        // Valid JSON, but not an event this server knows.
+        Ok(crate::session::Message::Text(
+            r#"{"type":"Nonsense"}"#.into(),
+        )),
+        // A real message, to prove the session is still working after all that.
+        Ok(crate::session::Message::Text(
+            r#"{"type":"Message","text":"still here"}"#.into(),
+        )),
+        // And the client says goodbye.
+        Ok(crate::session::Message::Close(None)),
+    ]);
+
+    let sink = Arc::new(tokio::sync::Mutex::new(RecordingSink::default()));
+    timeout(
+        Duration::from_secs(5),
+        crate::session::run_session(
+            "frames".to_string(),
+            state.clone(),
+            "u1".to_string(),
+            "otter".to_string(),
+            SharedSink(sink.clone()),
+            incoming,
+            "c1".to_string(),
+        ),
+    )
+    .await
+    .expect("the close frame ends the session");
+
+    // The one real message got through everything before it.
+    let rooms = state.rooms.read().await;
+    let history = &rooms.get("frames").unwrap().chat_history;
+    assert_eq!(
+        history.len(),
+        1,
+        "exactly the one valid message should have been stored; the oversized, \
+         unparseable and unknown frames are dropped, not stored and not fatal"
+    );
+    assert!(history[0].text.contains("still here"));
 }
