@@ -14,9 +14,10 @@
 #      allow-list has.
 
 [[exempt]]
-path = "src/tests.rs"
+path = "src/tests"
 reason = """
-The test suite itself. Coverage measures whether the *server* is exercised;
+The test suite itself — a directory of modules since it outgrew one file.
+Coverage measures whether the *server* is exercised;
 counting the tests' own branches measures nothing, and a helper with an
 unexercised arm would otherwise show up as untested production code. This is
 the direct analogue of excluding `**/*.test.ts` on cameronaaron.com.

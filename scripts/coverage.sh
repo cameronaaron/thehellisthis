@@ -39,5 +39,5 @@ cargo tarpaulin \
     --out Xml --out Stdout \
     --output-dir target/coverage \
     --timeout 300 \
-    --exclude-files src/tests.rs src/main.rs \
+    --exclude-files "src/tests/*" src/main.rs \
     --fail-under "$MINIMUM"

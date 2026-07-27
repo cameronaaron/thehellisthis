@@ -1,7 +1,7 @@
 # Engineering Standards — infinite-chat (thehellisthis.com)
 
 This document is the permanent record of the correctness and quality bar for
-this codebase. **Every rule here is enforced by a test in `src/tests.rs`.** If a
+this codebase. **Every rule here is enforced by a test in `src/tests/`.** If a
 rule matters and has no test, the first task is to write the test — a standard
 that isn't executable is a suggestion.
 
@@ -629,6 +629,24 @@ and just as thin.
 id. Neither has an escaping bug, a length to bound, or an encoding to get
 wrong — the questions do not arise. Reach for a closed set before reaching for a
 sanitiser.
+
+### 5.9a A cookie the browser refuses to store is a cookie you do not have
+
+The identity cookies are `HttpOnly; SameSite=Strict; Secure`, and every one of
+those flags is right — in production. `Secure` is also the reason the mechanism
+did not work at all in local development: **a browser will not store a `Secure`
+cookie received over plain http**, and Safari refuses even on localhost.
+
+The symptom was not "cookies missing". It was a room repeating *"skink left,
+stinks joined"* — one person whose connection blipped, announced as a departure
+and an arrival, because with nothing stored `admit_user` mints a fresh identity
+every time. Nothing logged an error; every individual step behaved correctly.
+
+`Secure` is now set for every host except loopback, which is the one place http
+is the only thing on offer. The wider point is that **a security attribute has a
+storage consequence**, and the two are usually reasoned about by different
+people at different times. Anything set on a cookie should be checked against
+where that cookie has to survive.
 
 ### 5.10 A counter that decides admission must never wrap
 
