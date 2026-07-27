@@ -44,7 +44,7 @@ impl ChatError {
     }
 
     /// Category shown to the client. Deliberately coarse.
-    fn public_message(&self) -> &'static str {
+    pub(crate) fn public_message(&self) -> &'static str {
         match self {
             ChatError::RoomFull => "Room is full",
             ChatError::RateLimitError(_) => "Rate limit exceeded",

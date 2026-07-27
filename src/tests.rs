@@ -16688,3 +16688,81 @@ fn every_contract_test_is_documented() {
          them to the Enforcing-tests table: {undocumented:?}"
     );
 }
+
+/// A cookie carrying a *valid* id but a name that is not on the roster.
+///
+/// Found by mutation testing: replacing `is_animal_name` with `true` survived
+/// the whole suite. The forged-cookie test could not catch it, because its
+/// `user_id` is not a UUID — the identity is discarded before the name is ever
+/// checked, so the roster check was never reached with a bad name. This is the
+/// case that actually exercises it: a well-formed id, an invented name.
+#[tokio::test]
+async fn a_valid_id_does_not_let_a_cookie_invent_its_own_name() {
+    let state = Arc::new(AppState::new());
+
+    for invented in [
+        "<script>alert(1)</script>",
+        "administrator",
+        "otter ",  // trailing space: close, but not a roster entry
+        "OTTER",   // the roster is lowercase
+        "hadron",  // a real word, and a name this roster deliberately dropped
+        "guest_1", // the fallback shape, not an animal
+    ] {
+        let cookie = crate::identity::UserCookie {
+            user_id: Uuid::new_v4().to_string(),
+            animal_name: invented.to_string(),
+        };
+        let (_, assigned) = admit_user(&state, "invented-room", "c1", Some(&cookie))
+            .await
+            .expect("a visitor with an unusable name is still a visitor");
+
+        assert!(
+            ANIMAL_NAMES.contains(&assigned.as_str()),
+            "a name off the roster must be replaced, not honoured: {invented:?} \
+             became {assigned:?}"
+        );
+        assert_ne!(assigned, invented, "and specifically must not be kept");
+    }
+}
+
+/// The category a client is told is the coarse one, and never empty.
+///
+/// Found by mutation testing: replacing `public_message` with `""` or with a
+/// nonsense string survived. Nothing asserted what a client is actually shown —
+/// the error taxonomy was tested for its *status codes* only, so the body could
+/// have said anything, or nothing, and the suite would have agreed.
+#[test]
+fn every_error_tells_the_client_a_usable_category() {
+    let cases = [
+        (ChatError::RoomFull, "Room is full"),
+        (
+            ChatError::RateLimitError("internal detail".into()),
+            "Rate limit exceeded",
+        ),
+        (
+            ChatError::InvalidMessage("internal detail".into()),
+            "Invalid message",
+        ),
+        (
+            ChatError::ResourceLimit("internal detail".into()),
+            "Server at capacity",
+        ),
+        (
+            ChatError::SecurityError("internal detail".into()),
+            "Access denied",
+        ),
+    ];
+
+    for (error, expected) in cases {
+        let body = format!("{:?}", error.public_message());
+        assert_eq!(
+            error.public_message(),
+            expected,
+            "the category shown to a client changed: {body}"
+        );
+        assert!(
+            !error.public_message().is_empty(),
+            "an error with no message tells a client nothing"
+        );
+    }
+}

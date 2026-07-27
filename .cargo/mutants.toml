@@ -12,10 +12,16 @@
 # Skip the process shell. `main` binds a socket and installs a signal handler;
 # mutating it produces mutants that can only be caught by starting and killing a
 # real process, which is not what this suite is for.
+# cargo-mutants matches these against the whole mutant description
+# ("replace main with ()"), not against a bare function name — anchored
+# patterns like "^main$" match nothing, which is why `main`, `shutdown_signal`
+# and `init_tracing` mutants were still being generated and still surviving.
+# They read as three unkillable mutants in every report, which is how a report
+# stops being read.
 exclude_re = [
-    "^main$",
-    "^shutdown_signal$",
-    "^init_tracing$",
+    "replace main with",
+    "replace shutdown_signal with",
+    "replace init_tracing with",
 ]
 
 # The suite is ~20s; a mutant that hangs is a mutant that broke a loop

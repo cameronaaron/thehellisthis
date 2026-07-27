@@ -48,6 +48,7 @@ concrete, executable version of "obsessive engineering quality." Concretely:
 | §5.10 Saturating admission counters | `releasing_more_than_was_reserved_cannot_wrap_a_counter` |
 | §5.11 Release in a wrapper | `a_session_whose_room_disappeared_still_releases_its_slots` |
 | §6 Ratchet | `cargo fmt`/`clippy -D warnings`/`cargo test`/`scripts/coverage.sh` in CI |
+| §4.5 Error taxonomy | `every_error_tells_the_client_a_usable_category`, `a_valid_id_does_not_let_a_cookie_invent_its_own_name` |
 | §6.8 Boundaries | `the_memory_ceiling_admits_exactly_the_limit`, `an_ip_is_banned_only_past_the_suspicion_threshold` |
 | §7 Engagement | frontend/backend consistency tests (`SHIPPED_CLIENT`) |
 | §8 Naming | `animal_roster_is_sorted_unique_and_well_formed`, `the_roster_is_larger_than_a_room_can_ever_be`, `reaction_roster_is_sorted_unique_and_actually_emoji` |
@@ -803,6 +804,32 @@ what still fetches it. The absence of a request is not evidence that the
 reference is gone. Pinned by `the_page_names_no_font_it_does_not_ship_with`,
 which checks every `font-family` resolves to something the machine already has,
 and `no_css_content_string_is_an_icon_ligature`.
+
+### 6.6b Mutation testing finds the test you did not think to write
+
+Coverage says a line ran. The full sweep found two gaps that 100%-covered lines
+were hiding, and both were the same shape: **a test that reaches a function
+without exercising the thing it decides.**
+
+`is_animal_name` replaced with `true` survived the entire suite. The
+forged-cookie test looked like it covered this — it asserts an invented name is
+replaced by a roster one — but its `user_id` is not a UUID, so the identity was
+discarded *before* the name was ever checked. The roster check was covered and
+never actually consulted. It needed a cookie with a valid id and a bad name.
+
+`public_message` replaced with `""` also survived: the error taxonomy was tested
+for its status codes only, so the body a client is shown could have said
+anything, or nothing.
+
+The lesson is not "write more tests". It is that **covering a branch and
+exercising its decision are different things**, and only mutation testing tells
+them apart.
+
+The sweep also has to be readable to be used: three mutants in `main`,
+`shutdown_signal` and `init_tracing` were excluded by patterns like `^main$`,
+which match nothing — cargo-mutants matches the whole description
+("replace main with ()"). Three permanent unkillable survivors in every report
+is how a report stops being read.
 
 ### 6.7 Assert on structure, never on a substring a comment can contain
 
