@@ -11,8 +11,13 @@ use comrak::{Options as ComrakOptions, markdown_to_html};
 use http::HeaderMap;
 use regex::Regex;
 
-use crate::config::{MAX_MESSAGE_LEN, ROOM_NAME_REGEX};
+use uuid::Uuid;
+
+use crate::config::{
+    MAX_MESSAGE_LEN, MAX_REPLY_AUTHOR_LEN, MAX_REPLY_PREVIEW_LEN, ROOM_NAME_REGEX,
+};
 use crate::error::ChatError;
+use crate::protocol::ReplyInfo;
 
 /// Compiled once on first use.
 ///
@@ -78,6 +83,51 @@ pub fn validate_message(text: &str) -> Result<String, ChatError> {
     Ok(clean_text)
 }
 
+/// Truncates to at most `max_bytes`, never splitting a UTF-8 character.
+///
+/// `String::truncate` panics on a non-boundary index, and every string here is
+/// attacker-supplied — a multi-byte character straddling the limit would be a
+/// remotely triggerable panic.
+fn truncate_on_char_boundary(mut text: String, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text;
+    }
+
+    let mut end = max_bytes;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.truncate(end);
+    text
+}
+
+/// Validates and sanitises the quoted-reply block attached to a message.
+///
+/// Every field is client-supplied and was previously stored and rebroadcast
+/// exactly as received: unbounded in length, never sanitised, and with a
+/// `message_id` that did not have to be a message id. The only reason it was
+/// not an XSS vector is that the current client happens to escape these fields
+/// when rendering them — a property of one client, not of the server.
+///
+/// Returns `None` when the reply cannot refer to a real message, in which case
+/// the message is delivered without its quote rather than rejected.
+pub fn sanitize_reply(reply: ReplyInfo) -> Option<ReplyInfo> {
+    // A reply that does not point at a message id is not a reply.
+    let message_id = Uuid::parse_str(reply.message_id.trim()).ok()?;
+
+    Some(ReplyInfo {
+        message_id: message_id.to_string(),
+        author_name: truncate_on_char_boundary(
+            ammonia::clean_text(reply.author_name.trim()),
+            MAX_REPLY_AUTHOR_LEN,
+        ),
+        preview_text: truncate_on_char_boundary(
+            ammonia::clean_text(reply.preview_text.trim()),
+            MAX_REPLY_PREVIEW_LEN,
+        ),
+    })
+}
+
 /// Renders user Markdown to the HTML that will be stored and broadcast.
 ///
 /// Sanitising happens *after* rendering, never before: `ammonia` runs on the
@@ -92,14 +142,31 @@ pub fn render_message_html(text: &str) -> String {
 /// The client's address, preferring proxy headers.
 ///
 /// Cloudflare terminates TLS in front of the container, so the socket address
-/// is the proxy for every request; `X-Forwarded-For` is the only place the real
-/// client appears. It is attacker-controlled when the server is reached
+/// is the proxy for every request and the real client only appears in a header.
+///
+/// `CF-Connecting-IP` is checked first because that is what actually arrives in
+/// production: Cloudflare sets it on every proxied request, and it is the one
+/// header the edge will not let a client forge. Checking only
+/// `X-Forwarded-For`, as this used to, meant every visitor looked like the same
+/// address to the per-IP limits — so those limits were, in effect, global.
+///
+/// All of these are attacker-controlled if the container is ever reached
 /// directly, which is why per-IP limits are a courtesy bound and the
 /// per-connection and global ceilings are the real protection.
 pub fn extract_client_ip(
     headers: &HeaderMap,
     conn_info: Option<&ConnectInfo<SocketAddr>>,
 ) -> Option<String> {
+    if let Some(cf_ip) = headers
+        .get("cf-connecting-ip")
+        .and_then(|v| v.to_str().ok())
+    {
+        let ip = cf_ip.trim();
+        if !ip.is_empty() {
+            return Some(ip.to_string());
+        }
+    }
+
     // X-Forwarded-For is a list, client first.
     if let Some(forwarded) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok())
         && let Some(client_ip) = forwarded.split(',').next()

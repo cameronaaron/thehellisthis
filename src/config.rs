@@ -48,6 +48,16 @@ pub(crate) const MAX_MESSAGES_PER_ROOM: usize = 500;
 pub(crate) const MAX_MESSAGE_AGE: Duration = Duration::from_secs(86_400 * 30);
 pub(crate) const MAX_PAYLOAD_SIZE: usize = 512 * 1024;
 
+/// Caps on the quoted-reply block, which is composed entirely of
+/// client-supplied strings.
+///
+/// [`MAX_MESSAGE_LEN`] bounds a message's own text and nothing else, so without
+/// these a client could attach a half-megabyte "preview" to a one-character
+/// message, and the server would store it in history and broadcast it to
+/// everyone in the room.
+pub(crate) const MAX_REPLY_AUTHOR_LEN: usize = 64;
+pub(crate) const MAX_REPLY_PREVIEW_LEN: usize = 200;
+
 /// Per-message bookkeeping overhead charged on top of the actual bytes, so the
 /// memory ceiling accounts for `Vec`/allocator overhead rather than only the
 /// string payload it can see.
@@ -61,7 +71,6 @@ pub(crate) const CLEANUP_BATCH_SIZE: usize = 100;
 // Rate limiting
 // ---------------------------------------------------------------------------
 
-pub(crate) const MESSAGE_RATE_LIMIT: Duration = Duration::from_millis(500);
 pub(crate) const MAX_MESSAGES_PER_WINDOW: usize = 30;
 pub(crate) const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
 pub(crate) const MAX_ROOM_JOIN_ATTEMPTS: usize = 10;

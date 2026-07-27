@@ -18,7 +18,7 @@ use axum::{
 };
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
-use http::HeaderMap;
+use http::{HeaderMap, header};
 use std::time::SystemTime;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, trace, warn};
@@ -26,17 +26,19 @@ use uuid::Uuid;
 
 use crate::config::{
     DUPLICATE_MESSAGE_WINDOW, HEARTBEAT_INTERVAL, HEARTBEAT_TIMEOUT, MAX_MESSAGE_LEN,
-    MAX_MESSAGES_PER_ROOM, MAX_MESSAGES_PER_WINDOW, MAX_PAYLOAD_SIZE, MAX_ROOM_NAME_LEN,
-    MAX_USERS_PER_ROOM, MESSAGE_RATE_LIMIT, READ_RECEIPT_MIN_INTERVAL, TYPING_EVENT_MIN_INTERVAL,
-    USER_IDLE_MESSAGE_TIMEOUT,
+    MAX_MESSAGES_PER_ROOM, MAX_PAYLOAD_SIZE, MAX_ROOM_NAME_LEN, READ_RECEIPT_MIN_INTERVAL,
+    TYPING_EVENT_MIN_INTERVAL, USER_IDLE_MESSAGE_TIMEOUT,
 };
 use crate::error::ChatError;
 use crate::identity::{OptionalUserCookie, UserCookie, create_user_cookies};
 use crate::limits::RateLimiter;
 use crate::protocol::{ClientEvent, OutgoingEvent, OutgoingMessage, SystemEvent};
 use crate::room::{ConnectionState, RoomState, UserData, create_room, user_idle_for_too_long};
+use crate::security::is_allowed_origin;
 use crate::state::AppState;
-use crate::validation::{extract_client_ip, render_message_html, validate_input, validate_message};
+use crate::validation::{
+    extract_client_ip, render_message_html, sanitize_reply, validate_input, validate_message,
+};
 
 /// Upgrades the connection to a WebSocket for `room`.
 #[axum::debug_handler]
@@ -48,6 +50,19 @@ pub async fn ws_handler(
     Path(room): Path<String>,
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
+    // WebSocket upgrades are not subject to the same-origin policy: any page on
+    // the internet can open a socket here, and the browser reports where it
+    // came from but leaves the decision to us. Rejecting foreign origins is
+    // what stops a third-party page driving a visitor's browser into these
+    // rooms and spending the connection budget.
+    let origin = headers.get("origin").and_then(|v| v.to_str().ok());
+    let host = headers.get(header::HOST).and_then(|v| v.to_str().ok());
+
+    if !is_allowed_origin(origin, host) {
+        warn!(?origin, "rejected websocket upgrade from foreign origin");
+        return ChatError::SecurityError("Origin not allowed".to_string()).into_response();
+    }
+
     let ip = extract_client_ip(&headers, Some(&conn_info));
 
     match ws_handler_inner(state, ip, cookie, room, ws).await {
@@ -101,16 +116,6 @@ pub async fn ws_handler_inner(
 
     validate_input(&room, MAX_ROOM_NAME_LEN)
         .map_err(|e| ChatError::InvalidMessage(e.to_string()))?;
-
-    {
-        let rooms = state.rooms.read().await;
-        if let Some(room_state) = rooms.get(&room)
-            && room_state.connected_user_count() >= MAX_USERS_PER_ROOM
-        {
-            warn!(room = %room, "room at capacity");
-            return Err(ChatError::RoomFull);
-        }
-    }
 
     // ---- Reservations: everything below must release on failure ----------
     if let Some(ip) = &ip {
@@ -389,9 +394,6 @@ pub async fn handle_websocket(
         let ws_tx = ws_tx.clone();
 
         async move {
-            let mut burst_count = 0usize;
-            let mut burst_started = Instant::now();
-
             while let Some(msg_result) = ws_rx.next().await {
                 let Ok(msg) = msg_result else {
                     debug!(user_id = %user_id, "socket read error");
@@ -410,16 +412,7 @@ pub async fn handle_websocket(
                             continue;
                         };
 
-                        apply_client_event(
-                            &state,
-                            &room,
-                            &user_id,
-                            &animal_name,
-                            event,
-                            &mut burst_count,
-                            &mut burst_started,
-                        )
-                        .await;
+                        apply_client_event(&state, &room, &user_id, &animal_name, event).await;
                     }
                     Message::Ping(payload) => {
                         let mut tx = ws_tx.lock().await;
@@ -529,14 +522,12 @@ pub async fn handle_websocket(
 /// Split out of the receive loop because the inline version nested ten levels
 /// deep, which is how the duplicate-message and heartbeat checks came to be
 /// interleaved with message rendering.
-async fn apply_client_event(
+pub async fn apply_client_event(
     state: &Arc<AppState>,
     room: &str,
     user_id: &str,
     animal_name: &str,
     event: ClientEvent,
-    burst_count: &mut usize,
-    burst_started: &mut Instant,
 ) {
     let mut rooms = state.rooms.write().await;
 
@@ -589,18 +580,6 @@ async fn apply_client_event(
 
             user.last_sanitized_message = Some((text.clone(), now));
 
-            // Short burst limit on top of the per-minute window: the window
-            // alone would let all 30 messages land in one second.
-            if now.duration_since(*burst_started) > MESSAGE_RATE_LIMIT {
-                *burst_count = 0;
-                *burst_started = now;
-            }
-            *burst_count += 1;
-            if *burst_count > MAX_MESSAGES_PER_WINDOW {
-                debug!(user_id = %user_id, "burst limit exceeded");
-                return;
-            }
-
             if text.len() > MAX_MESSAGE_LEN {
                 warn!(user_id = %user_id, len = text.len(), "message too long");
                 return;
@@ -618,7 +597,9 @@ async fn apply_client_event(
                 animal_name: animal_name.to_string(),
                 text: render_message_html(&text),
                 timestamp,
-                reply_to,
+                // Never store what the client sent verbatim: these fields are
+                // as attacker-controlled as the message body.
+                reply_to: reply_to.and_then(sanitize_reply),
             };
 
             user.last_message_time = now;

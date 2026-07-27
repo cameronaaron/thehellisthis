@@ -14,7 +14,7 @@ tokio = { version = "1.49.0", features = ["full"] }
 # Web framework
 axum = { version = "0.8.8", features = ["ws", "macros"] }
 axum-server = "0.8.0"
-tower-http = { version = "0.6.8", features = ["cors"] }
+tower-http = { version = "0.6.8", features = ["cors", "set-header"] }
 http = "1.4.0"
 tower-cookies = "0.11.0"
 
@@ -39,6 +39,11 @@ comrak = "0.49.0"
 ammonia = "4.1.2"
 
 [dev-dependencies]
+# `test-util` gives tests simulated time, so the housekeeping loops can be
+# asserted to actually run on their 60-second intervals without a test that
+# takes 60 seconds. It is a dev-dependency feature, so the release build never
+# gets the pausable clock.
+tokio = { version = "1.49.0", features = ["full", "test-util"] }
 tokio-tungstenite = "0.24.0"
 tower = { version = "0.5.3", features = ["util"] }
 url = "2.5.4"
