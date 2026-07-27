@@ -10,6 +10,19 @@
 //! `gyroscope`, `half-penny` and `hallway` as assignable names, plus `hallingers`
 //! and `hallway` twice. That is what the sweep test now prevents.
 
+/// Whether `name` is a name this server issues.
+///
+/// The roster is the *closed set* of display names. Anything arriving from a
+/// client claiming to be a name — an identity cookie, most of all — is checked
+/// against this rather than sanitised, because a closed set has no escaping
+/// bugs, no length to bound, and no encoding to get wrong.
+///
+/// `binary_search` is O(log n) and correct only because the roster is sorted;
+/// `animal_roster_is_sorted_unique_and_well_formed` is what keeps that true.
+pub(crate) fn is_animal_name(name: &str) -> bool {
+    ANIMAL_NAMES.binary_search(&name).is_ok()
+}
+
 /// Assignable names, one per connected user per room.
 ///
 /// A `&'static [&'static str]` rather than a `Vec<String>`: the roster is

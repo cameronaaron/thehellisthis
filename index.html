@@ -1385,6 +1385,630 @@ h1 {
         border: 1px solid var(--outline);
     }
 }
+
+/* ===================================================================
+   Attachments, reactions, emoji picker, lightbox
+   ===================================================================
+   Everything here follows §10.3: anything that appears only sometimes is
+   an overlay or is `hidden`, and never restyles a container that is also
+   present when it is absent. A control that changes the layout when it
+   shows up makes the conversation jump under the reader's eyes. */
+
+/* ---- Composer ---------------------------------------------------- */
+
+.composer {
+    flex: 1;
+    display: flex;
+    align-items: flex-end;
+    gap: 4px;
+    background: var(--surface-container-high);
+    border-radius: var(--radius-xxl);
+    padding: 4px;
+    transition: box-shadow var(--transition-short), background var(--transition-short);
+}
+
+.composer:focus-within {
+    background: var(--surface-container-highest);
+    box-shadow: 0 0 0 2px var(--primary);
+}
+
+.composer .input-wrapper {
+    flex: 1;
+    min-width: 0;
+    background: transparent;
+    box-shadow: none;
+}
+
+.composer .input-wrapper:focus-within {
+    box-shadow: none;
+}
+
+.composer-action {
+    flex: none;
+    width: 40px;
+    height: 40px;
+    display: grid;
+    place-items: center;
+    border: none;
+    background: transparent;
+    color: var(--on-surface-variant);
+    border-radius: var(--radius-full);
+    cursor: pointer;
+    font-size: 22px;
+    transition: background var(--transition-short), color var(--transition-short);
+}
+
+.composer-action:hover {
+    background: color-mix(in srgb, var(--on-surface) 8%, transparent);
+    color: var(--on-surface);
+}
+
+.composer-action[aria-expanded="true"] {
+    background: var(--primary-container);
+    color: var(--on-primary-container);
+}
+
+/* ---- Staged attachment ------------------------------------------- */
+
+.attachment-tray {
+    flex: none;
+    padding: 8px 16px 0;
+    background: var(--surface);
+}
+
+.attachment-tray[hidden] {
+    display: none;
+}
+
+.attachment-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px;
+    padding-right: 4px;
+    background: var(--surface-container-high);
+    border-radius: var(--radius-md);
+    max-width: 100%;
+    animation: attachment-in var(--transition-medium) both;
+}
+
+@keyframes attachment-in {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: none; }
+}
+
+.attachment-thumb {
+    width: 48px;
+    height: 48px;
+    object-fit: cover;
+    border-radius: var(--radius-sm);
+    background: var(--surface-container-highest);
+    flex: none;
+}
+
+.attachment-meta {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    gap: 2px;
+}
+
+.attachment-name {
+    font-size: 13px;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.attachment-size {
+    font-size: 12px;
+    color: var(--on-surface-variant);
+}
+
+.attachment-remove {
+    width: 36px;
+    height: 36px;
+    display: grid;
+    place-items: center;
+    border: none;
+    background: transparent;
+    color: var(--on-surface-variant);
+    border-radius: var(--radius-full);
+    cursor: pointer;
+    font-size: 18px;
+    flex: none;
+}
+
+.attachment-remove:hover {
+    background: color-mix(in srgb, var(--on-surface) 8%, transparent);
+}
+
+/* ---- Images inside messages -------------------------------------- */
+
+/* The wrapper carries an aspect-ratio built from the server's width/height,
+   so the space an image will occupy is reserved before a single byte of it
+   decodes. Without it every arriving picture shoves the conversation
+   downward as it loads — the layout shift §10.3 is about. */
+.message-image-wrap {
+    display: block;
+    margin-top: 6px;
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    background: var(--surface-container-highest);
+    max-width: min(320px, 100%);
+    cursor: zoom-in;
+    border: none;
+    padding: 0;
+    position: relative;
+    line-height: 0;
+}
+
+.message.sent .message-image-wrap {
+    background: color-mix(in srgb, var(--on-primary) 15%, transparent);
+}
+
+.message-image {
+    width: 100%;
+    height: 100%;
+    display: block;
+    object-fit: cover;
+}
+
+.message-image-wrap:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+}
+
+/* A picture that aged out of the room's budget. The message stays, so the
+   conversation keeps its shape; the space stays too, so nothing reflows. */
+.message-image-faded {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: 100%;
+    height: 100%;
+    color: var(--on-surface-variant);
+    font-size: 12px;
+    text-align: center;
+    padding: 12px;
+    line-height: 1.4;
+}
+
+.message-image-faded .icon {
+    font-size: 24px;
+    opacity: 0.7;
+}
+
+/* ---- Reactions --------------------------------------------------- */
+
+.reactions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 6px;
+}
+
+.reactions:empty {
+    display: none;
+}
+
+.reaction-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    min-height: 26px;
+    border-radius: var(--radius-full);
+    border: 1px solid var(--outline-variant);
+    background: var(--surface-container-low);
+    color: var(--on-surface);
+    font-size: 13px;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background var(--transition-short), border-color var(--transition-short),
+                transform var(--transition-short);
+}
+
+.reaction-pill:hover {
+    background: var(--surface-container-high);
+}
+
+.reaction-pill:active {
+    transform: scale(0.94);
+}
+
+.reaction-pill.mine {
+    background: var(--primary-container);
+    border-color: var(--primary);
+    color: var(--on-primary-container);
+}
+
+.reaction-emoji {
+    font-size: 14px;
+    line-height: 1;
+}
+
+.reaction-count {
+    font-variant-numeric: tabular-nums;
+    font-weight: 500;
+}
+
+/* The hover toolbar. Fixed-positioned so it is never part of any message's
+   box — a bar that reserved space would resize every row it touched. */
+.reaction-bar {
+    position: fixed;
+    z-index: 900;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 4px;
+    background: var(--surface-container-lowest);
+    border: 1px solid var(--outline-variant);
+    border-radius: var(--radius-full);
+    box-shadow: var(--shadow-2);
+    animation: reaction-bar-in var(--transition-short) both;
+}
+
+.reaction-bar[hidden] {
+    display: none;
+}
+
+@keyframes reaction-bar-in {
+    from { opacity: 0; transform: scale(0.9); }
+    to   { opacity: 1; transform: none; }
+}
+
+.reaction-bar button {
+    width: 32px;
+    height: 32px;
+    display: grid;
+    place-items: center;
+    border: none;
+    background: transparent;
+    border-radius: var(--radius-full);
+    cursor: pointer;
+    font-size: 17px;
+    line-height: 1;
+    transition: background var(--transition-short), transform var(--transition-short);
+}
+
+.reaction-bar button:hover {
+    background: var(--surface-container-high);
+    transform: scale(1.15);
+}
+
+/* ---- Emoji picker ------------------------------------------------- */
+
+.emoji-panel {
+    position: fixed;
+    z-index: 1000;
+    right: 16px;
+    bottom: 84px;
+    width: min(352px, calc(100vw - 32px));
+    max-height: min(420px, calc(100vh - 160px));
+    display: flex;
+    flex-direction: column;
+    background: var(--surface-container-lowest);
+    border: 1px solid var(--outline-variant);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-3);
+    overflow: hidden;
+    animation: emoji-panel-in var(--transition-medium) both;
+}
+
+.emoji-panel[hidden] {
+    display: none;
+}
+
+@keyframes emoji-panel-in {
+    from { opacity: 0; transform: translateY(8px) scale(0.98); }
+    to   { opacity: 1; transform: none; }
+}
+
+.emoji-search-row {
+    position: relative;
+    display: flex;
+    align-items: center;
+    padding: 12px 12px 8px;
+}
+
+.emoji-search-icon {
+    position: absolute;
+    left: 24px;
+    font-size: 18px;
+    color: var(--on-surface-variant);
+    pointer-events: none;
+}
+
+.emoji-search {
+    flex: 1;
+    height: 40px;
+    padding: 0 12px 0 40px;
+    border: none;
+    border-radius: var(--radius-full);
+    background: var(--surface-container-high);
+    color: var(--on-surface);
+    font-family: inherit;
+    /* 16px so iOS does not zoom the page when this is focused. */
+    font-size: 16px;
+}
+
+.emoji-tabs {
+    display: flex;
+    gap: 2px;
+    padding: 0 8px 8px;
+    overflow-x: auto;
+    scrollbar-width: none;
+    flex: none;
+}
+
+.emoji-tabs::-webkit-scrollbar {
+    display: none;
+}
+
+.emoji-tab {
+    flex: none;
+    width: 36px;
+    height: 32px;
+    display: grid;
+    place-items: center;
+    border: none;
+    background: transparent;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-size: 17px;
+    line-height: 1;
+    opacity: 0.6;
+    transition: background var(--transition-short), opacity var(--transition-short);
+}
+
+.emoji-tab:hover {
+    background: var(--surface-container-high);
+    opacity: 1;
+}
+
+.emoji-tab[aria-selected="true"] {
+    background: var(--primary-container);
+    opacity: 1;
+}
+
+.emoji-grid {
+    flex: 1;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 0 8px 12px;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(40px, 1fr));
+    gap: 2px;
+    align-content: start;
+}
+
+.emoji-group-label {
+    grid-column: 1 / -1;
+    padding: 10px 4px 4px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--on-surface-variant);
+    position: sticky;
+    top: 0;
+    background: var(--surface-container-lowest);
+}
+
+.emoji-cell {
+    aspect-ratio: 1;
+    display: grid;
+    place-items: center;
+    border: none;
+    background: transparent;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-size: 22px;
+    line-height: 1;
+    transition: background var(--transition-short), transform var(--transition-short);
+}
+
+.emoji-cell:hover,
+.emoji-cell.active {
+    background: var(--surface-container-high);
+    transform: scale(1.12);
+}
+
+.emoji-empty {
+    padding: 24px 16px 32px;
+    text-align: center;
+    color: var(--on-surface-variant);
+    font-size: 13px;
+}
+
+/* ---- Jump to latest ---------------------------------------------- */
+
+.jump-latest {
+    position: fixed;
+    right: 20px;
+    bottom: 92px;
+    z-index: 500;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 40px;
+    padding: 0 14px;
+    border: none;
+    border-radius: var(--radius-full);
+    background: var(--surface-container-lowest);
+    color: var(--on-surface);
+    box-shadow: var(--shadow-2);
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 18px;
+    animation: jump-in var(--transition-medium) both;
+}
+
+.jump-latest[hidden] {
+    display: none;
+}
+
+@keyframes jump-in {
+    from { opacity: 0; transform: translateY(10px); }
+    to   { opacity: 1; transform: none; }
+}
+
+.jump-latest-count {
+    font-size: 12px;
+    font-weight: 600;
+    padding: 1px 7px;
+    border-radius: var(--radius-full);
+    background: var(--primary);
+    color: var(--on-primary);
+    font-variant-numeric: tabular-nums;
+}
+
+.jump-latest-count[hidden] {
+    display: none;
+}
+
+/* ---- Lightbox ----------------------------------------------------- */
+
+.lightbox {
+    position: fixed;
+    inset: 0;
+    z-index: 2000;
+    display: grid;
+    place-items: center;
+    padding: 32px;
+    background: rgba(0, 0, 0, 0.86);
+    animation: fade-in var(--transition-medium) both;
+}
+
+.lightbox[hidden] {
+    display: none;
+}
+
+@keyframes fade-in {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+
+.lightbox-image {
+    max-width: 100%;
+    max-height: 100%;
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-4);
+}
+
+.lightbox-close {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    width: 44px;
+    height: 44px;
+    display: grid;
+    place-items: center;
+    border: none;
+    border-radius: var(--radius-full);
+    background: rgba(255, 255, 255, 0.14);
+    color: #fff;
+    cursor: pointer;
+    font-size: 22px;
+}
+
+.lightbox-close:hover {
+    background: rgba(255, 255, 255, 0.24);
+}
+
+/* ---- Drag and drop ------------------------------------------------ */
+
+.drop-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1500;
+    display: grid;
+    place-items: center;
+    background: color-mix(in srgb, var(--primary) 22%, transparent);
+    backdrop-filter: blur(2px);
+    pointer-events: none;
+}
+
+.drop-overlay[hidden] {
+    display: none;
+}
+
+.drop-overlay-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    padding: 32px 40px;
+    border-radius: var(--radius-lg);
+    background: var(--surface-container-lowest);
+    border: 2px dashed var(--primary);
+    box-shadow: var(--shadow-3);
+    font-size: 15px;
+    font-weight: 500;
+}
+
+.drop-overlay-card .icon {
+    font-size: 32px;
+    color: var(--primary);
+}
+
+/* ---- Date separators --------------------------------------------- */
+
+.date-separator {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 16px 0 8px;
+    color: var(--on-surface-variant);
+    font-size: 12px;
+    font-weight: 500;
+}
+
+.date-separator::before,
+.date-separator::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--outline-variant);
+}
+
+/* ---- Motion preferences ------------------------------------------ */
+
+@media (prefers-reduced-motion: reduce) {
+    .attachment-chip,
+    .reaction-bar,
+    .emoji-panel,
+    .jump-latest,
+    .lightbox {
+        animation: none;
+    }
+
+    .reaction-pill:active,
+    .reaction-bar button:hover,
+    .emoji-cell:hover,
+    .emoji-cell.active {
+        transform: none;
+    }
+}
+
+/* ---- Small screens ------------------------------------------------ */
+
+@media (max-width: 600px) {
+    .emoji-panel {
+        left: 8px;
+        right: 8px;
+        width: auto;
+        bottom: 76px;
+    }
+
+    .message-image-wrap {
+        max-width: 100%;
+    }
+}
 </style>
 </head>
 <body>
@@ -1402,6 +2026,12 @@ h1 {
 <g id="i-volume-on"><path d="M11 5L6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></g>
 <g id="i-volume-off"><path d="M11 5L6 9H2v6h4l5 4z"/><path d="M23 9l-6 6M17 9l6 6"/></g>
 <g id="i-hourglass"><path d="M6 2h12M6 22h12M6 2v5l6 5 6-5V2M6 22v-5l6-5 6 5v5"/></g>
+<g id="i-mood"><circle cx="12" cy="12" r="9"/><path d="M8.5 14.5a4.5 4.5 0 0 0 7 0"/><path d="M9 9.5h.01M15 9.5h.01"/></g>
+<g id="i-image"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.5"/><path d="M21 16l-5-5-5 5-2-2-6 6"/></g>
+<g id="i-arrow-down"><path d="M12 5v14M6 13l6 6 6-6"/></g>
+<g id="i-search"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></g>
+<g id="i-add-reaction"><path d="M21 12a9 9 0 1 1-6.2-8.6"/><path d="M8.5 14.5a4.5 4.5 0 0 0 7 0"/><path d="M9 9.5h.01M15 9.5h.01"/><path d="M19 2v5M16.5 4.5h5"/></g>
+<g id="i-broken-image"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 14l4-4 3 3M14 12l3-3 4 4"/><path d="M3 3l18 18"/></g>
 </defs></svg>
 
 
@@ -1464,6 +2094,28 @@ h1 {
 
 <div id="chat" role="log" aria-live="polite" aria-label="Chat messages" tabindex="0"></div>
 
+<!-- Jump-to-latest. An overlay (§10.3): it appears and disappears with the
+     scroll position and must never take part in the layout, or the
+     conversation would resize itself every time the reader scrolled up. -->
+<button class="jump-latest" id="jumpLatest" type="button" hidden aria-label="Jump to latest messages">
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-arrow-down"/></svg>
+    <span class="jump-latest-count" id="jumpLatestCount" hidden>0</span>
+</button>
+
+<!-- Staged image, shown between picking one and sending it. -->
+<div id="attachmentTray" class="attachment-tray" hidden>
+    <div class="attachment-chip">
+        <img id="attachmentPreview" class="attachment-thumb" alt="Selected image preview"/>
+        <div class="attachment-meta">
+            <span class="attachment-name" id="attachmentName">image</span>
+            <span class="attachment-size" id="attachmentSize"></span>
+        </div>
+        <button class="attachment-remove" id="attachmentRemove" type="button" aria-label="Remove image">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-close"/></svg>
+        </button>
+    </div>
+</div>
+
 <div id="typingIndicator" class="typing-indicator" role="status" aria-live="polite">
     <div class="typing-dots">
         <span class="typing-dot"></span>
@@ -1487,25 +2139,68 @@ h1 {
 </div>
 
 <footer class="input-container">
-    <div class="input-wrapper">
-        <input 
-            id="messageInput" 
-            type="text" 
-            placeholder="Type a message..." 
-            aria-label="Message input" 
-            autocomplete="off" 
-            maxlength="8000"
-            spellcheck="true"
-            enterkeyhint="send"
-        />
-        <div class="input-info">
-            <span id="charCount">0</span> / 8000
+    <div class="composer">
+        <button class="composer-action" id="attachBtn" type="button" aria-label="Attach an image">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-image"/></svg>
+        </button>
+        <!-- accept is a hint to the picker; the server decides what is really
+             allowed, from the payload's own bytes. -->
+        <input id="fileInput" type="file" accept="image/png,image/jpeg,image/gif,image/webp" hidden/>
+        <div class="input-wrapper">
+            <input
+                id="messageInput"
+                type="text"
+                placeholder="Message"
+                aria-label="Message input"
+                autocomplete="off"
+                maxlength="8000"
+                spellcheck="true"
+                enterkeyhint="send"
+            />
+            <div class="input-info">
+                <span id="charCount">0</span> / 8000
+            </div>
         </div>
+        <button class="composer-action" id="emojiBtn" type="button" aria-label="Insert emoji"
+                aria-expanded="false" aria-haspopup="dialog" aria-controls="emojiPanel">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-mood"/></svg>
+        </button>
     </div>
     <button class="send-button" id="sendBtn" aria-label="Send message" type="button">
         <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-send"/></svg>
     </button>
 </footer>
+
+<!-- Emoji picker. Built once and reused; its grid is filled by the client. -->
+<div id="emojiPanel" class="emoji-panel" role="dialog" aria-label="Choose an emoji" aria-modal="false" hidden>
+    <div class="emoji-search-row">
+        <svg class="icon emoji-search-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-search"/></svg>
+        <input id="emojiSearch" class="emoji-search" type="text" placeholder="Search emoji"
+               aria-label="Search emoji" autocomplete="off" spellcheck="false"/>
+    </div>
+    <div class="emoji-tabs" id="emojiTabs" role="tablist" aria-label="Emoji categories"></div>
+    <div class="emoji-grid" id="emojiGrid" role="listbox" aria-label="Emoji" tabindex="0"></div>
+    <div class="emoji-empty" id="emojiEmpty" hidden>No emoji found</div>
+</div>
+
+<!-- Quick reaction bar, positioned next to whichever message is hovered. -->
+<div id="reactionBar" class="reaction-bar" role="toolbar" aria-label="React to message" hidden></div>
+
+<!-- Full-size image viewer. -->
+<div id="lightbox" class="lightbox" role="dialog" aria-modal="true" aria-label="Image viewer" hidden>
+    <button class="lightbox-close" id="lightboxClose" type="button" aria-label="Close image">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-close"/></svg>
+    </button>
+    <img id="lightboxImage" class="lightbox-image" alt=""/>
+</div>
+
+<!-- Drop target overlay, shown only while a file is being dragged over. -->
+<div id="dropOverlay" class="drop-overlay" hidden aria-hidden="true">
+    <div class="drop-overlay-card">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-image"/></svg>
+        <span>Drop an image to send it</span>
+    </div>
+</div>
 
 <script src="/app.js" defer></script>
 </body>

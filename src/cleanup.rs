@@ -44,30 +44,45 @@ pub async fn cleanup_rooms(state: &Arc<AppState>) {
             .collect();
 
         for uid in stale {
-            if let Some(user) = room.users.remove(&uid) {
-                room.available_animals.push_back(user.animal_name);
+            // Nothing to hand back to the name pool: the pool is a rotation
+            // over the roster, and whether a name is free is derived from
+            // `users` — which this removal has just updated. Putting names back
+            // by hand is what used to make the pool grow and fill with
+            // non-roster names (see `RoomState::assign_animal`).
+            if room.users.remove(&uid).is_some() {
                 debug!(user_id = %uid, room = %room_name, "reclaimed abandoned user");
             }
         }
 
-        // `main` is permanent, so it fades instead of being deleted.
-        if room_name == MAIN_ROOM {
-            let idle_for = now.duration_since(room.last_activity);
-            let target = if idle_for >= MAIN_ROOM_FADE_IDLE {
-                MAIN_ROOM_FADE_KEEP
-            } else {
-                MAX_MESSAGES_PER_ROOM
-            };
+        // History is bounded here for *every* room, not only on the join path.
+        // Trimming used to happen when somebody joined, plus the `main` fade
+        // below; a room that was busy but had no new joiners therefore grew
+        // without limit, and since the byte ceiling is process-wide, one such
+        // room could fill it and make every room on the server start dropping
+        // messages (ENGINEERING-STANDARDS.md §3).
+        //
+        // `main` is permanent, so instead of being deleted it fades: once idle
+        // it trims harder than everyone else.
+        let is_main = room_name == MAIN_ROOM;
+        let idle_for = now.duration_since(room.last_activity);
+        let target = if is_main && idle_for >= MAIN_ROOM_FADE_IDLE {
+            MAIN_ROOM_FADE_KEEP
+        } else {
+            MAX_MESSAGES_PER_ROOM
+        };
 
-            if room.chat_history.len() > target {
-                info!(
-                    from = room.chat_history.len(),
-                    to = target,
-                    idle_s = idle_for.as_secs(),
-                    "fading main room history"
-                );
-                room.retain_newest(target, &state.memory_tracker);
-            }
+        if room.chat_history.len() > target {
+            info!(
+                room = %room_name,
+                from = room.chat_history.len(),
+                to = target,
+                idle_s = idle_for.as_secs(),
+                "trimming room history"
+            );
+            room.retain_newest(target, &state.memory_tracker);
+        }
+
+        if is_main {
             continue;
         }
 

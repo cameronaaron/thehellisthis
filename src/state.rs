@@ -74,7 +74,10 @@ impl AppState {
     ///
     /// The write lock is taken only once the cheap checks say there is work.
     pub async fn cleanup(&self) {
+        // Every map keyed by a client address gets swept here (§3.5). Adding
+        // one without adding it to this line is how the last two grew unbounded.
         self.connection_pool.cleanup_stale().await;
+        self.security_manager.cleanup_stale().await;
 
         if !self.memory_tracker.should_gc() {
             return;

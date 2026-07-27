@@ -7,10 +7,13 @@
 use crate::animals::ANIMAL_NAMES;
 use crate::cleanup::cleanup_rooms;
 use crate::config::*;
+use crate::emoji::{REACTION_EMOJI, is_reaction_emoji};
 use crate::error::ChatError;
 use crate::identity::{OptionalUserCookie, create_user_cookies};
 use crate::limits::{ConnectionPool, MemoryTracker, RateLimiter, ResourceMonitor, SecurityManager};
-use crate::protocol::{ClientEvent, OutgoingEvent, OutgoingMessage, ReplyInfo, SystemEvent};
+use crate::protocol::{
+    Attachment, ClientEvent, OutgoingEvent, OutgoingMessage, ReplyInfo, SystemEvent,
+};
 use crate::room::{ConnectionState, RoomState, UserData, create_room, user_idle_for_too_long};
 use crate::routes::{
     health_handler, main_room_handler, metrics_handler, robots_txt_handler, room_handler,
@@ -20,7 +23,8 @@ use crate::security::is_allowed_origin;
 use crate::session::{admit_user, apply_client_event, cleanup_user, ws_handler};
 use crate::state::AppState;
 use crate::validation::{
-    extract_client_ip, hash_client_address, sanitize_reply, validate_input, validate_message,
+    extract_client_ip, hash_client_address, sanitize_attachment, sanitize_reply, validate_input,
+    validate_message,
 };
 use crate::{
     DEFAULT_PORT, build_router, generate_random_room_name, init_tracing, resolve_port, serve,
@@ -350,6 +354,8 @@ async fn test_message_added_to_room_history() {
         text: "<p>Hello</p>".to_string(),
         timestamp: "1000".to_string(),
         reply_to: None,
+        attachment: None,
+        reactions: Vec::new(),
     };
 
     room.add_message(msg.clone(), &tracker);
@@ -368,6 +374,8 @@ async fn test_message_memory_tracking() {
         text: "<p>Test message</p>".to_string(),
         timestamp: "1000".to_string(),
         reply_to: None,
+        attachment: None,
+        reactions: Vec::new(),
     };
 
     let msg_size = msg.estimate_size();
@@ -390,6 +398,8 @@ async fn test_preserve_messages_trims_and_updates_tracker() {
             text: "<p>Test</p>".to_string(),
             timestamp: "1000".to_string(),
             reply_to: None,
+            attachment: None,
+            reactions: Vec::new(),
         };
         let msg_size = msg.estimate_size();
         tracker.add_bytes(msg_size);
@@ -419,6 +429,8 @@ async fn test_trim_to_max_messages_limits_history() {
             text: "<p>Test</p>".to_string(),
             timestamp: "1000".to_string(),
             reply_to: None,
+            attachment: None,
+            reactions: Vec::new(),
         };
         let size = msg.estimate_size();
         tracker.add_bytes(size);
@@ -479,6 +491,7 @@ async fn test_user_data_initial_state() {
         last_read_receipt_event: None,
         rate_limiter: RateLimiter::new(),
         last_sanitized_message: None,
+        last_reaction_event: None,
     };
 
     assert_eq!(user.user_id, "test-id");
@@ -558,6 +571,8 @@ async fn test_cleanup_messages_by_age() {
         text: "<p>Old</p>".to_string(),
         timestamp: old_timestamp,
         reply_to: None,
+        attachment: None,
+        reactions: Vec::new(),
     };
 
     // Fresh message
@@ -568,6 +583,8 @@ async fn test_cleanup_messages_by_age() {
         text: "<p>Fresh</p>".to_string(),
         timestamp: format!("{}", now_ms),
         reply_to: None,
+        attachment: None,
+        reactions: Vec::new(),
     };
 
     let old_size = old_msg.estimate_size();
@@ -596,6 +613,8 @@ async fn test_room_memory_accounting() {
         text: "<p>First</p>".to_string(),
         timestamp: "1000".to_string(),
         reply_to: None,
+        attachment: None,
+        reactions: Vec::new(),
     };
     let msg1_size = msg1.estimate_size();
 
@@ -608,6 +627,8 @@ async fn test_room_memory_accounting() {
         text: "<p>Second</p>".to_string(),
         timestamp: "2000".to_string(),
         reply_to: None,
+        attachment: None,
+        reactions: Vec::new(),
     };
     let msg2_size = msg2.estimate_size();
 
@@ -641,6 +662,7 @@ async fn test_user_count_with_mixed_states() {
         last_read_receipt_event: None,
         rate_limiter: RateLimiter::new(),
         last_sanitized_message: None,
+        last_reaction_event: None,
     };
     room.users.insert("user1".to_string(), connected_user);
 
@@ -657,6 +679,7 @@ async fn test_user_count_with_mixed_states() {
         last_read_receipt_event: None,
         rate_limiter: RateLimiter::new(),
         last_sanitized_message: None,
+        last_reaction_event: None,
     };
     room.users.insert("user2".to_string(), disconnected_user);
 
@@ -690,6 +713,7 @@ async fn test_stale_user_detection() {
         last_read_receipt_event: None,
         rate_limiter: RateLimiter::new(),
         last_sanitized_message: None,
+        last_reaction_event: None,
     };
 
     let is_stale = if let ConnectionState::Connected { last_heartbeat, .. } = user.connection_state
@@ -722,6 +746,7 @@ async fn test_fresh_user_not_stale() {
         last_read_receipt_event: None,
         rate_limiter: RateLimiter::new(),
         last_sanitized_message: None,
+        last_reaction_event: None,
     };
 
     let is_stale = if let ConnectionState::Connected { last_heartbeat, .. } = user.connection_state
@@ -757,6 +782,7 @@ async fn test_room_capacity_tracking() {
             last_read_receipt_event: None,
             rate_limiter: RateLimiter::new(),
             last_sanitized_message: None,
+            last_reaction_event: None,
         };
         room.users.insert(format!("user-{}", i), user);
     }
@@ -780,6 +806,8 @@ async fn test_outgoing_message_size_estimation() {
         text: "<p>A long test message with more content</p>".to_string(),
         timestamp: "1234567890".to_string(),
         reply_to: None,
+        attachment: None,
+        reactions: Vec::new(),
     };
 
     let size = msg.estimate_size();
@@ -809,6 +837,8 @@ async fn test_concurrent_message_additions() {
                 text: "<p>Test</p>".to_string(),
                 timestamp: "1000".to_string(),
                 reply_to: None,
+                attachment: None,
+                reactions: Vec::new(),
             };
             room_clone.lock().await.add_message(msg, &tracker_clone);
         }));
@@ -835,6 +865,7 @@ async fn test_socket_message_rate_limiting_per_user() {
         last_read_receipt_event: None,
         rate_limiter: RateLimiter::new(),
         last_sanitized_message: None,
+        last_reaction_event: None,
     };
 
     // Fill window for this user
@@ -911,6 +942,8 @@ async fn test_message_ordering_by_timestamp() {
         text: "<p>First</p>".to_string(),
         timestamp: "1000".to_string(),
         reply_to: None,
+        attachment: None,
+        reactions: Vec::new(),
     };
 
     let msg2 = OutgoingMessage {
@@ -920,6 +953,8 @@ async fn test_message_ordering_by_timestamp() {
         text: "<p>Second</p>".to_string(),
         timestamp: "2000".to_string(),
         reply_to: None,
+        attachment: None,
+        reactions: Vec::new(),
     };
 
     room.chat_history.push(msg1);
@@ -967,6 +1002,7 @@ async fn test_broadcast_user_count_sends_event() {
             last_read_receipt_event: None,
             rate_limiter: RateLimiter::new(),
             last_sanitized_message: None,
+            last_reaction_event: None,
         },
     );
 
@@ -987,6 +1023,7 @@ async fn test_broadcast_user_count_sends_event() {
             last_read_receipt_event: None,
             rate_limiter: RateLimiter::new(),
             last_sanitized_message: None,
+            last_reaction_event: None,
         },
     );
 
@@ -1048,6 +1085,8 @@ async fn test_prune_old_messages_updates_tracker() {
         text: "<p>One</p>".to_string(),
         timestamp: "1000".to_string(),
         reply_to: None,
+        attachment: None,
+        reactions: Vec::new(),
     };
     let msg2 = OutgoingMessage {
         message_id: uuid::Uuid::new_v4(),
@@ -1056,6 +1095,8 @@ async fn test_prune_old_messages_updates_tracker() {
         text: "<p>Two</p>".to_string(),
         timestamp: "2000".to_string(),
         reply_to: None,
+        attachment: None,
+        reactions: Vec::new(),
     };
     let msg3 = OutgoingMessage {
         message_id: uuid::Uuid::new_v4(),
@@ -1064,6 +1105,8 @@ async fn test_prune_old_messages_updates_tracker() {
         text: "<p>Three</p>".to_string(),
         timestamp: "3000".to_string(),
         reply_to: None,
+        attachment: None,
+        reactions: Vec::new(),
     };
 
     let size1 = msg1.estimate_size();
@@ -1100,6 +1143,8 @@ async fn test_add_message_drops_when_global_memory_full() {
         text: "<p>Test</p>".to_string(),
         timestamp: "1000".to_string(),
         reply_to: None,
+        attachment: None,
+        reactions: Vec::new(),
     };
 
     room.add_message(msg, &tracker);
@@ -1132,6 +1177,8 @@ async fn test_cleanup_messages_keeps_invalid_timestamp() {
         text: "<p>Bad time</p>".to_string(),
         timestamp: "not-a-number".to_string(),
         reply_to: None,
+        attachment: None,
+        reactions: Vec::new(),
     };
 
     let size = msg.estimate_size();
@@ -1760,10 +1807,12 @@ async fn test_connection_pool_cleanup_stale() {
     let pool = ConnectionPool::new();
     {
         let mut counters = pool.ip_counters.write().await;
+        // Zero live connections, so age alone decides — see
+        // `a_live_connection_counter_survives_the_stale_sweep`.
         counters.insert(
             "10.10.10.10".to_string(),
             (
-                AtomicUsize::new(1),
+                AtomicUsize::new(0),
                 Instant::now() - Duration::from_secs(7200),
             ),
         );
@@ -2458,6 +2507,8 @@ async fn test_room_message_history_capacity() {
                     .as_secs()
                     .to_string(),
                 reply_to: None,
+                attachment: None,
+                reactions: Vec::new(),
             });
         }
 
@@ -2867,6 +2918,8 @@ async fn test_room_cleanup_preserves_recent_messages() {
                     .as_secs()
                     .to_string(),
                 reply_to: None,
+                attachment: None,
+                reactions: Vec::new(),
             });
         }
 
@@ -3262,6 +3315,8 @@ async fn test_message_history_ordering() {
         text: "First".to_string(),
         timestamp: "1000000000".to_string(),
         reply_to: None,
+        attachment: None,
+        reactions: Vec::new(),
     };
 
     let msg2 = OutgoingMessage {
@@ -3271,6 +3326,8 @@ async fn test_message_history_ordering() {
         text: "Second".to_string(),
         timestamp: "1000000001".to_string(),
         reply_to: None,
+        attachment: None,
+        reactions: Vec::new(),
     };
 
     room_state.chat_history.push(msg1.clone());
@@ -3982,6 +4039,7 @@ async fn test_app_state_shutdown() {
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
                 last_sanitized_message: None,
+                last_reaction_event: None,
             },
         );
         rooms.insert("test-room".to_string(), room);
@@ -4317,6 +4375,8 @@ async fn test_outgoing_event_serialization() {
         text: "Hello".to_string(),
         timestamp: "1234567890".to_string(),
         reply_to: None,
+        attachment: None,
+        reactions: Vec::new(),
     };
 
     let event = OutgoingEvent::Message {
@@ -4348,7 +4408,7 @@ async fn test_client_event_message_deserialization() {
     let json = r#"{"type":"Message","text":"Hello world"}"#;
     let event: ClientEvent = serde_json::from_str(json).unwrap();
     match event {
-        ClientEvent::Message { text, reply_to } => {
+        ClientEvent::Message { text, reply_to, .. } => {
             assert_eq!(text, "Hello world");
             assert!(reply_to.is_none());
         }
@@ -4460,6 +4520,8 @@ async fn test_room_state_add_message_updates_memory() {
         text: "Test message".to_string(),
         timestamp: "1234567890".to_string(),
         reply_to: None,
+        attachment: None,
+        reactions: Vec::new(),
     };
 
     let initial_memory = room_state.total_memory_bytes.load(Ordering::Relaxed);
@@ -4484,6 +4546,8 @@ async fn test_room_state_preserve_messages() {
             text: format!("Message {}", i),
             timestamp: "1234567890".to_string(),
             reply_to: None,
+            attachment: None,
+            reactions: Vec::new(),
         };
         room_state.add_message(msg, &memory_tracker);
     }
@@ -4509,6 +4573,8 @@ async fn test_room_state_trim_messages_over_limit() {
             text: format!("Message {}", i),
             timestamp: "1234567890".to_string(),
             reply_to: None,
+            attachment: None,
+            reactions: Vec::new(),
         };
         room_state.add_message(msg, &memory_tracker);
     }
@@ -4537,6 +4603,7 @@ async fn test_user_data_rate_limiter_integration() {
         last_read_receipt_event: None,
         rate_limiter: RateLimiter::new(),
         last_sanitized_message: None,
+        last_reaction_event: None,
     };
 
     // Should be able to send messages initially
@@ -4660,6 +4727,7 @@ async fn test_metrics_handler_with_users() {
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
                 last_sanitized_message: None,
+                last_reaction_event: None,
             },
         );
         rooms.insert("test-room".to_string(), room);
@@ -4831,6 +4899,7 @@ async fn test_is_user_allowed_at_capacity() {
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
                 last_sanitized_message: None,
+                last_reaction_event: None,
             },
         );
     }
@@ -4862,6 +4931,7 @@ async fn test_is_user_allowed_existing_user() {
             last_read_receipt_event: None,
             rate_limiter: RateLimiter::new(),
             last_sanitized_message: None,
+            last_reaction_event: None,
         },
     );
 
@@ -4893,6 +4963,7 @@ async fn test_is_user_allowed_new_user_under_capacity() {
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
                 last_sanitized_message: None,
+                last_reaction_event: None,
             },
         );
     }
@@ -4921,6 +4992,8 @@ async fn test_trigger_cleanup_when_memory_high() {
             text: format!("Message {}", i),
             timestamp: "1234567890".to_string(),
             reply_to: None,
+            attachment: None,
+            reactions: Vec::new(),
         };
         room_state.chat_history.push(msg);
     }
@@ -4949,6 +5022,8 @@ async fn test_trigger_cleanup_when_memory_low() {
             text: format!("Message {}", i),
             timestamp: "1234567890".to_string(),
             reply_to: None,
+            attachment: None,
+            reactions: Vec::new(),
         };
         room_state.chat_history.push(msg);
     }
@@ -4996,6 +5071,8 @@ async fn test_prune_old_messages_empties_when_all_old() {
             text: format!("Old message {}", i),
             timestamp: old_time.to_string(),
             reply_to: None,
+            attachment: None,
+            reactions: Vec::new(),
         };
         room_state.add_message(msg, &memory_tracker);
     }
@@ -5049,6 +5126,8 @@ async fn test_outgoing_message_large_text_size_estimation() {
         text: large_text.clone(),
         timestamp: "1234567890".to_string(),
         reply_to: None,
+        attachment: None,
+        reactions: Vec::new(),
     };
 
     let size = msg.estimate_size();
@@ -5113,6 +5192,7 @@ async fn test_room_state_user_removal_returns_animal() {
             last_read_receipt_event: None,
             rate_limiter: RateLimiter::new(),
             last_sanitized_message: None,
+            last_reaction_event: None,
         },
     );
 
@@ -5219,6 +5299,8 @@ async fn test_cleanup_batch_size_limit() {
             text: format!("Old message {}", i),
             timestamp: old_time.to_string(),
             reply_to: None,
+            attachment: None,
+            reactions: Vec::new(),
         };
         room_state.chat_history.push(msg);
         memory_tracker.add_bytes(50);
@@ -5370,6 +5452,7 @@ async fn test_rate_limiter_existing_user_rate_limited() {
             last_read_receipt_event: None,
             rate_limiter,
             last_sanitized_message: None,
+            last_reaction_event: None,
         },
     );
 
@@ -5404,6 +5487,8 @@ async fn test_prune_old_messages_partial() {
             text: format!("Old message {}", i),
             timestamp: old_time.to_string(),
             reply_to: None,
+            attachment: None,
+            reactions: Vec::new(),
         };
         room_state.chat_history.push(msg);
         memory_tracker.add_bytes(50);
@@ -5418,6 +5503,8 @@ async fn test_prune_old_messages_partial() {
             text: format!("New message {}", i),
             timestamp: new_time.to_string(),
             reply_to: None,
+            attachment: None,
+            reactions: Vec::new(),
         };
         room_state.chat_history.push(msg);
         memory_tracker.add_bytes(50);
@@ -5846,6 +5933,8 @@ async fn test_message_contains_user_id_for_alignment() {
         text: "<p>Test message</p>".to_string(),
         timestamp: "1234567890".to_string(),
         reply_to: None,
+        attachment: None,
+        reactions: Vec::new(),
     };
 
     // user_id must be present and non-empty
@@ -5877,6 +5966,8 @@ async fn test_message_user_id_matches_cookie_format() {
         text: "<p>Test</p>".to_string(),
         timestamp: "1000".to_string(),
         reply_to: None,
+        attachment: None,
+        reactions: Vec::new(),
     };
 
     // Cookie should contain exact user_id value
@@ -6153,6 +6244,7 @@ async fn test_room_state_user_count_accurate() {
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
                 last_sanitized_message: None,
+                last_reaction_event: None,
             },
         );
     }
@@ -6173,6 +6265,7 @@ async fn test_room_state_user_count_accurate() {
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
                 last_sanitized_message: None,
+                last_reaction_event: None,
             },
         );
     }
@@ -6207,6 +6300,7 @@ async fn test_heartbeat_timeout_detection() {
         last_read_receipt_event: None,
         rate_limiter: RateLimiter::new(),
         last_sanitized_message: None,
+        last_reaction_event: None,
     };
 
     // User with stale heartbeat
@@ -6225,6 +6319,7 @@ async fn test_heartbeat_timeout_detection() {
         last_read_receipt_event: None,
         rate_limiter: RateLimiter::new(),
         last_sanitized_message: None,
+        last_reaction_event: None,
     };
 
     let is_fresh_stale =
@@ -6477,6 +6572,8 @@ async fn test_outgoing_event_message_serialization() {
         text: "<p>Hello</p>".to_string(),
         timestamp: "1234567890".to_string(),
         reply_to: None,
+        attachment: None,
+        reactions: Vec::new(),
     };
 
     let event = OutgoingEvent::Message { message: msg };
@@ -6539,6 +6636,8 @@ async fn test_memory_pressure_message_pruning() {
             text: format!("<p>Message {}</p>", i),
             timestamp: format!("{}", i * 1000),
             reply_to: None,
+            attachment: None,
+            reactions: Vec::new(),
         };
         room.add_message(msg, &tracker);
     }
@@ -6578,6 +6677,7 @@ async fn test_room_cleanup_stale_users() {
             last_read_receipt_event: None,
             rate_limiter: RateLimiter::new(),
             last_sanitized_message: None,
+            last_reaction_event: None,
         },
     );
 
@@ -6665,6 +6765,8 @@ async fn test_prune_old_messages_removes_oldest_first() {
             text: format!("<p>Message {}</p>", i),
             timestamp: format!("{}", i * 1000),
             reply_to: None,
+            attachment: None,
+            reactions: Vec::new(),
         };
         let size = msg.estimate_size();
         room.chat_history.push(msg);
@@ -6734,6 +6836,8 @@ async fn test_outgoing_message_estimate_size() {
         text: "<p>Hello World</p>".to_string(),
         timestamp: "1234567890123".to_string(),
         reply_to: None,
+        attachment: None,
+        reactions: Vec::new(),
     };
 
     let size = msg.estimate_size();
@@ -6763,6 +6867,8 @@ async fn test_room_state_last_activity_updates() {
             text: "<p>Test</p>".to_string(),
             timestamp: "1000".to_string(),
             reply_to: None,
+            attachment: None,
+            reactions: Vec::new(),
         },
         &tracker,
     );
@@ -6896,6 +7002,7 @@ async fn test_assign_animal_with_all_animals_in_use() {
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
                 last_sanitized_message: None,
+                last_reaction_event: None,
             },
         );
     }
@@ -6929,6 +7036,7 @@ async fn test_assign_animal_reuses_disconnected_animal() {
             last_read_receipt_event: None,
             rate_limiter: RateLimiter::new(),
             last_sanitized_message: None,
+            last_reaction_event: None,
         },
     );
 
@@ -6991,6 +7099,7 @@ async fn test_graceful_shutdown_broadcasts_shutdown() {
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
                 last_sanitized_message: None,
+                last_reaction_event: None,
             },
         );
         rooms.insert(room_name.clone(), room);
@@ -7151,6 +7260,7 @@ async fn test_cleanup_rooms_keeps_rooms_with_users() {
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
                 last_sanitized_message: None,
+                last_reaction_event: None,
             },
         );
         rooms.insert("room-with-user".to_string(), room);
@@ -7178,6 +7288,8 @@ async fn test_claim_main_room_persistent() {
         let room_state = RoomState {
             sender: tokio::sync::broadcast::channel(1000).0,
             chat_history: vec![],
+            reactions: std::collections::HashMap::new(),
+            attachment_bytes: 0,
             users: std::collections::HashMap::new(),
             available_animals: std::collections::VecDeque::new(),
             last_activity: Instant::now() - Duration::from_secs(7201),
@@ -7202,6 +7314,8 @@ async fn test_claim_custom_room_deleted_when_empty() {
         let room_state = RoomState {
             sender: tokio::sync::broadcast::channel(1000).0,
             chat_history: vec![],
+            reactions: std::collections::HashMap::new(),
+            attachment_bytes: 0,
             users: std::collections::HashMap::new(),
             available_animals: std::collections::VecDeque::new(),
             last_activity: Instant::now() - Duration::from_secs(901),
@@ -7233,11 +7347,15 @@ async fn test_claim_no_disk_persistence() {
                 text: "<p>Hello</p>".to_string(),
                 timestamp: "12345".to_string(),
                 reply_to: None,
+                attachment: None,
+                reactions: Vec::new(),
             }],
             users: std::collections::HashMap::new(),
             available_animals: std::collections::VecDeque::new(),
             last_activity: Instant::now(),
             total_memory_bytes: std::sync::atomic::AtomicUsize::new(1024),
+            reactions: std::collections::HashMap::new(),
+            attachment_bytes: 0,
         };
         rooms.insert("test".to_string(), room_state);
     }
@@ -7260,6 +7378,8 @@ async fn test_claim_max_500_messages_per_room() {
             text: format!("<p>Msg {}</p>", i),
             timestamp: i.to_string(),
             reply_to: None,
+            attachment: None,
+            reactions: Vec::new(),
         });
     }
 
@@ -7315,6 +7435,8 @@ async fn test_room_survives_before_cleanup_delay() {
         let room_state = RoomState {
             sender: tokio::sync::broadcast::channel(1000).0,
             chat_history: vec![],
+            reactions: std::collections::HashMap::new(),
+            attachment_bytes: 0,
             users: std::collections::HashMap::new(),
             available_animals: std::collections::VecDeque::new(),
             // Only 450 seconds old (under 10 min threshold)
@@ -7340,6 +7462,8 @@ async fn test_room_deleted_after_cleanup_delay() {
         let room_state = RoomState {
             sender: tokio::sync::broadcast::channel(1000).0,
             chat_history: vec![],
+            reactions: std::collections::HashMap::new(),
+            attachment_bytes: 0,
             users: std::collections::HashMap::new(),
             available_animals: std::collections::VecDeque::new(),
             // 15 minutes old (over 10 min threshold)
@@ -7381,12 +7505,15 @@ async fn test_room_with_active_users_never_deleted() {
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
                 last_sanitized_message: None,
+                last_reaction_event: None,
             },
         );
 
         let room_state = RoomState {
             sender: tokio::sync::broadcast::channel(1000).0,
             chat_history: vec![],
+            reactions: std::collections::HashMap::new(),
+            attachment_bytes: 0,
             users,
             available_animals: std::collections::VecDeque::new(),
             // Very old, but has active user
@@ -7412,6 +7539,8 @@ async fn test_message_timestamps_are_numeric_strings() {
         text: "<p>Test</p>".to_string(),
         timestamp: "1705276800000".to_string(),
         reply_to: None,
+        attachment: None,
+        reactions: Vec::new(),
     };
 
     // Should parse as a number
@@ -7856,6 +7985,8 @@ async fn test_outgoing_message_size_calculation() {
         timestamp: "1234567890".to_string(),
         reply_to: None,
         user_id: uuid::Uuid::new_v4().to_string(),
+        attachment: None,
+        reactions: Vec::new(),
     };
 
     let size = msg.estimate_size();
@@ -7881,6 +8012,7 @@ async fn test_user_data_typing_state_default() {
         last_read_receipt_event: None,
         rate_limiter: RateLimiter::new(),
         last_sanitized_message: None,
+        last_reaction_event: None,
     };
 
     assert!(!user.is_typing);
@@ -7962,6 +8094,7 @@ async fn test_room_cleanup_disconnected_users_dont_block_deletion() {
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
                 last_sanitized_message: None,
+                last_reaction_event: None,
             },
         );
 
@@ -8006,6 +8139,7 @@ async fn test_room_cleanup_connected_users_prevent_deletion() {
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
                 last_sanitized_message: None,
+                last_reaction_event: None,
             },
         );
 
@@ -8047,6 +8181,7 @@ async fn test_room_cleanup_multiple_users_one_connected_blocks_deletion() {
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
                 last_sanitized_message: None,
+                last_reaction_event: None,
             },
         );
 
@@ -8067,6 +8202,7 @@ async fn test_room_cleanup_multiple_users_one_connected_blocks_deletion() {
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
                 last_sanitized_message: None,
+                last_reaction_event: None,
             },
         );
 
@@ -8363,6 +8499,7 @@ fn test_user_idle_for_too_long() {
         last_read_receipt_event: None,
         rate_limiter: RateLimiter::new(),
         last_sanitized_message: None,
+        last_reaction_event: None,
     };
 
     user.last_message_time = now - (USER_IDLE_MESSAGE_TIMEOUT - Duration::from_secs(1));
@@ -8408,6 +8545,8 @@ async fn test_outgoing_message_with_reply() {
         text: "Reply text".to_string(),
         timestamp: "1234567890".to_string(),
         reply_to: Some(reply),
+        attachment: None,
+        reactions: Vec::new(),
     };
 
     let json = serde_json::to_string(&msg).unwrap();
@@ -8425,6 +8564,8 @@ async fn test_outgoing_message_without_reply_omits_field() {
         text: "No reply".to_string(),
         timestamp: "1234567890".to_string(),
         reply_to: None,
+        attachment: None,
+        reactions: Vec::new(),
     };
 
     let json = serde_json::to_string(&msg).unwrap();
@@ -8437,7 +8578,7 @@ async fn test_client_event_message_with_reply() {
     let json = r#"{"type":"Message","text":"Hello","reply_to":{"message_id":"abc","author_name":"Lion","preview_text":"Original"}}"#;
     let event: ClientEvent = serde_json::from_str(json).unwrap();
     match event {
-        ClientEvent::Message { text, reply_to } => {
+        ClientEvent::Message { text, reply_to, .. } => {
             assert_eq!(text, "Hello");
             assert!(reply_to.is_some());
             let r = reply_to.unwrap();
@@ -8458,6 +8599,8 @@ async fn test_message_estimate_size_with_reply() {
         text: "Test".to_string(),
         timestamp: "1000".to_string(),
         reply_to: None,
+        attachment: None,
+        reactions: Vec::new(),
     };
 
     let msg_with_reply = OutgoingMessage {
@@ -8471,6 +8614,8 @@ async fn test_message_estimate_size_with_reply() {
             author_name: "Tiger".to_string(),
             preview_text: "This is a preview".to_string(),
         }),
+        attachment: None,
+        reactions: Vec::new(),
     };
 
     // Message with reply should be larger
@@ -8548,6 +8693,8 @@ async fn test_room_state_add_message_drops_when_memory_exceeded() {
         text: "<p>Test message</p>".to_string(),
         timestamp: "1000".to_string(),
         reply_to: None,
+        attachment: None,
+        reactions: Vec::new(),
     };
 
     // This should trigger pruning or dropping
@@ -8678,6 +8825,8 @@ async fn test_room_state_trim_to_max_messages() {
             text: format!("<p>Message {}</p>", i),
             timestamp: "1000".to_string(),
             reply_to: None,
+            attachment: None,
+            reactions: Vec::new(),
         };
         room.chat_history.push(msg);
     }
@@ -8874,6 +9023,7 @@ async fn test_user_removed_during_message_processing() {
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
                 last_sanitized_message: None,
+                last_reaction_event: None,
             },
         );
 
@@ -8926,6 +9076,7 @@ async fn test_message_rejected_after_heartbeat_timeout() {
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
                 last_sanitized_message: None,
+                last_reaction_event: None,
             },
         );
 
@@ -8977,6 +9128,7 @@ async fn test_typing_event_debounce_interval() {
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
                 last_sanitized_message: None,
+                last_reaction_event: None,
             },
         );
 
@@ -9028,6 +9180,7 @@ async fn test_read_receipt_debounce_interval() {
                 last_read_receipt_event: Some(recent_time), // Just sent receipt
                 rate_limiter: RateLimiter::new(),
                 last_sanitized_message: None,
+                last_reaction_event: None,
             },
         );
 
@@ -9380,6 +9533,8 @@ async fn test_add_message_dropped_when_memory_exceeded() {
                 text: "x".repeat(10000), // Large message
                 timestamp: "12345".to_string(),
                 reply_to: None,
+                attachment: None,
+                reactions: Vec::new(),
             };
 
             let initial_history_len = room_state.chat_history.len();
@@ -9419,6 +9574,7 @@ async fn test_broadcast_user_count_with_disconnected_users() {
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
                 last_sanitized_message: None,
+                last_reaction_event: None,
             },
         );
 
@@ -9439,6 +9595,7 @@ async fn test_broadcast_user_count_with_disconnected_users() {
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
                 last_sanitized_message: None,
+                last_reaction_event: None,
             },
         );
 
@@ -9553,6 +9710,8 @@ async fn test_cleanup_rooms_with_messages_no_users() {
             text: "Test message".to_string(),
             timestamp: "12345".to_string(),
             reply_to: None,
+            attachment: None,
+            reactions: Vec::new(),
         });
 
         // Set last_activity to be old enough for cleanup
@@ -9585,6 +9744,8 @@ async fn test_prune_old_messages_with_existing_messages() {
             text: format!("Message {}", i),
             timestamp: format!("{}", i * 1000),
             reply_to: None,
+            attachment: None,
+            reactions: Vec::new(),
         });
         tracker.add_bytes(100);
         room.total_memory_bytes
@@ -9925,6 +10086,7 @@ async fn test_room_max_users() {
                     last_read_receipt_event: None,
                     rate_limiter: RateLimiter::new(),
                     last_sanitized_message: None,
+                    last_reaction_event: None,
                 },
             );
         }
@@ -9977,6 +10139,8 @@ async fn test_add_message_at_max_capacity() {
             text: format!("Message {}", i),
             timestamp: format!("{}", i * 1000),
             reply_to: None,
+            attachment: None,
+            reactions: Vec::new(),
         });
     }
 
@@ -9988,6 +10152,8 @@ async fn test_add_message_at_max_capacity() {
         text: "New message".to_string(),
         timestamp: "999999".to_string(),
         reply_to: None,
+        attachment: None,
+        reactions: Vec::new(),
     };
 
     room.add_message(new_msg.clone(), &tracker);
@@ -10230,6 +10396,7 @@ async fn test_user_idle_past_threshold() {
         last_read_receipt_event: None,
         rate_limiter: RateLimiter::new(),
         last_sanitized_message: None,
+        last_reaction_event: None,
     };
 
     let now = Instant::now();
@@ -10254,6 +10421,7 @@ async fn test_user_still_active() {
         last_read_receipt_event: None,
         rate_limiter: RateLimiter::new(),
         last_sanitized_message: None,
+        last_reaction_event: None,
     };
 
     let now = Instant::now();
@@ -10306,6 +10474,8 @@ async fn test_outgoing_message_size_with_reply() {
         text: "Hello world".to_string(),
         timestamp: "1234567890".to_string(),
         reply_to: None,
+        attachment: None,
+        reactions: Vec::new(),
     };
 
     let size = msg.estimate_size();
@@ -10323,6 +10493,8 @@ async fn test_outgoing_message_size_with_reply() {
             author_name: "Tiger".to_string(),
             preview_text: "Previous message".to_string(),
         }),
+        attachment: None,
+        reactions: Vec::new(),
     };
 
     let size_with_reply = msg_with_reply.estimate_size();
@@ -10360,6 +10532,8 @@ async fn test_room_trigger_cleanup() {
             text: format!("Message content {}", i),
             timestamp: format!("{}", i * 1000),
             reply_to: None,
+            attachment: None,
+            reactions: Vec::new(),
         });
         tracker.add_bytes(100);
         room.total_memory_bytes.fetch_add(100, Ordering::SeqCst);
@@ -10518,6 +10692,7 @@ async fn test_health_handler_response() {
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
                 last_sanitized_message: None,
+                last_reaction_event: None,
             },
         );
         rooms.insert("health-test".to_string(), room);
@@ -10661,6 +10836,8 @@ async fn test_app_state_cleanup_with_high_memory() {
                     text: format!("Message {} in room {}", j, i),
                     timestamp: "12345".to_string(),
                     reply_to: None,
+                    attachment: None,
+                    reactions: Vec::new(),
                 });
             }
             rooms.insert(format!("room{}", i), room);
@@ -10702,6 +10879,7 @@ async fn test_app_state_shutdown_notifies_users() {
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
                 last_sanitized_message: None,
+                last_reaction_event: None,
             },
         );
         rooms.insert("shutdown-notify".to_string(), room);
@@ -10908,6 +11086,8 @@ async fn test_prune_old_messages_keeps_recent() {
             text: format!("Message {}", i),
             timestamp: format!("{}", i * 1000 + 1000000),
             reply_to: None,
+            attachment: None,
+            reactions: Vec::new(),
         };
         let msg_size = msg.estimate_size();
         tracker.add_bytes(msg_size);
@@ -10941,6 +11121,8 @@ async fn test_add_message_triggers_prune_on_memory_limit() {
             text: "Test message content".to_string(),
             timestamp: "12345".to_string(),
             reply_to: None,
+            attachment: None,
+            reactions: Vec::new(),
         };
         room.add_message(msg, &tracker);
     }
@@ -11163,6 +11345,7 @@ async fn test_room_state_broadcast_user_count() {
             last_read_receipt_event: None,
             rate_limiter: RateLimiter::new(),
             last_sanitized_message: None,
+            last_reaction_event: None,
         },
     );
 
@@ -11186,6 +11369,8 @@ async fn test_outgoing_message_basic_size() {
         text: "Hello, world!".to_string(),
         timestamp: "1234567890".to_string(),
         reply_to: None,
+        attachment: None,
+        reactions: Vec::new(),
     };
 
     let size = msg.estimate_size();
@@ -11208,6 +11393,8 @@ async fn test_outgoing_message_with_reply_info() {
             author_name: "Tiger".to_string(),
             preview_text: "Original message preview".to_string(),
         }),
+        attachment: None,
+        reactions: Vec::new(),
     };
 
     let size = msg.estimate_size();
@@ -11486,6 +11673,7 @@ async fn assign_animal_never_repeats_a_connected_name() {
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
                 last_sanitized_message: None,
+                last_reaction_event: None,
             },
         );
     }
@@ -12060,6 +12248,7 @@ async fn cleanup_reclaims_abandoned_users_and_recycles_their_name() {
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
                 last_sanitized_message: None,
+                last_reaction_event: None,
             },
         );
         rooms.insert("ghost-room".to_string(), room);
@@ -12096,6 +12285,8 @@ async fn main_room_history_fades_when_idle_instead_of_being_deleted() {
                 text: format!("message {i}"),
                 timestamp: "1".to_string(),
                 reply_to: None,
+                attachment: None,
+                reactions: Vec::new(),
             });
         }
         // Idle long enough to trigger the fade.
@@ -12201,6 +12392,7 @@ async fn assign_animal_skips_names_already_in_use() {
             last_read_receipt_event: None,
             rate_limiter: RateLimiter::new(),
             last_sanitized_message: None,
+            last_reaction_event: None,
         },
     );
 
@@ -12228,6 +12420,8 @@ fn pruning_zero_bytes_changes_nothing() {
             text: "hello".to_string(),
             timestamp: "1".to_string(),
             reply_to: None,
+            attachment: None,
+            reactions: Vec::new(),
         },
         &tracker,
     );
@@ -12259,6 +12453,8 @@ async fn message_cleanup_is_capped_at_one_batch_per_pass() {
             text: "old".to_string(),
             timestamp: "1".to_string(),
             reply_to: None,
+            attachment: None,
+            reactions: Vec::new(),
         });
     }
     let before = room.chat_history.len();
@@ -12437,6 +12633,7 @@ async fn a_full_room_refuses_and_releases_its_reservations() {
                     last_read_receipt_event: None,
                     rate_limiter: RateLimiter::new(),
                     last_sanitized_message: None,
+                    last_reaction_event: None,
                 },
             );
         }
@@ -12500,6 +12697,7 @@ async fn teardown_ignores_a_superseded_connection() {
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
                 last_sanitized_message: None,
+                last_reaction_event: None,
             },
         );
         rooms.insert("room".to_string(), room);
@@ -12540,6 +12738,7 @@ async fn teardown_of_an_already_disconnected_user_is_a_no_op() {
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
                 last_sanitized_message: None,
+                last_reaction_event: None,
             },
         );
         rooms.insert("room".to_string(), room);
@@ -12725,6 +12924,7 @@ fn connected_user(
         last_read_receipt_event: None,
         rate_limiter: RateLimiter::new(),
         last_sanitized_message: None,
+        last_reaction_event: None,
     }
 }
 
@@ -12754,6 +12954,7 @@ async fn events_for_unknown_rooms_and_users_are_dropped() {
         ClientEvent::Message {
             text: "hi".into(),
             reply_to: None,
+            attachment: None,
         },
     )
     .await;
@@ -12766,6 +12967,7 @@ async fn events_for_unknown_rooms_and_users_are_dropped() {
         ClientEvent::Message {
             text: "hi".into(),
             reply_to: None,
+            attachment: None,
         },
     )
     .await;
@@ -12794,6 +12996,7 @@ async fn events_from_a_lapsed_connection_are_ignored() {
         ClientEvent::Message {
             text: "hello".into(),
             reply_to: None,
+            attachment: None,
         },
     )
     .await;
@@ -12818,6 +13021,7 @@ async fn oversized_messages_are_dropped() {
         ClientEvent::Message {
             text: "a".repeat(MAX_MESSAGE_LEN + 1),
             reply_to: None,
+            attachment: None,
         },
     )
     .await;
@@ -12840,6 +13044,7 @@ async fn a_duplicate_message_within_the_window_is_dropped() {
             ClientEvent::Message {
                 text: "same".into(),
                 reply_to: None,
+                attachment: None,
             },
         )
         .await;
@@ -12934,6 +13139,7 @@ async fn a_message_keeps_its_sanitised_reply() {
                 author_name: "<b>badger</b>".into(),
                 preview_text: "x".repeat(5_000),
             }),
+            attachment: None,
         },
     )
     .await;
@@ -13071,12 +13277,16 @@ async fn expiring_ip_counters_keeps_recently_active_addresses() {
 
     pool.add_connection("198.51.100.1").await.unwrap();
     {
-        // An address last seen longer ago than the retention window.
+        // An address with no live connections, last seen longer ago than the
+        // retention window. The zero matters: a counter that is still counting
+        // is kept whatever its age, so that this sweep cannot lift the per-IP
+        // limit out from under a long session
+        // (`a_live_connection_counter_survives_the_stale_sweep`).
         let mut counters = pool.ip_counters.write().await;
         counters.insert(
             "203.0.113.9".to_string(),
             (
-                AtomicUsize::new(1),
+                AtomicUsize::new(0),
                 Instant::now() - IP_COUNTER_RETENTION - Duration::from_secs(60),
             ),
         );
@@ -13204,6 +13414,8 @@ fn adding_a_message_near_the_memory_ceiling_prunes_proactively() {
             text: format!("padding {i}"),
             timestamp: "1".to_string(),
             reply_to: None,
+            attachment: None,
+            reactions: Vec::new(),
         });
     }
     let before = room.chat_history.len();
@@ -13222,6 +13434,8 @@ fn adding_a_message_near_the_memory_ceiling_prunes_proactively() {
             text: "the message that crosses the ceiling".to_string(),
             timestamp: "1".to_string(),
             reply_to: None,
+            attachment: None,
+            reactions: Vec::new(),
         },
         &tracker,
     );
@@ -13250,6 +13464,8 @@ async fn joining_user_triggers_a_trim_of_oversized_history() {
                 text: format!("m{i}"),
                 timestamp: "1".to_string(),
                 reply_to: None,
+                attachment: None,
+                reactions: Vec::new(),
             });
         }
         rooms.insert("crowded-room".to_string(), room);
@@ -13306,6 +13522,7 @@ async fn whitespace_padded_messages_cannot_bypass_the_length_cap() {
         ClientEvent::Message {
             text: padded,
             reply_to: None,
+            attachment: None,
         },
     )
     .await;
@@ -13440,4 +13657,1576 @@ async fn the_policy_permits_no_third_party_origins() {
         csp.contains("font-src 'none'"),
         "nothing should be loadable as a font: {csp}"
     );
+}
+
+// ========== INVARIANT SWEEPS ==========
+//
+// Each test here pins a law from ENGINEERING-STANDARDS.md as a property of the
+// whole server rather than of one call site, so the *next* violation of the
+// same class fails here instead of reaching production.
+
+/// §3 — a room's history is bounded by `MAX_MESSAGES_PER_ROOM` whether or not
+/// anybody joins it.
+///
+/// Trimming used to happen only on the join path and, for `main`, in the fade
+/// branch. A room that is busy but has no new joiners therefore grew without
+/// limit, and because the byte ceiling is process-wide, one such room filled it
+/// and every room on the server silently started dropping messages.
+#[tokio::test]
+async fn every_room_history_is_bounded_by_housekeeping_not_only_by_joins() {
+    let state = Arc::new(AppState::new());
+    let overflow = MAX_MESSAGES_PER_ROOM * 3;
+
+    {
+        let mut rooms = state.rooms.write().await;
+        let mut room = create_room();
+        room.users.insert(
+            "talker".to_string(),
+            connected_user("talker", "otter", "c1", Instant::now()),
+        );
+        for i in 0..overflow {
+            room.add_message(
+                OutgoingMessage {
+                    message_id: Uuid::new_v4(),
+                    user_id: "talker".to_string(),
+                    animal_name: "otter".to_string(),
+                    text: format!("message {i}"),
+                    timestamp: "1".to_string(),
+                    reply_to: None,
+                    attachment: None,
+                    reactions: Vec::new(),
+                },
+                &state.memory_tracker,
+            );
+        }
+        rooms.insert("busy-room".to_string(), room);
+    }
+
+    cleanup_rooms(&state).await;
+
+    let rooms = state.rooms.read().await;
+    let room = rooms.get("busy-room").expect("busy room should survive");
+    assert!(
+        room.chat_history.len() <= MAX_MESSAGES_PER_ROOM,
+        "housekeeping must bound every room's history, not just `main`; \
+         found {} messages",
+        room.chat_history.len()
+    );
+}
+
+/// §3 — the animal pool is bounded by the roster it was built from.
+///
+/// Reclaiming a user pushes their name back into the pool. A name that never
+/// came *out* of that pool — a cookie identity carried in from another room, or
+/// a `guest_N` fallback minted when the pool was empty — made that push
+/// unbalanced, so the pool grew every time such a user was reclaimed.
+#[tokio::test]
+async fn reclaiming_users_cannot_grow_or_pollute_the_animal_pool() {
+    let state = Arc::new(AppState::new());
+    let long_gone = Instant::now() - DISCONNECTED_USER_RETENTION - Duration::from_secs(60);
+
+    {
+        let mut rooms = state.rooms.write().await;
+        let mut room = create_room();
+
+        // A name this room never issued (carried in on a cookie), and a guest
+        // fallback that is not an animal at all.
+        for (uid, animal) in [("visitor", "otter"), ("overflow", "guest_7")] {
+            let mut user = connected_user(uid, animal, "c", Instant::now());
+            user.connection_state = ConnectionState::Disconnected { since: long_gone };
+            room.users.insert(uid.to_string(), user);
+        }
+        rooms.insert("pool-room".to_string(), room);
+    }
+
+    cleanup_rooms(&state).await;
+
+    let rooms = state.rooms.read().await;
+    let room = rooms.get("pool-room").expect("room should still exist");
+
+    assert!(
+        room.available_animals.len() <= ANIMAL_NAMES.len(),
+        "the pool must never exceed the roster it was built from: {} > {}",
+        room.available_animals.len(),
+        ANIMAL_NAMES.len()
+    );
+    assert!(
+        room.available_animals
+            .iter()
+            .all(|a| ANIMAL_NAMES.contains(&a.as_str())),
+        "every assignable name must be on the roster; found {:?}",
+        room.available_animals
+            .iter()
+            .filter(|a| !ANIMAL_NAMES.contains(&a.as_str()))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Constraint #9 — two connected users in one room never share a name.
+///
+/// The animal name is the only identity the UI shows. `admit_user` trusted the
+/// name on a returning visitor's cookie, so carrying a cookie from one room
+/// into another where that name was already taken produced two users the UI
+/// could not tell apart.
+#[tokio::test]
+async fn a_cookie_name_never_duplicates_a_name_already_in_the_room() {
+    let state = Arc::new(AppState::new());
+    {
+        let mut rooms = state.rooms.write().await;
+        let mut room = create_room();
+        room.users.insert(
+            "resident".to_string(),
+            connected_user("resident", "otter", "c1", Instant::now()),
+        );
+        rooms.insert("shared-room".to_string(), room);
+    }
+
+    let cookie = crate::identity::UserCookie {
+        user_id: Uuid::new_v4().to_string(),
+        animal_name: "otter".to_string(),
+    };
+    let (_, assigned) = admit_user(&state, "shared-room", "c2", Some(&cookie))
+        .await
+        .expect("the room has room for another visitor");
+
+    assert_ne!(
+        assigned, "otter",
+        "a cookie must not hand a visitor a name somebody in this room is using"
+    );
+
+    let rooms = state.rooms.read().await;
+    let room = rooms.get("shared-room").unwrap();
+    let names: Vec<&str> = room
+        .users
+        .values()
+        .filter(|u| u.is_connected())
+        .map(|u| u.animal_name.as_str())
+        .collect();
+    let unique: std::collections::HashSet<&&str> = names.iter().collect();
+    assert_eq!(
+        names.len(),
+        unique.len(),
+        "connected users must have distinct names: {names:?}"
+    );
+}
+
+/// §3 — what a message costs is bounded by what the user typed.
+///
+/// `MAX_MESSAGE_LEN` bounds the Markdown, but the server stores and broadcasts
+/// the *rendered* HTML. Measured amplification for input that passes validation
+/// is over 7x (`[a](b)` repeated), so the input cap alone did not bound the
+/// stored size.
+#[test]
+fn rendered_html_is_bounded_by_the_input_cap() {
+    for pattern in ["[a](b)", "***a***", "# a\n", "*a*", "- x\n"] {
+        let input: String = pattern.repeat(MAX_MESSAGE_LEN / pattern.len());
+        let input = &input[..input.len().min(MAX_MESSAGE_LEN)];
+        if crate::validation::validate_message(input).is_err() {
+            continue;
+        }
+        let rendered = crate::validation::render_message_html(input);
+        assert!(
+            rendered.len() <= MAX_RENDERED_MESSAGE_LEN,
+            "`{pattern}` repeated renders to {} bytes, above the {MAX_RENDERED_MESSAGE_LEN}-byte ceiling",
+            rendered.len()
+        );
+    }
+}
+
+/// §5 — no counter can be driven below zero.
+///
+/// An unbalanced decrement on an unsigned counter wraps to `usize::MAX`, and
+/// every one of these counters is compared against a ceiling: a single wrap
+/// wedges the server at "full" for the rest of the process's life. This is the
+/// failure `MemoryTracker::remove_bytes` already documents; the connection
+/// counters had the same shape and none of the protection.
+#[tokio::test]
+async fn releasing_more_than_was_reserved_cannot_wrap_a_counter() {
+    let monitor = ResourceMonitor::new();
+    monitor.release_connection();
+    assert_eq!(
+        monitor.total_connections.load(Ordering::SeqCst),
+        0,
+        "an unmatched release must floor at zero, not wrap"
+    );
+    assert!(
+        monitor.can_accept_connection(),
+        "an unmatched release must not wedge the server at capacity"
+    );
+
+    let pool = ConnectionPool::new();
+    pool.remove_connection("10.0.0.1").await;
+    assert_eq!(pool.active.load(Ordering::SeqCst), 0);
+
+    pool.add_connection("10.0.0.1").await.unwrap();
+    pool.remove_connection("10.0.0.1").await;
+    pool.remove_connection("10.0.0.1").await;
+    assert_eq!(
+        pool.active.load(Ordering::SeqCst),
+        0,
+        "a double release must floor at zero"
+    );
+    assert!(
+        pool.can_accept("10.0.0.1").await,
+        "a double release must not wedge the per-IP counter at its limit"
+    );
+}
+
+/// A typing indicator is not a message, and must not spend a message's budget.
+///
+/// Every client event ran through `can_send_message`, but the client sends a
+/// `Typing{true}` on the first keystroke and a `Typing{false}` when the message
+/// is sent — so each real message cost three units of a thirty-unit window, and
+/// the effective limit was ten messages a minute rather than the documented
+/// thirty. Typing and read receipts have their own O(1) throttles
+/// (`TYPING_EVENT_MIN_INTERVAL`, `READ_RECEIPT_MIN_INTERVAL`); that is what
+/// bounds them.
+#[tokio::test]
+async fn typing_events_do_not_consume_the_message_budget() {
+    let state = Arc::new(AppState::new());
+    {
+        let mut rooms = state.rooms.write().await;
+        let mut room = create_room();
+        room.users.insert(
+            "u1".to_string(),
+            connected_user("u1", "otter", "c1", Instant::now()),
+        );
+        rooms.insert("budget-room".to_string(), room);
+    }
+
+    for i in 0..MAX_MESSAGES_PER_WINDOW {
+        apply_client_event(
+            &state,
+            "budget-room",
+            "u1",
+            "otter",
+            ClientEvent::Typing {
+                is_typing: i % 2 == 0,
+            },
+        )
+        .await;
+        // Clear the per-event throttle so this measures the message budget,
+        // not the 200ms spacing.
+        {
+            let mut rooms = state.rooms.write().await;
+            let user = rooms
+                .get_mut("budget-room")
+                .unwrap()
+                .users
+                .get_mut("u1")
+                .unwrap();
+            user.last_typing_event = None;
+        }
+    }
+
+    apply_client_event(
+        &state,
+        "budget-room",
+        "u1",
+        "otter",
+        ClientEvent::Message {
+            text: "hello".to_string(),
+            reply_to: None,
+            attachment: None,
+        },
+    )
+    .await;
+
+    let rooms = state.rooms.read().await;
+    assert_eq!(
+        rooms.get("budget-room").unwrap().chat_history.len(),
+        1,
+        "a full window of typing indicators must not block a message"
+    );
+}
+
+/// Identity from a cookie is a *claim*, not a fact.
+///
+/// Both cookies are `HttpOnly`, which stops a page's script from touching
+/// them — it does not stop the person operating the browser from sending any
+/// `Cookie` header they like. The server took `animal_name` verbatim: an
+/// arbitrary, unbounded string that then became this user's display name in
+/// history and in every frame broadcast to everyone else in the room.
+///
+/// Bounding it is not enough — the safe form is a closed set. An animal name
+/// is one of [`ANIMAL_NAMES`] or it is not a name.
+#[tokio::test]
+async fn a_forged_identity_cookie_cannot_choose_its_own_name_or_id() {
+    let state = Arc::new(AppState::new());
+
+    let forged = crate::identity::UserCookie {
+        user_id: "../../etc/passwd".to_string(),
+        animal_name: format!("<img src=x onerror=alert(1)>{}", "A".repeat(100_000)),
+    };
+    let (user_id, animal_name) = admit_user(&state, "forged-room", "c1", Some(&forged))
+        .await
+        .expect("a forged cookie is a new visitor, not an error");
+
+    assert!(
+        ANIMAL_NAMES.contains(&animal_name.as_str()),
+        "a display name must come from the roster, not from the client: {animal_name:?}"
+    );
+    assert!(
+        Uuid::parse_str(&user_id).is_ok(),
+        "a user id must be server-issued: {user_id:?}"
+    );
+}
+
+/// Constraint #9 — the guest fallback is unreachable, and that is a property of
+/// the numbers rather than an accident.
+///
+/// `assign_animal` mints `guest_N` only when every roster name is held by a
+/// connected user. A room holds at most `MAX_USERS_PER_ROOM`, so a roster
+/// larger than that makes the branch dead in production. Shrinking the roster
+/// below the room cap would quietly start handing out names that are not
+/// animals.
+#[test]
+fn the_roster_is_larger_than_a_room_can_ever_be() {
+    assert!(
+        ANIMAL_NAMES.len() > MAX_USERS_PER_ROOM,
+        "the roster ({}) must exceed the per-room cap ({MAX_USERS_PER_ROOM}) so \
+         every connected user can hold a distinct animal name",
+        ANIMAL_NAMES.len()
+    );
+}
+
+/// §5 — a session releases what it reserved however it ends, including when
+/// its room is gone by the time it ends.
+///
+/// This is the property the teardown wrapper rests on. Teardown used to be the
+/// duty of each `return` inside the session, and the "room vanished between
+/// admission and upgrade" path skipped it, holding that connection's global and
+/// per-IP slots until the process died. That specific race is now closed
+/// structurally — the release wraps the session rather than being called from
+/// inside it, so no exit can route around it — and is not what this test
+/// reproduces. What this test pins is the half that makes the wrapper safe:
+/// releasing happens *before* the room is looked up, so a missing room is a
+/// clean teardown rather than an early return that skips the accounting.
+#[tokio::test]
+async fn a_session_whose_room_disappeared_still_releases_its_slots() {
+    let (addr, state, handle) = start_ws_server_with_state().await;
+
+    let (mut ws, _) = connect_async(ws_request(addr, "doomed-room", &[]))
+        .await
+        .expect("the handshake should be accepted");
+    assert_eq!(recv_json_event(&mut ws).await["type"], "Welcome");
+
+    assert_eq!(
+        state
+            .resource_monitor
+            .total_connections
+            .load(Ordering::SeqCst),
+        1,
+        "the live session holds exactly one slot"
+    );
+
+    // Delete the room out from under the live session.
+    state.rooms.write().await.remove("doomed-room");
+
+    ws.close(None).await.unwrap();
+    drop(ws);
+
+    // The teardown is asynchronous; give it a moment to run.
+    for _ in 0..50 {
+        if state
+            .resource_monitor
+            .total_connections
+            .load(Ordering::SeqCst)
+            == 0
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    assert_eq!(
+        state
+            .resource_monitor
+            .total_connections
+            .load(Ordering::SeqCst),
+        0,
+        "a session must release its global slot even with no room to clean up"
+    );
+    assert_eq!(
+        state.connection_pool.active.load(Ordering::SeqCst),
+        0,
+        "a session must release its per-IP slot even with no room to clean up"
+    );
+
+    handle.abort();
+}
+
+/// The suspicion window rolls, so the ban stays reachable.
+///
+/// `record_suspicious_activity` counted up forever from a `first_seen` that was
+/// never reset, and banned only while `first_seen.elapsed()` was still inside
+/// the window. So an address whose first suspicious event was more than
+/// `SUSPICIOUS_ACTIVITY_WINDOW` ago could never be banned again *no matter what
+/// it did* — the one condition that could fire had permanently gone false. The
+/// slow attacker was the one the counter stopped protecting against.
+#[tokio::test]
+async fn suspicion_counts_within_a_window_rather_than_forever() {
+    let manager = SecurityManager::new();
+    let ip = "slow-attacker";
+
+    // An old first sighting, the way an address that has been around a while
+    // looks by the time it starts misbehaving.
+    manager.suspicious_activity.write().await.insert(
+        ip.to_string(),
+        (
+            1,
+            Instant::now() - SUSPICIOUS_ACTIVITY_WINDOW - Duration::from_secs(5),
+        ),
+    );
+
+    let mut banned = false;
+    for _ in 0..=(MAX_SUSPICIOUS_EVENTS * 2) {
+        if manager.record_suspicious_activity(ip).await.is_err() {
+            banned = true;
+            break;
+        }
+    }
+
+    assert!(
+        banned,
+        "an address must still be bannable after its first sighting ages out"
+    );
+    assert!(
+        manager.check_ip(ip).await.is_err(),
+        "and the ban must actually take effect"
+    );
+}
+
+/// §3.5 — every map keyed by a client address has an eviction path.
+///
+/// `ConnectionPool::ip_counters` had one. The two maps in `SecurityManager` did
+/// not: an expired ban was *tested* for expiry on read but never removed, and a
+/// suspicion record was never removed at all. Both are keyed by client address,
+/// so both grew for the life of the process with one entry per address ever
+/// seen — the unbounded-map shape §3.5 exists to forbid.
+#[tokio::test]
+async fn every_client_keyed_map_is_swept_by_housekeeping() {
+    let state = Arc::new(AppState::new());
+    let stale = Instant::now() - IP_BAN_DURATION - Duration::from_secs(60);
+
+    for i in 0..500 {
+        let ip = format!("addr-{i}");
+        state
+            .security_manager
+            .banned_ips
+            .write()
+            .await
+            .insert(ip.clone(), stale);
+        state
+            .security_manager
+            .suspicious_activity
+            .write()
+            .await
+            .insert(ip, (1, stale));
+    }
+
+    state.cleanup().await;
+
+    assert!(
+        state.security_manager.banned_ips.read().await.is_empty(),
+        "expired bans must be evicted, not merely ignored on read"
+    );
+    assert!(
+        state
+            .security_manager
+            .suspicious_activity
+            .read()
+            .await
+            .is_empty(),
+        "stale suspicion records must be evicted"
+    );
+}
+
+/// A counter that is still counting is never evicted.
+///
+/// `last_seen` is stamped when a connection is added, not while it lasts, so a
+/// session that outlived `IP_COUNTER_RETENTION` — which any user who keeps
+/// talking does — had its counter swept away underneath it, lifting the per-IP
+/// limit for that address until it reconnected.
+#[tokio::test]
+async fn a_live_connection_counter_survives_the_stale_sweep() {
+    let pool = ConnectionPool::new();
+    let ip = "long-session";
+
+    pool.add_connection(ip).await.unwrap();
+
+    // Age the entry well past the retention window without ending the session.
+    {
+        let mut counters = pool.ip_counters.write().await;
+        let (_, last_seen) = counters.get_mut(ip).unwrap();
+        *last_seen = Instant::now() - IP_COUNTER_RETENTION - Duration::from_secs(60);
+    }
+
+    pool.cleanup_stale().await;
+
+    assert!(
+        pool.ip_counters.read().await.contains_key(ip),
+        "a counter with a live connection must not be evicted"
+    );
+
+    // Once the session actually ends, the entry becomes evictable again.
+    pool.remove_connection(ip).await;
+    {
+        let mut counters = pool.ip_counters.write().await;
+        let (_, last_seen) = counters.get_mut(ip).unwrap();
+        *last_seen = Instant::now() - IP_COUNTER_RETENTION - Duration::from_secs(60);
+    }
+    pool.cleanup_stale().await;
+
+    assert!(
+        !pool.ip_counters.read().await.contains_key(ip),
+        "an idle counter must still be evicted, or the map is unbounded"
+    );
+}
+
+/// A returning visitor keeps the name they know.
+///
+/// The checks in `claim_animal` exist to refuse forged and colliding names, and
+/// it would be easy to satisfy every one of those tests by never honouring a
+/// cookie at all. This is the behaviour the checks are *for*: open the same
+/// room in a second tab, or reload, and you are still the same animal.
+#[tokio::test]
+async fn a_returning_visitor_keeps_a_roster_name_that_is_free() {
+    let state = Arc::new(AppState::new());
+
+    // First visit: the server issues an identity.
+    let (first_id, first_name) = admit_user(&state, "return-room", "c1", None)
+        .await
+        .expect("a new visitor is admitted");
+    assert!(ANIMAL_NAMES.contains(&first_name.as_str()));
+
+    // Same browser, a room it has not been in before, carrying that cookie.
+    let cookie = crate::identity::UserCookie {
+        user_id: first_id,
+        animal_name: first_name.clone(),
+    };
+    let (_, second_name) = admit_user(&state, "another-room", "c2", Some(&cookie))
+        .await
+        .expect("a returning visitor is admitted");
+
+    assert_eq!(
+        second_name, first_name,
+        "a roster name that nobody in the room is using should be honoured"
+    );
+}
+
+// ========== ATTACHMENTS AND REACTIONS ==========
+
+/// A 1x1 PNG, as the client would send it: base64, no `data:` prefix.
+const TINY_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+/// A minimal GIF87a header, enough to sniff.
+const TINY_GIF: &str = "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+
+fn png_attachment() -> Attachment {
+    Attachment {
+        mime: "image/png".to_string(),
+        data: TINY_PNG.to_string(),
+        width: 1,
+        height: 1,
+        faded: false,
+    }
+}
+
+/// The declared type is a claim; the bytes are the evidence.
+///
+/// Without sniffing, "this is an `image/png`" is a sentence the sender wrote.
+/// The stored MIME is the one the payload actually is, so what a browser is
+/// asked to decode is what really arrived.
+#[test]
+fn an_attachment_must_be_the_image_type_it_claims_to_be() {
+    let honest = sanitize_attachment(png_attachment()).expect("a real PNG is accepted");
+    assert_eq!(honest.mime, "image/png");
+
+    // A GIF payload wearing a PNG label.
+    let liar = Attachment {
+        mime: "image/png".to_string(),
+        data: TINY_GIF.to_string(),
+        ..png_attachment()
+    };
+    assert!(
+        sanitize_attachment(liar).is_err(),
+        "a payload that is not the declared type must be refused"
+    );
+
+    // Not an image at all.
+    let text = Attachment {
+        data: "aGVsbG8gd29ybGQhIGhlbGxvIHdvcmxkIQ==".to_string(),
+        ..png_attachment()
+    };
+    assert!(
+        sanitize_attachment(text).is_err(),
+        "a payload with no image magic bytes must be refused"
+    );
+
+    // Not even base64.
+    let junk = Attachment {
+        data: "!!!! not base64 !!!!".to_string(),
+        ..png_attachment()
+    };
+    assert!(
+        sanitize_attachment(junk).is_err(),
+        "a payload that will not decode must be refused"
+    );
+}
+
+/// SVG is a document, not a picture, and must never be an allowed attachment.
+///
+/// An SVG can carry `<script>`. Rendering one from a `data:` URL in an `<img>`
+/// does not execute it in current browsers, but that is a property of the
+/// element it happens to be placed in — one refactor to an `<object>`, an
+/// `<iframe>` or a CSS `url()` and it is script execution on a server whose
+/// whole job is turning user input into markup. The allow-list is the defence,
+/// so this pins the hole shut rather than trusting the surrounding code.
+#[test]
+fn svg_is_not_an_allowed_attachment_type() {
+    assert!(
+        !ALLOWED_ATTACHMENT_MIMES.contains(&"image/svg+xml"),
+        "SVG must never be attachable: it is a document that can carry script"
+    );
+
+    let svg = Attachment {
+        mime: "image/svg+xml".to_string(),
+        // A perfectly well-formed SVG, base64-encoded.
+        data: "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPjxzY3JpcHQ+YWxlcnQoMSk8L3NjcmlwdD48L3N2Zz4=".to_string(),
+        width: 10,
+        height: 10,
+        faded: false,
+    };
+    assert!(
+        sanitize_attachment(svg).is_err(),
+        "an SVG attachment must be refused whatever its contents"
+    );
+}
+
+/// §3 — an attachment is bounded before anything walks it.
+#[test]
+fn an_attachment_is_bounded_in_bytes_and_in_pixels() {
+    let huge = Attachment {
+        data: "A".repeat(MAX_ATTACHMENT_BYTES + 1),
+        ..png_attachment()
+    };
+    assert!(
+        sanitize_attachment(huge).is_err(),
+        "a payload over the byte ceiling must be refused"
+    );
+
+    for (w, h) in [
+        (0, 10),
+        (10, 0),
+        (MAX_ATTACHMENT_DIMENSION + 1, 10),
+        (10, MAX_ATTACHMENT_DIMENSION + 1),
+    ] {
+        let bad = Attachment {
+            width: w,
+            height: h,
+            ..png_attachment()
+        };
+        assert!(
+            sanitize_attachment(bad).is_err(),
+            "dimensions {w}x{h} must be refused"
+        );
+    }
+}
+
+/// §1.1/§3 — one room's pictures cannot spend the whole server's memory.
+///
+/// Attachments are two orders of magnitude larger than sentences, so a room
+/// full of them would take a share of the process-wide ceiling that every other
+/// room then could not have. Past the room's budget the oldest *payloads* go
+/// and their messages stay, which is the §7 fade aimed at the most expensive
+/// thing in the room.
+#[tokio::test]
+async fn a_rooms_oldest_images_fade_once_it_is_over_its_attachment_budget() {
+    let tracker = MemoryTracker::new();
+    let mut room = create_room();
+
+    // Each attachment is a big chunk of the room budget, so a handful crosses it.
+    let chunk = MAX_ATTACHMENT_BYTES;
+    let needed = (MAX_ROOM_ATTACHMENT_BYTES / chunk) + 2;
+
+    for i in 0..needed {
+        room.add_message(
+            OutgoingMessage {
+                message_id: Uuid::new_v4(),
+                user_id: "u".to_string(),
+                animal_name: "otter".to_string(),
+                text: format!("picture {i}"),
+                timestamp: "1".to_string(),
+                reply_to: None,
+                attachment: Some(Attachment {
+                    mime: "image/png".to_string(),
+                    data: "A".repeat(chunk),
+                    width: 10,
+                    height: 10,
+                    faded: false,
+                }),
+                reactions: Vec::new(),
+            },
+            &tracker,
+        );
+    }
+
+    assert!(
+        room.attachment_bytes <= MAX_ROOM_ATTACHMENT_BYTES,
+        "a room must stay inside its attachment budget: {} > {MAX_ROOM_ATTACHMENT_BYTES}",
+        room.attachment_bytes
+    );
+
+    // Every message survives; only the oldest pictures went.
+    assert_eq!(room.chat_history.len(), needed, "no message may be deleted");
+    assert!(
+        room.chat_history[0]
+            .attachment
+            .as_ref()
+            .is_some_and(|a| a.faded && a.data.is_empty()),
+        "the oldest image should have faded"
+    );
+    assert!(
+        room.chat_history[needed - 1]
+            .attachment
+            .as_ref()
+            .is_some_and(|a| !a.faded && !a.data.is_empty()),
+        "the newest image should still be there"
+    );
+}
+
+/// Reacting is a toggle, and the same emoji twice is one person changing their
+/// mind rather than two reactions.
+#[test]
+fn reacting_twice_with_the_same_emoji_removes_the_reaction() {
+    let mut room = create_room();
+    let id = Uuid::new_v4();
+
+    assert_eq!(room.toggle_reaction(id, "👍", "alice"), Some((true, 1)));
+    assert_eq!(room.toggle_reaction(id, "👍", "bob"), Some((true, 2)));
+    assert_eq!(
+        room.toggle_reaction(id, "👍", "alice"),
+        Some((false, 1)),
+        "the same person reacting again takes their reaction back"
+    );
+
+    let seen = room.reactions_for(id, "bob");
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].count, 1);
+    assert!(seen[0].reacted, "bob is still in the bucket");
+    assert!(!room.reactions_for(id, "alice")[0].reacted, "alice is not");
+}
+
+/// An emoji nobody is in is not a reaction, and a message nobody reacted to
+/// holds no entry at all.
+///
+/// §3.5: `reactions` is keyed by message id, so anything it keeps once and
+/// never releases grows for the life of the room.
+#[test]
+fn empty_reaction_buckets_are_not_retained() {
+    let mut room = create_room();
+    let id = Uuid::new_v4();
+
+    room.toggle_reaction(id, "🔥", "alice");
+    room.toggle_reaction(id, "🔥", "alice");
+
+    assert!(
+        room.reactions.is_empty(),
+        "the last person leaving a bucket should leave nothing behind, found {:?}",
+        room.reactions
+    );
+    assert!(room.reactions_for(id, "alice").is_empty());
+}
+
+/// §3.5 — reaction state never outlives the message it belongs to.
+///
+/// Every path that removes a message must release its reactions; this walks
+/// each of them rather than the one that happened to be written first.
+#[tokio::test]
+async fn reactions_never_outlive_the_messages_they_belong_to() {
+    let tracker = MemoryTracker::new();
+
+    // Path 1: trimming to the history cap.
+    let mut room = create_room();
+    let mut ids = Vec::new();
+    for i in 0..(MAX_MESSAGES_PER_ROOM + 50) {
+        let id = Uuid::new_v4();
+        ids.push(id);
+        room.add_message(
+            OutgoingMessage {
+                message_id: id,
+                user_id: "u".to_string(),
+                animal_name: "otter".to_string(),
+                text: format!("m{i}"),
+                timestamp: "1".to_string(),
+                reply_to: None,
+                attachment: None,
+                reactions: Vec::new(),
+            },
+            &tracker,
+        );
+        room.toggle_reaction(id, "👍", "alice");
+    }
+    room.retain_newest(10, &tracker);
+    assert_eq!(
+        room.reactions.len(),
+        10,
+        "trimming history must drop the reactions of the messages it removed"
+    );
+
+    // Path 2: age-based cleanup.
+    let mut room = create_room();
+    let id = Uuid::new_v4();
+    room.add_message(
+        OutgoingMessage {
+            message_id: id,
+            user_id: "u".to_string(),
+            animal_name: "otter".to_string(),
+            text: "ancient".to_string(),
+            timestamp: "1".to_string(), // 1970 — far older than MAX_MESSAGE_AGE
+            reply_to: None,
+            attachment: None,
+            reactions: Vec::new(),
+        },
+        &tracker,
+    );
+    room.toggle_reaction(id, "👍", "alice");
+    room.cleanup_messages(Instant::now(), &tracker).await;
+    assert!(
+        room.chat_history.is_empty(),
+        "the aged message should have gone"
+    );
+    assert!(
+        room.reactions.is_empty(),
+        "and its reactions with it, found {:?}",
+        room.reactions
+    );
+
+    // Path 3: pruning under memory pressure.
+    let mut room = create_room();
+    let id = Uuid::new_v4();
+    room.add_message(
+        OutgoingMessage {
+            message_id: id,
+            user_id: "u".to_string(),
+            animal_name: "otter".to_string(),
+            text: "doomed".to_string(),
+            timestamp: "1".to_string(),
+            reply_to: None,
+            attachment: None,
+            reactions: Vec::new(),
+        },
+        &tracker,
+    );
+    room.toggle_reaction(id, "👍", "alice");
+    room.prune_old_messages(usize::MAX, &tracker);
+    assert!(room.chat_history.is_empty());
+    assert!(
+        room.reactions.is_empty(),
+        "pruning must release reactions too, found {:?}",
+        room.reactions
+    );
+}
+
+/// §5.9 — a reaction is a closed set, like an animal name.
+#[tokio::test]
+async fn a_reaction_must_be_on_the_roster() {
+    let state = Arc::new(AppState::new());
+    let message_id = Uuid::new_v4();
+    {
+        let mut rooms = state.rooms.write().await;
+        let mut room = create_room();
+        room.users.insert(
+            "u1".to_string(),
+            connected_user("u1", "otter", "c1", Instant::now()),
+        );
+        room.chat_history.push(OutgoingMessage {
+            message_id,
+            user_id: "u1".to_string(),
+            animal_name: "otter".to_string(),
+            text: "hi".to_string(),
+            timestamp: "1".to_string(),
+            reply_to: None,
+            attachment: None,
+            reactions: Vec::new(),
+        });
+        rooms.insert("react-room".to_string(), room);
+    }
+
+    for forged in [
+        "<img src=x onerror=alert(1)>",
+        "",
+        "A".repeat(5000).as_str(),
+    ] {
+        apply_client_event(
+            &state,
+            "react-room",
+            "u1",
+            "otter",
+            ClientEvent::React {
+                message_id: message_id.to_string(),
+                emoji: forged.to_string(),
+            },
+        )
+        .await;
+    }
+
+    let rooms = state.rooms.read().await;
+    assert!(
+        rooms.get("react-room").unwrap().reactions.is_empty(),
+        "nothing off the roster may become a reaction"
+    );
+}
+
+/// A message holds a bounded number of distinct emoji.
+#[test]
+fn a_message_holds_a_bounded_number_of_distinct_reactions() {
+    let mut room = create_room();
+    let id = Uuid::new_v4();
+
+    let mut accepted = 0;
+    for (i, emoji) in REACTION_EMOJI.iter().enumerate() {
+        if room
+            .toggle_reaction(id, emoji, &format!("user-{i}"))
+            .is_some()
+        {
+            accepted += 1;
+        }
+    }
+
+    assert_eq!(
+        accepted, MAX_REACTIONS_PER_MESSAGE,
+        "a message must stop accepting new emoji at its cap"
+    );
+    assert_eq!(
+        room.reactions.get(&id).map(std::collections::HashMap::len),
+        Some(MAX_REACTIONS_PER_MESSAGE)
+    );
+}
+
+/// The reaction roster is sorted, unique, and made of emoji.
+///
+/// Sorted because `is_reaction_emoji` binary-searches it, and because a
+/// duplicate is visible in review. This is the same sweep
+/// `animal_roster_is_sorted_unique_and_well_formed` runs over the animal names,
+/// for the same reason (§6.3).
+#[test]
+fn reaction_roster_is_sorted_unique_and_actually_emoji() {
+    let mut sorted = REACTION_EMOJI.to_vec();
+    sorted.sort_unstable();
+    assert_eq!(
+        REACTION_EMOJI,
+        &sorted[..],
+        "the roster must be sorted; binary_search depends on it"
+    );
+
+    let unique: std::collections::HashSet<&&str> = REACTION_EMOJI.iter().collect();
+    assert_eq!(
+        unique.len(),
+        REACTION_EMOJI.len(),
+        "two identical entries would be two buckets that render the same"
+    );
+
+    for emoji in REACTION_EMOJI {
+        assert!(!emoji.is_empty(), "an empty string is not an emoji");
+        assert!(
+            !emoji.is_ascii(),
+            "{emoji:?} is ASCII, so it is punctuation rather than an emoji"
+        );
+        assert!(
+            emoji.chars().count() <= 4,
+            "{emoji:?} is longer than any single emoji should be"
+        );
+        assert!(
+            is_reaction_emoji(emoji),
+            "{emoji:?} must be findable in its own roster"
+        );
+    }
+
+    assert!(!is_reaction_emoji("not-an-emoji"));
+    assert!(!is_reaction_emoji(""));
+}
+
+/// An image with no caption is a message; an empty message still is not.
+#[tokio::test]
+async fn an_image_may_be_sent_without_any_text() {
+    let state = Arc::new(AppState::new());
+    {
+        let mut rooms = state.rooms.write().await;
+        let mut room = create_room();
+        room.users.insert(
+            "u1".to_string(),
+            connected_user("u1", "otter", "c1", Instant::now()),
+        );
+        rooms.insert("photo-room".to_string(), room);
+    }
+
+    apply_client_event(
+        &state,
+        "photo-room",
+        "u1",
+        "otter",
+        ClientEvent::Message {
+            text: String::new(),
+            reply_to: None,
+            attachment: Some(png_attachment()),
+        },
+    )
+    .await;
+
+    // A second, identical-caption image is a second picture, not a stutter.
+    apply_client_event(
+        &state,
+        "photo-room",
+        "u1",
+        "otter",
+        ClientEvent::Message {
+            text: String::new(),
+            reply_to: None,
+            attachment: Some(png_attachment()),
+        },
+    )
+    .await;
+
+    // Text-only and empty is still nothing.
+    apply_client_event(
+        &state,
+        "photo-room",
+        "u1",
+        "otter",
+        ClientEvent::Message {
+            text: "   ".to_string(),
+            reply_to: None,
+            attachment: None,
+        },
+    )
+    .await;
+
+    let rooms = state.rooms.read().await;
+    let history = &rooms.get("photo-room").unwrap().chat_history;
+    assert_eq!(
+        history.len(),
+        2,
+        "two captionless images should both arrive, and an empty message should not"
+    );
+    assert!(history.iter().all(|m| m.attachment.is_some()));
+}
+
+// ========== THE SHIPPED CLIENT: EMOJI, IMAGES, REACTIONS ==========
+
+/// Every element the client asks for by id exists in the page it ships with.
+///
+/// The client is one HTML file and one JS file with no build step and no type
+/// checker, so a `getElementById` for an id that is not in the markup is not a
+/// compile error — it is `null`, and the first method that touches it throws at
+/// runtime, usually somewhere far from the typo. Nothing else in the pipeline
+/// would notice, which is exactly why this belongs in the gate (§9.1: verify
+/// against the artifact, not the source that should have produced it).
+#[test]
+fn every_element_the_client_looks_up_exists_in_the_page() {
+    let mut missing: Vec<&str> = Vec::new();
+
+    for (index, _) in EMBEDDED_JS.match_indices("getElementById('") {
+        let rest = &EMBEDDED_JS[index + "getElementById('".len()..];
+        let Some(end) = rest.find('\'') else { continue };
+        let id = &rest[..end];
+
+        // Ids are quoted in the markup, so this cannot match a prefix of a
+        // longer id the way a bare substring search would.
+        if !EMBEDDED_HTML.contains(&format!("id=\"{id}\"")) {
+            missing.push(id);
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "client.js looks up ids that index.html does not define: {missing:?}"
+    );
+}
+
+/// The client references no global it never declares.
+///
+/// A `const` that was used before it was written is a `ReferenceError` on the
+/// first image a user tries to send — and, with no build step, nothing between
+/// the editor and production would have said so. This is the sweep for that
+/// class rather than for the one instance of it.
+#[test]
+fn the_client_declares_every_screaming_case_constant_it_uses() {
+    // SCREAMING_SNAKE identifiers are this file's convention for module-level
+    // constants, which makes them the set worth checking mechanically.
+    let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    let bytes = EMBEDDED_JS.as_bytes();
+    let mut start = None;
+    for (i, &c) in bytes.iter().enumerate() {
+        let wordish = c.is_ascii_alphanumeric() || c == b'_';
+        if wordish && start.is_none() {
+            start = Some(i);
+        } else if !wordish && let Some(s) = start.take() {
+            let word = &EMBEDDED_JS[s..i];
+            if word.len() > 3
+                && word.contains('_')
+                && word
+                    .chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+            {
+                used.insert(word.to_string());
+            }
+        }
+    }
+
+    let undeclared: Vec<&String> = used
+        .iter()
+        .filter(|name| !EMBEDDED_JS.contains(&format!("const {name}")))
+        .collect();
+
+    assert!(
+        undeclared.is_empty(),
+        "client.js uses constants it never declares: {undeclared:?}"
+    );
+}
+
+/// Constraint #12 — the client re-encodes to the ceiling the server enforces.
+///
+/// The client shrinks an image until it fits `MAX_ATTACHMENT_BYTES`. If its
+/// copy of that number is larger than the server's, every photograph is
+/// rejected *after* the user has waited for it to encode; if smaller, images
+/// are needlessly degraded. Neither shows up as an error anywhere.
+#[test]
+fn client_attachment_ceiling_matches_the_server() {
+    assert!(
+        EMBEDDED_JS.contains(&format!(
+            "const MAX_ATTACHMENT_BYTES = {MAX_ATTACHMENT_BYTES};"
+        )),
+        "client.js must declare MAX_ATTACHMENT_BYTES = {MAX_ATTACHMENT_BYTES} to match config.rs"
+    );
+}
+
+/// Constraint #12 — every reaction the client offers, the server accepts.
+///
+/// Compared as sets: the server keeps its roster sorted by code point because
+/// `is_reaction_emoji` binary-searches it, and that is not an order to show
+/// anybody. A reaction button the server rejects is a button that silently does
+/// nothing, which is the drift this catches.
+#[test]
+fn client_reaction_roster_matches_the_server() {
+    let list = EMBEDDED_JS
+        .split_once("const REACTION_EMOJI = [")
+        .and_then(|(_, rest)| rest.split_once("];"))
+        .map(|(list, _)| list)
+        .expect("client.js should declare a REACTION_EMOJI list");
+
+    let client: std::collections::HashSet<&str> = list
+        .split(',')
+        .map(|entry| entry.trim().trim_matches('\'').trim())
+        .filter(|entry| !entry.is_empty())
+        .collect();
+
+    let server: std::collections::HashSet<&str> = REACTION_EMOJI.iter().copied().collect();
+
+    assert_eq!(
+        client, server,
+        "the client's reaction roster must be exactly the server's"
+    );
+
+    // The one-click bar is a subset of the same set, so no quick reaction can
+    // be one the server refuses.
+    let quick = EMBEDDED_JS
+        .split_once("const QUICK_REACTIONS = [")
+        .and_then(|(_, rest)| rest.split_once("];"))
+        .map(|(list, _)| list)
+        .expect("client.js should declare QUICK_REACTIONS");
+
+    for emoji in quick
+        .split(',')
+        .map(|e| e.trim().trim_matches('\'').trim())
+        .filter(|e| !e.is_empty())
+    {
+        assert!(
+            is_reaction_emoji(emoji),
+            "quick reaction {emoji:?} is not on the server's roster"
+        );
+    }
+}
+
+/// §10.3 — an image reserves its space before it decodes.
+///
+/// The server sends each attachment's dimensions for exactly one reason: so the
+/// client can size the box before a byte of the image arrives. Without it every
+/// picture shoves the conversation downward as it loads, which is the same
+/// layout-shift failure the empty-chat placeholder had.
+#[test]
+fn images_reserve_their_space_before_they_load() {
+    assert!(
+        EMBEDDED_JS.contains("aspectRatio"),
+        "the client must set an aspect-ratio from the server's dimensions"
+    );
+    assert!(
+        EMBEDDED_JS.contains("attachment.width") && EMBEDDED_JS.contains("attachment.height"),
+        "the reserved space must come from the attachment's own dimensions"
+    );
+}
+
+/// §5.7 / constraint #13 — the new UI adds no inline handler and no outside
+/// origin.
+///
+/// The emoji picker, the lightbox and the drag-and-drop overlay are all new
+/// interactive surfaces, and every one of them is the sort of thing that
+/// usually arrives with an `onclick=` or a CDN icon set. Either would quietly
+/// undo the CSP that the whole message pipeline leans on.
+#[test]
+fn the_new_client_surfaces_keep_the_policy_intact() {
+    for handler in [
+        "onclick=",
+        "onload=",
+        "onchange=",
+        "oninput=",
+        "ondrop=",
+        "ondragover=",
+        "onkeydown=",
+    ] {
+        assert!(
+            !EMBEDDED_HTML.contains(handler),
+            "index.html must not carry the inline handler {handler}"
+        );
+    }
+
+    assert!(
+        !EMBEDDED_HTML.contains("<script>"),
+        "the page must have no inline script block"
+    );
+
+    // The picker is emoji from the system font, not an icon set from a CDN.
+    for origin in [
+        "cdn.",
+        "unpkg.com",
+        "googleapis.com",
+        "gstatic.com",
+        "jsdelivr",
+    ] {
+        assert!(
+            !EMBEDDED_JS.contains(origin),
+            "client.js must not reference the third-party origin {origin}"
+        );
+    }
+}
+
+/// Images are re-encoded in a canvas, which is also what strips EXIF.
+///
+/// The downscale exists because the server's ceiling is small. Dropping the
+/// metadata is a side effect, but it is the one that matters most on a server
+/// whose premise is that you get an animal name instead of an account: a
+/// phone photograph carries the coordinates it was taken at, and sending that
+/// to a room of strangers is a disclosure nobody intended to make (§5.6).
+#[test]
+fn images_are_re_encoded_rather_than_sent_as_picked() {
+    assert!(
+        EMBEDDED_JS.contains("createElement('canvas')"),
+        "the client must re-encode through a canvas, not send the original file"
+    );
+    assert!(
+        !EMBEDDED_JS.contains("readAsDataURL"),
+        "reading the picked file straight to a data URL would ship the original \
+         bytes, EXIF and all"
+    );
+}
+
+/// WebP is sniffed from `RIFF....WEBP`, not from the four size bytes between.
+///
+/// The client encodes to WebP first because it is roughly a third smaller than
+/// JPEG at the same quality — which is the difference between a photo fitting
+/// under the ceiling and being refused — so this is the format most attachments
+/// actually arrive as.
+#[test]
+fn a_webp_payload_is_recognised_by_its_riff_tag() {
+    // "RIFF" + 4 size bytes + "WEBP" + "VP8 ", base64-encoded.
+    let webp = Attachment {
+        mime: "image/webp".to_string(),
+        data: "UklGRiQAAABXRUJQVlA4IBgAAAAwAQCdASoBAAEAAQAcJaQAA3AA/v3AgAA=".to_string(),
+        width: 1,
+        height: 1,
+        faded: false,
+    };
+    let clean = sanitize_attachment(webp).expect("a real WebP is accepted");
+    assert_eq!(clean.mime, "image/webp");
+
+    // The same tag with the wrong four bytes where WEBP should be is not one.
+    let not_webp = Attachment {
+        mime: "image/webp".to_string(),
+        data: "UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAA".to_string(),
+        width: 1,
+        height: 1,
+        faded: false,
+    };
+    assert!(
+        sanitize_attachment(not_webp).is_err(),
+        "a RIFF container that is not WEBP must be refused"
+    );
+}
+
+/// The base64 decoder accepts the whole standard alphabet.
+///
+/// `+` and `/` are the two characters a hand-rolled decoder is most likely to
+/// forget, and a payload containing either would then be refused as "not valid
+/// base64" — an image that fails to send for no reason the user can see.
+#[test]
+fn the_attachment_decoder_accepts_the_whole_base64_alphabet() {
+    // A PNG whose encoding exercises '+' and '/' as well as the letter and
+    // digit ranges, plus '=' padding.
+    let png = Attachment {
+        mime: "image/png".to_string(),
+        data: "iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAAFUlEQVR42mP8z8BQz0AEYBxVSF+FABJADveWkH6oAAAAAElFTkSuQmCC".to_string(),
+        width: 10,
+        height: 10,
+        faded: false,
+    };
+    assert!(
+        sanitize_attachment(png).is_ok(),
+        "a payload using '+' and '/' must still decode"
+    );
+}
+
+/// A rejected attachment takes its whole message with it.
+///
+/// Delivering the caption without the picture would be worse than delivering
+/// nothing: the sender would see their words arrive and assume the image did
+/// too.
+#[tokio::test]
+async fn a_message_whose_attachment_is_refused_is_not_delivered() {
+    let state = Arc::new(AppState::new());
+    {
+        let mut rooms = state.rooms.write().await;
+        let mut room = create_room();
+        room.users.insert(
+            "u1".to_string(),
+            connected_user("u1", "otter", "c1", Instant::now()),
+        );
+        rooms.insert("bad-image".to_string(), room);
+    }
+
+    apply_client_event(
+        &state,
+        "bad-image",
+        "u1",
+        "otter",
+        ClientEvent::Message {
+            text: "look at this".to_string(),
+            reply_to: None,
+            attachment: Some(Attachment {
+                mime: "image/png".to_string(),
+                data: "bm90IGFuIGltYWdlIGF0IGFsbA==".to_string(),
+                width: 10,
+                height: 10,
+                faded: false,
+            }),
+        },
+    )
+    .await;
+
+    let rooms = state.rooms.read().await;
+    assert!(
+        rooms.get("bad-image").unwrap().chat_history.is_empty(),
+        "a message must not arrive without the image it was sent with"
+    );
+}
+
+/// The whole reaction path over `apply_client_event`, including its refusals.
+#[tokio::test]
+async fn the_reaction_event_broadcasts_throttles_and_refuses() {
+    let state = Arc::new(AppState::new());
+    let message_id = Uuid::new_v4();
+    {
+        let mut rooms = state.rooms.write().await;
+        let mut room = create_room();
+        room.users.insert(
+            "u1".to_string(),
+            connected_user("u1", "otter", "c1", Instant::now()),
+        );
+        rooms.insert("react-flow".to_string(), room);
+    }
+
+    let mut receiver = state
+        .rooms
+        .read()
+        .await
+        .get("react-flow")
+        .unwrap()
+        .sender
+        .subscribe();
+
+    // A message id that is not a uuid changes nothing.
+    apply_client_event(
+        &state,
+        "react-flow",
+        "u1",
+        "otter",
+        ClientEvent::React {
+            message_id: "not-a-uuid".to_string(),
+            emoji: "🔥".to_string(),
+        },
+    )
+    .await;
+    assert!(
+        state
+            .rooms
+            .read()
+            .await
+            .get("react-flow")
+            .unwrap()
+            .reactions
+            .is_empty()
+    );
+
+    // A real one is applied and broadcast.
+    apply_client_event(
+        &state,
+        "react-flow",
+        "u1",
+        "otter",
+        ClientEvent::React {
+            message_id: message_id.to_string(),
+            emoji: "🔥".to_string(),
+        },
+    )
+    .await;
+
+    let event = receiver.try_recv().expect("a reaction should be broadcast");
+    match event {
+        OutgoingEvent::System {
+            event:
+                SystemEvent::Reaction {
+                    emoji,
+                    active,
+                    count,
+                    ..
+                },
+        } => {
+            assert_eq!(emoji, "🔥");
+            assert!(active);
+            assert_eq!(count, 1);
+        }
+        other => panic!("expected a Reaction event, got {other:?}"),
+    }
+
+    // Immediately again: the per-user throttle drops it, so nothing is sent.
+    apply_client_event(
+        &state,
+        "react-flow",
+        "u1",
+        "otter",
+        ClientEvent::React {
+            message_id: message_id.to_string(),
+            emoji: "👍".to_string(),
+        },
+    )
+    .await;
+    assert!(
+        receiver.try_recv().is_err(),
+        "a reaction inside the throttle window must not be broadcast"
+    );
+}
+
+/// A message at its reaction cap refuses new emoji without leaving state behind.
+#[tokio::test]
+async fn a_refused_reaction_leaves_no_empty_bucket() {
+    let mut room = create_room();
+    let id = Uuid::new_v4();
+
+    // Fill the message to its cap.
+    for (i, emoji) in REACTION_EMOJI
+        .iter()
+        .take(MAX_REACTIONS_PER_MESSAGE)
+        .enumerate()
+    {
+        assert!(room.toggle_reaction(id, emoji, &format!("u{i}")).is_some());
+    }
+
+    let over_cap = REACTION_EMOJI[MAX_REACTIONS_PER_MESSAGE];
+    assert_eq!(
+        room.toggle_reaction(id, over_cap, "someone"),
+        None,
+        "a message at its cap must refuse a new emoji"
+    );
+    assert_eq!(
+        room.reactions.get(&id).map(std::collections::HashMap::len),
+        Some(MAX_REACTIONS_PER_MESSAGE),
+        "and must not record the one it refused"
+    );
+
+    // The refusal must not have left the over-cap emoji behind as an empty
+    // bucket — a bucket nobody is in is not a reaction, and this map is keyed
+    // by message id (§3.5).
+    assert!(
+        !room
+            .reactions
+            .get(&id)
+            .expect("the message still holds its reactions")
+            .contains_key(over_cap),
+        "a refused emoji must leave no trace"
+    );
+}
+
+/// Fading is idempotent and stops as soon as the room is back under budget.
+#[tokio::test]
+async fn fading_skips_images_that_already_faded() {
+    let tracker = MemoryTracker::new();
+    let mut room = create_room();
+
+    let chunk = MAX_ATTACHMENT_BYTES;
+    let needed = (MAX_ROOM_ATTACHMENT_BYTES / chunk) + 3;
+    for i in 0..needed {
+        room.add_message(
+            OutgoingMessage {
+                message_id: Uuid::new_v4(),
+                user_id: "u".to_string(),
+                animal_name: "otter".to_string(),
+                text: format!("p{i}"),
+                timestamp: "1".to_string(),
+                reply_to: None,
+                attachment: Some(Attachment {
+                    mime: "image/png".to_string(),
+                    data: "A".repeat(chunk),
+                    width: 10,
+                    height: 10,
+                    faded: false,
+                }),
+                reactions: Vec::new(),
+            },
+            &tracker,
+        );
+    }
+
+    let faded_after_first = room
+        .chat_history
+        .iter()
+        .filter(|m| m.attachment.as_ref().is_some_and(|a| a.faded))
+        .count();
+
+    // A text-only message cannot push the room over its picture budget, so a
+    // second pass must find nothing left to do.
+    room.add_message(
+        OutgoingMessage {
+            message_id: Uuid::new_v4(),
+            user_id: "u".to_string(),
+            animal_name: "otter".to_string(),
+            text: "just words".to_string(),
+            timestamp: "1".to_string(),
+            reply_to: None,
+            attachment: None,
+            reactions: Vec::new(),
+        },
+        &tracker,
+    );
+
+    let faded_after_second = room
+        .chat_history
+        .iter()
+        .filter(|m| m.attachment.as_ref().is_some_and(|a| a.faded))
+        .count();
+
+    assert_eq!(
+        faded_after_first, faded_after_second,
+        "an already-faded image must not be faded again"
+    );
+    assert!(room.attachment_bytes <= MAX_ROOM_ATTACHMENT_BYTES);
 }

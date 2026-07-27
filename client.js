@@ -1,6 +1,115 @@
 // Production-grade frontend for real-time chat
 // Features: proper error handling, accessibility, mobile support, disconnect recovery
 
+// ===================================================================
+// Emoji
+// ===================================================================
+
+/// The emoji offered by the picker, grouped for reading.
+///
+/// Emoji typed into a message are ordinary text: they travel through the same
+/// Markdown-to-sanitised-HTML pipeline as every other character, so the server
+/// needs no list for them and this one is the client's own business.
+///
+/// Reactions are different — those are server-stored state drawn from a closed
+/// set (`REACTION_EMOJI` in `src/emoji.rs`), and `QUICK_REACTIONS` below must
+/// stay a subset of it. `client_reaction_roster_matches_the_server` fails if it
+/// drifts, because a reaction button the server rejects is a button that
+/// silently does nothing.
+const EMOJI_GROUPS = [
+    {
+        id: 'smileys',
+        label: 'Smileys & people',
+        icon: '😀',
+        emoji: ['😀','😃','😄','😁','😆','😅','🤣','😂','🙂','🙃','🫠','😉','😊','😇','🥰','😍','🤩','😘','😗','😚','😙','🥲','😋','😛','😜','🤪','😝','🤑','🤗','🤭','🫢','🤫','🤔','🫡','🤐','🤨','😐','😑','😶','🫥','😏','😒','🙄','😬','🤥','😌','😔','😪','🤤','😴','😷','🤒','🤕','🤢','🤮','🤧','🥵','🥶','🥴','😵','🤯','🤠','🥳','🥸','😎','🤓','🧐','😕','🫤','😟','🙁','😮','😯','😲','😳','🥺','🥹','😦','😧','😨','😰','😥','😢','😭','😱','😖','😣','😞','😓','😩','😫','🥱','😤','😡','😠','🤬','😈','👿','💀','💩','🤡','👻','👽','🤖','🎃'],
+    },
+    {
+        id: 'gestures',
+        label: 'Gestures & body',
+        icon: '👋',
+        emoji: ['👋','🤚','🖐️','✋','🖖','🫱','🫲','🫳','🫴','👌','🤌','🤏','✌️','🤞','🫰','🤟','🤘','🤙','👈','👉','👆','🖕','👇','☝️','🫵','👍','👎','✊','👊','🤛','🤜','👏','🙌','🫶','👐','🤲','🤝','🙏','✍️','💅','🤳','💪','🦾','🦵','🦶','👂','👃','🧠','🫀','🫁','🦷','👀','👁️','👅','👄','🫦'],
+    },
+    {
+        id: 'animals',
+        label: 'Animals & nature',
+        icon: '🦊',
+        emoji: ['🐶','🐱','🐭','🐹','🐰','🦊','🐻','🐼','🐨','🐯','🦁','🐮','🐷','🐸','🐵','🙈','🙉','🙊','🐔','🐧','🐦','🐤','🦆','🦅','🦉','🦇','🐺','🐗','🐴','🦄','🐝','🪱','🐛','🦋','🐌','🐞','🐜','🪰','🦂','🐢','🐍','🦎','🦖','🐙','🦑','🦐','🦞','🦀','🐡','🐠','🐟','🐬','🐳','🐋','🦈','🐊','🐅','🦓','🦍','🦧','🐘','🦛','🐪','🦒','🦘','🐃','🐂','🐄','🐎','🐖','🐏','🐑','🦙','🐐','🦌','🐕','🐩','🦮','🐈','🐓','🦃','🦤','🦚','🦜','🦢','🦩','🕊️','🐇','🦝','🦨','🦡','🦫','🦦','🦥','🐁','🐀','🐿️','🦔','🌵','🎄','🌲','🌳','🌴','🌱','🌿','☘️','🍀','🎍','🪴','🎋','🍃','🍂','🍁','🍄','🐚','🪨','🌾','💐','🌷','🌹','🥀','🌺','🌸','🌼','🌻','🌞','🌝','🌛','🌜','🌚','🌕','🌙','⭐','🌟','✨','⚡','☄️','💥','🔥','🌪️','🌈','☀️','🌤️','⛅','☁️','🌧️','⛈️','🌩️','🌨️','❄️','☃️','⛄','💨','💧','💦','🌊'],
+    },
+    {
+        id: 'food',
+        label: 'Food & drink',
+        icon: '🍕',
+        emoji: ['🍏','🍎','🍐','🍊','🍋','🍌','🍉','🍇','🍓','🫐','🍈','🍒','🍑','🥭','🍍','🥥','🥝','🍅','🍆','🥑','🥦','🥬','🥒','🌶️','🫑','🌽','🥕','🫒','🧄','🧅','🥔','🍠','🥐','🥯','🍞','🥖','🥨','🧀','🥚','🍳','🧈','🥞','🧇','🥓','🥩','🍗','🍖','🌭','🍔','🍟','🍕','🫓','🥪','🥙','🧆','🌮','🌯','🫔','🥗','🥘','🫕','🥫','🍝','🍜','🍲','🍛','🍣','🍱','🥟','🦪','🍤','🍙','🍚','🍘','🍥','🥠','🥮','🍢','🍡','🍧','🍨','🍦','🥧','🧁','🍰','🎂','🍮','🍭','🍬','🍫','🍿','🍩','🍪','🌰','🥜','🍯','🥛','🍼','🫖','☕','🍵','🧃','🥤','🧋','🍶','🍺','🍻','🥂','🍷','🥃','🍸','🍹','🧉','🍾','🧊'],
+    },
+    {
+        id: 'activity',
+        label: 'Activity & travel',
+        icon: '⚽',
+        emoji: ['⚽','🏀','🏈','⚾','🥎','🎾','🏐','🏉','🥏','🎱','🪀','🏓','🏸','🏒','🏑','🥍','🏏','🪃','🥅','⛳','🪁','🏹','🎣','🤿','🥊','🥋','🎽','🛹','🛼','🛷','⛸️','🥌','🎿','⛷️','🏂','🪂','🏋️','🤼','🤸','⛹️','🤺','🤾','🏌️','🏇','🧘','🏄','🏊','🤽','🚣','🧗','🚴','🚵','🎪','🎭','🎨','🎬','🎤','🎧','🎼','🎹','🥁','🪘','🎷','🎺','🪗','🎸','🪕','🎻','🎲','♟️','🎯','🎳','🎮','🎰','🧩','🚗','🚕','🚙','🚌','🚎','🏎️','🚓','🚑','🚒','🚐','🛻','🚚','🚛','🚜','🦯','🦽','🦼','🛴','🚲','🛵','🏍️','🛺','🚨','🚔','🚍','🚘','🚖','🚡','🚠','🚟','🚃','🚋','🚞','🚝','🚄','🚅','🚈','🚂','🚆','🚇','🚊','🚉','✈️','🛫','🛬','🛩️','💺','🛰️','🚀','🛸','🚁','🛶','⛵','🚤','🛥️','🛳️','⛴️','🚢','⚓','🪝','⛽','🚧','🚦','🚥','🗺️','🗿','🗽','🗼','🏰','🏯','🏟️','🎡','🎢','🎠','⛲','⛱️','🏖️','🏝️','🏜️','🌋','⛰️','🏔️','🗻','🏕️','⛺','🏠','🏡','🏘️','🏚️','🏗️','🏭','🏢','🏬','🏣','🏤','🏥','🏦','🏨','🏪','🏫','🏩','💒','🏛️','⛪','🕌','🕍','🛕','🕋','⛩️','🌁','🌃','🏙️','🌄','🌅','🌆','🌇','🌉'],
+    },
+    {
+        id: 'objects',
+        label: 'Objects',
+        icon: '💡',
+        emoji: ['⌚','📱','💻','⌨️','🖥️','🖨️','🖱️','🕹️','💽','💾','💿','📀','📼','📷','📸','📹','🎥','📽️','📞','☎️','📟','📠','📺','📻','🎙️','⏱️','⏲️','⏰','🕰️','⌛','⏳','📡','🔋','🔌','💡','🔦','🕯️','🪔','🧯','🛢️','💸','💵','💴','💶','💷','🪙','💰','💳','💎','⚖️','🪜','🧰','🪛','🔧','🔨','⚒️','🛠️','⛏️','🪚','🔩','⚙️','🪤','🧱','⛓️','🧲','🔫','💣','🧨','🪓','🔪','🗡️','⚔️','🛡️','🚬','⚰️','🪦','⚱️','🏺','🔮','📿','🧿','💈','⚗️','🔭','🔬','🕳️','🩹','🩺','💊','💉','🩸','🧬','🦠','🧫','🧪','🌡️','🧹','🪣','🧼','🪥','🧽','🧴','🔑','🗝️','🚪','🪑','🛋️','🛏️','🛌','🧸','🪆','🖼️','🪞','🪟','🛍️','🛒','🎁','🎈','🎏','🎀','🪄','🪅','🎊','🎉','🎎','🏮','🎐','🧧','✉️','📩','📨','📧','💌','📥','📤','📦','🏷️','🪧','📪','📫','📬','📭','📮','📯','📜','📃','📄','📑','🧾','📊','📈','📉','🗒️','🗓️','📆','📅','🗑️','📇','🗃️','🗳️','🗄️','📋','📁','📂','🗂️','🗞️','📰','📓','📔','📒','📕','📗','📘','📙','📚','📖','🔖','🧷','🔗','📎','🖇️','📐','📏','🧮','📌','📍','✂️','🖊️','🖋️','✒️','🖌️','🖍️','📝','✏️','🔍','🔎','🔏','🔐','🔒','🔓'],
+    },
+    {
+        id: 'symbols',
+        label: 'Symbols',
+        icon: '❤️',
+        emoji: ['❤️','🧡','💛','💚','💙','💜','🖤','🤍','🤎','💔','❣️','💕','💞','💓','💗','💖','💘','💝','💟','☮️','✝️','☪️','🕉️','☸️','✡️','🔯','🕎','☯️','☦️','🛐','⛎','♈','♉','♊','♋','♌','♍','♎','♏','♐','♑','♒','♓','🆔','⚛️','🉑','☢️','☣️','📴','📳','🈶','🈚','🈸','🈺','🈷️','✴️','🆚','💮','🉐','㊙️','㊗️','🈴','🈵','🈹','🈲','🅰️','🅱️','🆎','🆑','🅾️','🆘','❌','⭕','🛑','⛔','📛','🚫','💯','💢','♨️','🚷','🚯','🚳','🚱','🔞','📵','🚭','❗','❕','❓','❔','‼️','⁉️','🔅','🔆','〽️','⚠️','🚸','🔱','⚜️','🔰','♻️','✅','🈯','💹','❇️','✳️','❎','🌐','💠','Ⓜ️','🌀','💤','🏧','🚾','♿','🅿️','🛗','🈳','🈂️','🛂','🛃','🛄','🛅','🚹','🚺','🚼','⚧️','🚻','🚮','🎦','📶','🈁','🔣','ℹ️','🔤','🔡','🔠','🆖','🆗','🆙','🆒','🆕','🆓','0️⃣','1️⃣','2️⃣','3️⃣','4️⃣','5️⃣','6️⃣','7️⃣','8️⃣','9️⃣','🔟','🔢','#️⃣','*️⃣','⏏️','▶️','⏸️','⏯️','⏹️','⏺️','⏭️','⏮️','⏩','⏪','🔀','🔁','🔂','◀️','🔼','🔽','⏫','⏬','➡️','⬅️','⬆️','⬇️','↗️','↘️','↙️','↖️','↕️','↔️','↪️','↩️','⤴️','⤵️','🔃','🔄','🔚','🔙','🔛','🔝','🔜','✔️','☑️','🔘','⚪','⚫','🔴','🔵','🟠','🟡','🟢','🟣','🟤','🔺','🔻','🔸','🔹','🔶','🔷','🔳','🔲','▪️','▫️','◾','◽','◼️','◻️','⬛','⬜','🟥','🟧','🟨','🟩','🟦','🟪','🟫','🔈','🔇','🔉','🔊','🔔','🔕','📣','📢','👁‍🗨','💬','💭','🗯️','♠️','♣️','♥️','♦️','🃏','🎴','🀄','🕐','🕑','🕒','🕓','🕔','🕕','🕖','🕗','🕘','🕙','🕚','🕛'],
+    },
+];
+
+/// The emoji offered on the hover bar, in the order people reach for them.
+///
+/// A subset of the server's `REACTION_EMOJI`, deliberately short: the bar is
+/// one click, and a bar with thirty buttons is a menu.
+const QUICK_REACTIONS = ['👍', '❤️', '😂', '🎉', '😮', '😢', '🔥', '🙏'];
+
+/// Every emoji the server will accept as a reaction, for the "more" picker.
+/// Mirrors `REACTION_EMOJI` in `src/emoji.rs`; the parity test compares them as
+/// sets, since the server keeps its copy sorted for binary search and that is
+/// not an order to show anybody.
+const REACTION_EMOJI = [
+    '‼️', '✅', '❌', '❤️', '⭐', '🎉', '🎯', '👀', '👇', '👋', '👍', '👎', '💀', '💜', '💡', '💯',
+    '🔥', '😀', '😂', '😅', '😍', '😎', '😐', '😔', '😡', '😢', '😭', '😮', '😱', '😴', '🙄', '🙏',
+    '🚀', '🤔', '🤝', '🤣', '🥳', '🫡',
+];
+
+/// The server's ceiling on an encoded attachment, mirrored here so the client
+/// can re-encode until it fits instead of sending something that will bounce.
+///
+/// Must equal `MAX_ATTACHMENT_BYTES` in `src/config.rs`; the client shrinking
+/// to a larger figure than the server accepts means every photo is rejected
+/// after the user has waited for it to encode.
+/// `client_attachment_ceiling_matches_the_server` fails if they drift.
+const MAX_ATTACHMENT_BYTES = 131072;
+
+/// Search keywords, so typing "fire" finds 🔥 without shipping a full
+/// annotation database. Only the emoji people actually search for by name.
+const EMOJI_KEYWORDS = {
+    '😀': 'grin smile happy', '😂': 'laugh cry joy lol', '🤣': 'rofl laugh lol',
+    '🙂': 'smile', '😉': 'wink', '😍': 'love heart eyes', '🥰': 'love adore',
+    '😘': 'kiss', '😎': 'cool sunglasses', '🤔': 'think hmm', '😐': 'neutral meh',
+    '🙄': 'eyeroll annoyed', '😢': 'sad cry', '😭': 'sob cry bawl', '😡': 'angry mad rage',
+    '😱': 'scream shock fear', '😴': 'sleep tired zzz', '🥳': 'party celebrate',
+    '💀': 'skull dead dying', '👻': 'ghost boo', '🤖': 'robot bot ai',
+    '👍': 'thumbs up yes approve like', '👎': 'thumbs down no disapprove',
+    '👏': 'clap applause', '🙏': 'pray thanks please', '🤝': 'handshake deal agree',
+    '💪': 'muscle strong flex', '👀': 'eyes look watch', '👋': 'wave hello hi bye',
+    '❤️': 'heart love red', '💔': 'broken heart', '🔥': 'fire lit hot flame',
+    '⭐': 'star', '✨': 'sparkle shiny', '⚡': 'lightning bolt zap fast',
+    '🎉': 'party tada celebrate congrats', '🎊': 'confetti party', '🎁': 'gift present',
+    '✅': 'check tick yes done', '❌': 'cross no wrong', '💯': 'hundred perfect',
+    '🚀': 'rocket launch ship fast', '🐛': 'bug insect', '💡': 'idea lightbulb',
+    '🍕': 'pizza food', '☕': 'coffee', '🍺': 'beer', '🎂': 'cake birthday',
+    '🐶': 'dog puppy', '🐱': 'cat kitten', '🦊': 'fox', '🦄': 'unicorn',
+    '🌈': 'rainbow', '☀️': 'sun sunny', '🌙': 'moon night', '❄️': 'snow cold',
+    '💻': 'laptop computer code', '📱': 'phone mobile', '🔒': 'lock secure',
+    '💰': 'money cash', '🎯': 'target bullseye goal', '🫡': 'salute yes sir',
+};
+
 class ChatApp {
     constructor() {
         this.ws = null;
@@ -46,6 +155,14 @@ class ChatApp {
         
         // Reply state
         this.replyingTo = null; // { messageId, authorName, text }
+
+        // Composer extras
+        this.pendingAttachment = null;
+        this.reactionTarget = null;
+        this.unreadCount = 0;
+        this.dragDepth = 0;
+        this.lightboxReturnFocus = null;
+        this.lastRenderedDay = null;
         
         // DOM elements
         this.chat = document.getElementById('chat');
@@ -67,12 +184,34 @@ class ChatApp {
         this.replyPreviewAuthor = document.getElementById('replyPreviewAuthor');
         this.replyPreviewText = document.getElementById('replyPreviewText');
         this.replyPreviewClose = document.getElementById('replyPreviewClose');
+        this.attachBtn = document.getElementById('attachBtn');
+        this.fileInput = document.getElementById('fileInput');
+        this.attachmentTray = document.getElementById('attachmentTray');
+        this.attachmentPreview = document.getElementById('attachmentPreview');
+        this.attachmentName = document.getElementById('attachmentName');
+        this.attachmentSize = document.getElementById('attachmentSize');
+        this.attachmentRemove = document.getElementById('attachmentRemove');
+        this.emojiBtn = document.getElementById('emojiBtn');
+        this.emojiPanel = document.getElementById('emojiPanel');
+        this.emojiSearch = document.getElementById('emojiSearch');
+        this.emojiTabs = document.getElementById('emojiTabs');
+        this.emojiGrid = document.getElementById('emojiGrid');
+        this.emojiEmpty = document.getElementById('emojiEmpty');
+        this.reactionBar = document.getElementById('reactionBar');
+        this.lightbox = document.getElementById('lightbox');
+        this.lightboxImage = document.getElementById('lightboxImage');
+        this.lightboxClose = document.getElementById('lightboxClose');
+        this.jumpLatest = document.getElementById('jumpLatest');
+        this.jumpLatestCount = document.getElementById('jumpLatestCount');
+        this.dropOverlay = document.getElementById('dropOverlay');
         
         this.init();
     }
     
     init() {
         this.setupEventListeners();
+        this.setupComposerExtras();
+        this.buildEmojiPicker();
         this.initAudioContext();
         this.updateRoomName();
         this.connect();
@@ -409,6 +548,14 @@ class ChatApp {
         // Track activity for heartbeat
         this.lastActivityTime = Date.now();
         this.fadeWarningShown = false;
+
+        // Count what arrives while the reader is scrolled away, so the
+        // jump-to-latest button can say how much they are behind. Not counted
+        // during the history replay, which is not "new".
+        if (!this.isLoadingHistory && !this.isAtBottom() && msg.user_id !== this.myUserId) {
+            this.unreadCount += 1;
+            this.updateJumpLatest();
+        }
         
         // Combo detection: rapid messages within 3 seconds
         const now = Date.now();
@@ -449,8 +596,10 @@ class ChatApp {
         if (this.chat.querySelector(`[data-message-id="${msg.message_id}"]`)) {
             return;
         }
-        
-        const timestamp = this.formatTimestamp(this.parseTimestamp(msg.timestamp));
+
+        const sentAt = this.parseTimestamp(msg.timestamp);
+        const timestamp = this.formatTimestamp(sentAt);
+        this.maybeRenderDateSeparator(sentAt);
         
         const div = document.createElement('div');
         div.className = `message ${isSent ? 'sent' : 'received'}${isCombo ? ' combo' : ''}`;
@@ -505,18 +654,664 @@ class ChatApp {
         const content = document.createElement('div');
         content.className = 'message-content';
         content.innerHTML = msg.text; // Already sanitized by server
-        
+
         const tsDiv = document.createElement('div');
         tsDiv.className = 'timestamp';
         tsDiv.textContent = timestamp;
-        
+
         div.appendChild(header);
         div.appendChild(content);
+
+        if (msg.attachment) {
+            div.appendChild(this.renderAttachment(msg.attachment));
+        }
+
+        // Always present, even when empty: `.reactions:empty` hides it in CSS,
+        // so a reaction arriving later has somewhere to go without the message
+        // being rebuilt (and without the row changing height until there is
+        // actually something to show).
+        const reactions = document.createElement('div');
+        reactions.className = 'reactions';
+        for (const reaction of msg.reactions || []) {
+            reactions.appendChild(
+                this.buildReactionPill(msg.message_id, reaction.emoji, reaction.count, reaction.reacted)
+            );
+        }
+        div.appendChild(reactions);
+
         div.appendChild(tsDiv);
         
         this.chat.appendChild(div);
         
         this.pruneRenderedMessages();
+    }
+
+
+    /// Wires the attach button, emoji picker, reactions, lightbox and the
+    /// paste/drag-and-drop paths.
+    ///
+    /// All of it is `addEventListener` and none of it is an `onclick=`
+    /// attribute, which is what lets the CSP stay `script-src 'self'` with no
+    /// `'unsafe-inline'` (constraint #13). An inline handler here would quietly
+    /// force the policy open on a server whose job is rendering user Markdown.
+    setupComposerExtras() {
+        this.attachBtn.addEventListener('click', () => this.fileInput.click());
+        this.attachmentRemove.addEventListener('click', () => this.clearAttachment());
+        this.fileInput.addEventListener('change', () => {
+            const file = this.fileInput.files && this.fileInput.files[0];
+            if (file) this.stageAttachment(file);
+        });
+
+        this.emojiBtn.addEventListener('click', () => this.toggleEmojiPanel());
+        this.emojiSearch.addEventListener('input', () => this.renderEmojiGrid(this.emojiSearch.value));
+        this.emojiSearch.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                this.toggleEmojiPanel(false);
+                this.input.focus();
+            }
+        });
+
+        // Click-away closes the picker, but a click *inside* it must not.
+        document.addEventListener('click', (e) => {
+            if (!this.emojiPanel.hidden
+                && !this.emojiPanel.contains(e.target)
+                && !this.emojiBtn.contains(e.target)) {
+                this.toggleEmojiPanel(false);
+            }
+        });
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key !== 'Escape') return;
+            if (!this.lightbox.hidden) { this.closeLightbox(); return; }
+            if (!this.emojiPanel.hidden) { this.toggleEmojiPanel(false); this.input.focus(); return; }
+            if (!this.reactionBar.hidden) { this.hideReactionBar(); }
+        });
+
+        this.lightboxClose.addEventListener('click', () => this.closeLightbox());
+        this.lightbox.addEventListener('click', (e) => {
+            if (e.target === this.lightbox) this.closeLightbox();
+        });
+
+        this.jumpLatest.addEventListener('click', () => {
+            this.shouldAutoScroll = true;
+            this.unreadCount = 0;
+            this.scrollToBottom();
+            this.updateJumpLatest();
+        });
+
+        // The reaction bar follows whichever message the pointer is over.
+        this.chat.addEventListener('pointerover', (e) => {
+            if (e.pointerType === 'touch') return;
+            const message = e.target.closest('.message');
+            if (message) this.showReactionBar(message);
+        });
+        this.chat.addEventListener('pointerleave', () => this.hideReactionBar());
+        // A scroll invalidates the bar's position, and a bar left floating over
+        // an unrelated message is worse than no bar.
+        this.chat.addEventListener('scroll', () => this.hideReactionBar(), { passive: true });
+
+        // Touch has no hover, so a long press opens the same bar.
+        let pressTimer = null;
+        this.chat.addEventListener('touchstart', (e) => {
+            const message = e.target.closest('.message');
+            if (!message) return;
+            pressTimer = setTimeout(() => this.showReactionBar(message), 450);
+        }, { passive: true });
+        for (const event of ['touchend', 'touchmove', 'touchcancel']) {
+            this.chat.addEventListener(event, () => {
+                if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+            }, { passive: true });
+        }
+
+        // Paste an image straight into the composer.
+        this.input.addEventListener('paste', (e) => {
+            const items = e.clipboardData && e.clipboardData.items;
+            if (!items) return;
+            for (const item of items) {
+                if (item.kind === 'file' && item.type.startsWith('image/')) {
+                    e.preventDefault();
+                    const file = item.getAsFile();
+                    if (file) this.stageAttachment(file);
+                    return;
+                }
+            }
+        });
+
+        // Drag and drop. `dragDepth` counts enter/leave pairs, because moving
+        // over a child element fires `dragleave` on the parent — without the
+        // counter the overlay flickers off every time the pointer crosses a
+        // message boundary.
+        window.addEventListener('dragenter', (e) => {
+            if (!this.dragHasFiles(e)) return;
+            e.preventDefault();
+            this.dragDepth += 1;
+            this.dropOverlay.hidden = false;
+        });
+        window.addEventListener('dragover', (e) => {
+            if (this.dragHasFiles(e)) e.preventDefault();
+        });
+        window.addEventListener('dragleave', (e) => {
+            if (!this.dragHasFiles(e)) return;
+            this.dragDepth = Math.max(0, this.dragDepth - 1);
+            if (this.dragDepth === 0) this.dropOverlay.hidden = true;
+        });
+        window.addEventListener('drop', (e) => {
+            if (!this.dragHasFiles(e)) return;
+            e.preventDefault();
+            this.dragDepth = 0;
+            this.dropOverlay.hidden = true;
+            const file = e.dataTransfer.files && e.dataTransfer.files[0];
+            if (file) this.stageAttachment(file);
+        });
+    }
+
+    dragHasFiles(e) {
+        return Boolean(e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files'));
+    }
+
+    // ===============================================================
+    // Images
+    // ===============================================================
+
+    /// Turns a picked file into an attachment the server will accept.
+    ///
+    /// The downscale is not a nicety. A phone photograph is 3–8 MB and the
+    /// server's ceiling is 128 KB of base64, because an image lives in the
+    /// room's memory rather than in a store — there is no store. Re-encoding
+    /// here is what makes "send a photo" work at all, and doing it in a canvas
+    /// has the useful side effect of dropping EXIF, so the location the picture
+    /// was taken does not travel with it into a room full of strangers.
+    async prepareAttachment(file) {
+        if (!file || !file.type.startsWith('image/')) {
+            this.showError('Only images can be attached');
+            return null;
+        }
+
+        const bitmap = await this.decodeImage(file);
+        if (!bitmap) {
+            this.showError('That image could not be read');
+            return null;
+        }
+
+        // Try progressively harder to get under the ceiling: smaller, then
+        // less quality. Each attempt is cheap and the first usually wins.
+        for (const maxEdge of [1600, 1280, 1024, 800, 640]) {
+            for (const quality of [0.82, 0.7, 0.55]) {
+                const encoded = await this.encodeBitmap(bitmap, maxEdge, quality);
+                if (encoded && encoded.data.length <= MAX_ATTACHMENT_BYTES) {
+                    if (bitmap.close) bitmap.close();
+                    return encoded;
+                }
+            }
+        }
+
+        if (bitmap.close) bitmap.close();
+        this.showError('That image is too large to send');
+        return null;
+    }
+
+    /// Decodes a file to something drawable, preferring `createImageBitmap`
+    /// and falling back to an `<img>` for browsers without it.
+    async decodeImage(file) {
+        if (window.createImageBitmap) {
+            try {
+                return await createImageBitmap(file);
+            } catch (e) {
+                console.warn('createImageBitmap failed, falling back', e);
+            }
+        }
+
+        return new Promise((resolve) => {
+            const url = URL.createObjectURL(file);
+            const img = new Image();
+            img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+            img.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+            img.src = url;
+        });
+    }
+
+    /// Draws the bitmap into a canvas at most `maxEdge` on its long side and
+    /// returns the base64 payload, or null if the browser refused to encode.
+    async encodeBitmap(bitmap, maxEdge, quality) {
+        const sourceW = bitmap.width;
+        const sourceH = bitmap.height;
+        if (!sourceW || !sourceH) return null;
+
+        const scale = Math.min(1, maxEdge / Math.max(sourceW, sourceH));
+        const width = Math.max(1, Math.round(sourceW * scale));
+        const height = Math.max(1, Math.round(sourceH * scale));
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return null;
+        ctx.drawImage(bitmap, 0, 0, width, height);
+
+        // WebP where available — roughly a third smaller than JPEG at the same
+        // quality, which is the difference between sending a photo and being
+        // told it is too big. `toDataURL` silently returns PNG for a type the
+        // browser cannot encode, so the result is read back rather than assumed.
+        let url = canvas.toDataURL('image/webp', quality);
+        if (!url.startsWith('data:image/webp')) {
+            url = canvas.toDataURL('image/jpeg', quality);
+        }
+
+        const match = /^data:([^;,]+);base64,(.*)$/.exec(url);
+        if (!match) return null;
+
+        return { mime: match[1], data: match[2], width, height, faded: false };
+    }
+
+    /// Stages an image for sending, showing it above the composer.
+    async stageAttachment(file) {
+        if (this.pendingAttachment) {
+            this.showError('One image at a time');
+            return;
+        }
+
+        this.setAttachmentBusy(true);
+        try {
+            const attachment = await this.prepareAttachment(file);
+            if (!attachment) return;
+
+            this.pendingAttachment = attachment;
+            this.attachmentPreview.src = this.attachmentDataUrl(attachment);
+            this.attachmentName.textContent = file.name || 'image';
+            this.attachmentSize.textContent = this.formatBytes(
+                Math.floor(attachment.data.length * 3 / 4)
+            );
+            this.attachmentTray.hidden = false;
+            this.input.focus();
+        } finally {
+            this.setAttachmentBusy(false);
+        }
+    }
+
+    clearAttachment() {
+        this.pendingAttachment = null;
+        this.attachmentTray.hidden = true;
+        // Release the preview so the decoded bitmap is not held alive.
+        this.attachmentPreview.removeAttribute('src');
+        this.fileInput.value = '';
+    }
+
+    setAttachmentBusy(busy) {
+        this.attachBtn.disabled = busy;
+        this.attachBtn.setAttribute('aria-busy', busy ? 'true' : 'false');
+    }
+
+    /// Rebuilds the `data:` URL from validated parts.
+    ///
+    /// The server stores the payload alone and the type it sniffed from the
+    /// bytes, never a URL the client wrote — so the scheme and the type here
+    /// are the server's answer, not the sender's claim.
+    attachmentDataUrl(attachment) {
+        return `data:${attachment.mime};base64,${attachment.data}`;
+    }
+
+    formatBytes(bytes) {
+        if (bytes < 1024) return `${bytes} B`;
+        if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+        return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    }
+
+    /// Builds the image element for a message.
+    ///
+    /// The wrapper gets an `aspect-ratio` from the server's dimensions, so the
+    /// space is reserved before the image decodes. Without it every picture
+    /// that finishes loading shoves everything below it down the page, which is
+    /// the same layout-shift failure as the empty-chat placeholder (§10.3).
+    renderAttachment(attachment) {
+        const wrap = document.createElement('button');
+        wrap.type = 'button';
+        wrap.className = 'message-image-wrap';
+        wrap.style.aspectRatio = `${attachment.width} / ${attachment.height}`;
+        wrap.style.width = `${Math.min(320, attachment.width)}px`;
+
+        if (attachment.faded) {
+            wrap.classList.add('faded');
+            wrap.disabled = true;
+            wrap.style.cursor = 'default';
+            const note = document.createElement('div');
+            note.className = 'message-image-faded';
+            note.innerHTML = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-broken-image"/></svg>';
+            const label = document.createElement('span');
+            label.textContent = 'Image faded';
+            note.appendChild(label);
+            wrap.appendChild(note);
+            wrap.setAttribute('aria-label', 'An image that has faded from this room');
+            return wrap;
+        }
+
+        const img = document.createElement('img');
+        img.className = 'message-image';
+        img.loading = 'lazy';
+        img.decoding = 'async';
+        img.alt = 'Shared image';
+        img.src = this.attachmentDataUrl(attachment);
+        wrap.appendChild(img);
+        wrap.setAttribute('aria-label', 'Open image full size');
+        wrap.addEventListener('click', () => this.openLightbox(img.src));
+        return wrap;
+    }
+
+    openLightbox(src) {
+        this.lightboxImage.src = src;
+        this.lightbox.hidden = false;
+        this.lightboxReturnFocus = document.activeElement;
+        this.lightboxClose.focus();
+    }
+
+    closeLightbox() {
+        this.lightbox.hidden = true;
+        this.lightboxImage.removeAttribute('src');
+        if (this.lightboxReturnFocus && this.lightboxReturnFocus.focus) {
+            this.lightboxReturnFocus.focus();
+        }
+    }
+
+    // ===============================================================
+    // Reactions
+    // ===============================================================
+
+    sendReaction(messageId, emoji) {
+        if (!this.connected || this.ws.readyState !== WebSocket.OPEN) return;
+        this.ws.send(JSON.stringify({ type: 'React', message_id: messageId, emoji }));
+        this.hideReactionBar();
+    }
+
+    /// Applies one reaction delta from the server.
+    ///
+    /// The server sends the bucket's new total rather than "add one", so a
+    /// client that missed an earlier delta still lands on the right number
+    /// instead of counting its own way to a different one.
+    applyReaction({ message_id, user_id, emoji, active, count }) {
+        const node = this.chat.querySelector(`[data-message-id="${message_id}"]`);
+        if (!node) return;
+
+        const container = node.querySelector('.reactions');
+        if (!container) return;
+
+        let pill = container.querySelector(`[data-emoji="${CSS.escape(emoji)}"]`);
+
+        if (count === 0) {
+            if (pill) pill.remove();
+            return;
+        }
+
+        if (!pill) {
+            pill = this.buildReactionPill(message_id, emoji, count, false);
+            container.appendChild(pill);
+        }
+
+        pill.querySelector('.reaction-count').textContent = String(count);
+
+        // Only our own reaction changes whether the pill is highlighted.
+        if (user_id === this.myUserId) {
+            pill.classList.toggle('mine', active);
+            pill.setAttribute('aria-pressed', active ? 'true' : 'false');
+        }
+    }
+
+    buildReactionPill(messageId, emoji, count, mine) {
+        const pill = document.createElement('button');
+        pill.type = 'button';
+        pill.className = `reaction-pill${mine ? ' mine' : ''}`;
+        pill.dataset.emoji = emoji;
+        pill.setAttribute('aria-pressed', mine ? 'true' : 'false');
+        pill.setAttribute('aria-label', `React with ${emoji}`);
+
+        const face = document.createElement('span');
+        face.className = 'reaction-emoji';
+        face.textContent = emoji;
+
+        const number = document.createElement('span');
+        number.className = 'reaction-count';
+        number.textContent = String(count);
+
+        pill.append(face, number);
+        pill.addEventListener('click', () => this.sendReaction(messageId, emoji));
+        return pill;
+    }
+
+    showReactionBar(messageNode) {
+        if (!this.connected) return;
+        const messageId = messageNode.dataset.messageId;
+        if (!messageId) return;
+
+        this.reactionBar.replaceChildren();
+        for (const emoji of QUICK_REACTIONS) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.textContent = emoji;
+            button.setAttribute('aria-label', `React with ${emoji}`);
+            button.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.sendReaction(messageId, emoji);
+            });
+            this.reactionBar.appendChild(button);
+        }
+
+        const more = document.createElement('button');
+        more.type = 'button';
+        more.innerHTML = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-add-reaction"/></svg>';
+        more.setAttribute('aria-label', 'More reactions');
+        more.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.openReactionPicker(messageId);
+        });
+        this.reactionBar.appendChild(more);
+
+        this.reactionBar.hidden = false;
+
+        // Positioned against the viewport, above the message and clamped to
+        // stay on screen. Fixed rather than absolute so it never becomes part
+        // of a message's box and never changes a row's height.
+        const rect = messageNode.getBoundingClientRect();
+        const barRect = this.reactionBar.getBoundingClientRect();
+        const top = Math.max(8, rect.top - barRect.height - 6);
+        const left = Math.min(
+            Math.max(8, rect.left),
+            window.innerWidth - barRect.width - 8
+        );
+        this.reactionBar.style.top = `${top}px`;
+        this.reactionBar.style.left = `${left}px`;
+    }
+
+    hideReactionBar() {
+        this.reactionBar.hidden = true;
+    }
+
+    /// Opens the emoji panel showing only what the server accepts as a
+    /// reaction, and routes a pick to `React` instead of into the composer.
+    ///
+    /// The reaction roster is a closed set on the server, so offering the full
+    /// typing catalogue here would be offering buttons that do nothing.
+    openReactionPicker(messageId) {
+        this.reactionTarget = messageId;
+        this.hideReactionBar();
+        this.toggleEmojiPanel(true);
+        this.renderEmojiGrid('');
+    }
+
+    // ===============================================================
+    // Emoji picker
+    // ===============================================================
+
+    buildEmojiPicker() {
+        this.emojiTabs.replaceChildren();
+        for (const group of EMOJI_GROUPS) {
+            const tab = document.createElement('button');
+            tab.type = 'button';
+            tab.className = 'emoji-tab';
+            tab.textContent = group.icon;
+            tab.title = group.label;
+            tab.setAttribute('role', 'tab');
+            tab.setAttribute('aria-label', group.label);
+            tab.setAttribute('aria-selected', 'false');
+            tab.dataset.group = group.id;
+            tab.addEventListener('click', () => this.scrollToEmojiGroup(group.id));
+            this.emojiTabs.appendChild(tab);
+        }
+        this.renderEmojiGrid('');
+    }
+
+    /// Fills the grid, filtered by `query`.
+    ///
+    /// Rebuilding the whole grid on each keystroke is O(catalogue) — about two
+    /// thousand nodes — which is fine here precisely because it is not on the
+    /// message path (§1.1). The panel is not open while messages are arriving
+    /// in any quantity, and a person types a search term a few characters long.
+    renderEmojiGrid(query) {
+        const needle = query.trim().toLowerCase();
+        this.emojiGrid.replaceChildren();
+        let shown = 0;
+
+        // Reaction mode: one flat group, drawn from the server's closed set.
+        const groups = this.reactionTarget
+            ? [{ id: 'reactions', label: 'React with', emoji: REACTION_EMOJI }]
+            : EMOJI_GROUPS;
+        this.emojiTabs.hidden = Boolean(this.reactionTarget);
+
+        for (const group of groups) {
+            const matches = needle
+                ? group.emoji.filter((e) => this.emojiMatches(e, needle))
+                : group.emoji;
+            if (!matches.length) continue;
+
+            const label = document.createElement('div');
+            label.className = 'emoji-group-label';
+            label.textContent = group.label;
+            label.dataset.groupLabel = group.id;
+            this.emojiGrid.appendChild(label);
+
+            for (const emoji of matches) {
+                const cell = document.createElement('button');
+                cell.type = 'button';
+                cell.className = 'emoji-cell';
+                cell.textContent = emoji;
+                cell.setAttribute('role', 'option');
+                cell.setAttribute('aria-label', emoji);
+                cell.addEventListener('click', () => this.pickEmoji(emoji));
+                this.emojiGrid.appendChild(cell);
+                shown += 1;
+            }
+        }
+
+        this.emojiEmpty.hidden = shown > 0;
+    }
+
+    emojiMatches(emoji, needle) {
+        const keywords = EMOJI_KEYWORDS[emoji];
+        return Boolean(keywords && keywords.includes(needle));
+    }
+
+    scrollToEmojiGroup(groupId) {
+        const label = this.emojiGrid.querySelector(`[data-group-label="${groupId}"]`);
+        if (label) label.scrollIntoView({ block: 'start' });
+        for (const tab of this.emojiTabs.children) {
+            tab.setAttribute('aria-selected', tab.dataset.group === groupId ? 'true' : 'false');
+        }
+    }
+
+    /// Routes a picked emoji: to the message being reacted to, or to the
+    /// composer when the panel was opened normally.
+    pickEmoji(emoji) {
+        if (this.reactionTarget) {
+            this.sendReaction(this.reactionTarget, emoji);
+            this.reactionTarget = null;
+            this.toggleEmojiPanel(false);
+            return;
+        }
+        this.insertEmoji(emoji);
+    }
+
+    /// Inserts an emoji at the caret rather than at the end.
+    insertEmoji(emoji) {
+        const input = this.input;
+        const start = input.selectionStart ?? input.value.length;
+        const end = input.selectionEnd ?? input.value.length;
+
+        input.value = input.value.slice(0, start) + emoji + input.value.slice(end);
+        const caret = start + emoji.length;
+        input.setSelectionRange(caret, caret);
+        input.focus();
+        this.handleInput();
+    }
+
+    toggleEmojiPanel(force) {
+        const open = force ?? this.emojiPanel.hidden;
+        this.emojiPanel.hidden = !open;
+        this.emojiBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+
+        if (open) {
+            this.emojiSearch.value = '';
+            this.renderEmojiGrid('');
+            this.emojiSearch.focus();
+        } else {
+            // Leaving the panel leaves reaction mode, or the next open would
+            // silently still be aimed at an old message.
+            this.reactionTarget = null;
+            this.emojiTabs.hidden = false;
+        }
+    }
+
+    // ===============================================================
+    // Jump to latest
+    // ===============================================================
+
+    /// Shows the jump button when the reader has scrolled away from the bottom,
+    /// with a count of what arrived since.
+    updateJumpLatest() {
+        const away = !this.isAtBottom();
+        this.jumpLatest.hidden = !away;
+
+        if (!away) {
+            this.unreadCount = 0;
+        }
+
+        this.jumpLatestCount.hidden = this.unreadCount === 0;
+        this.jumpLatestCount.textContent = String(Math.min(this.unreadCount, 99));
+    }
+
+    /// Adds a "Today" / "Yesterday" / date rule when the day changes.
+    ///
+    /// Driven by the day of the message being rendered rather than by a running
+    /// counter, for the same reason `pruneRenderedMessages` counts the DOM: the
+    /// separator belongs to the messages actually on screen, and history is
+    /// replayed in order, so the day is always derivable from what is being
+    /// drawn (§10.1 — never derive state you can read).
+    maybeRenderDateSeparator(sentAt) {
+        const day = new Date(sentAt);
+        if (Number.isNaN(day.getTime())) return;
+
+        const key = day.toDateString();
+        if (key === this.lastRenderedDay) return;
+        this.lastRenderedDay = key;
+
+        const today = new Date().toDateString();
+        const yesterday = new Date(Date.now() - 86400000).toDateString();
+
+        let label;
+        if (key === today) {
+            label = 'Today';
+        } else if (key === yesterday) {
+            label = 'Yesterday';
+        } else {
+            label = day.toLocaleDateString([], {
+                month: 'short',
+                day: 'numeric',
+                year: day.getFullYear() === new Date().getFullYear() ? undefined : 'numeric',
+            });
+        }
+
+        const rule = document.createElement('div');
+        rule.className = 'date-separator';
+        rule.setAttribute('role', 'separator');
+        rule.textContent = label;
+        this.chat.appendChild(rule);
     }
 
     /// Trims the oldest rendered messages once there are more than maxMessages.
@@ -535,6 +1330,15 @@ class ChatApp {
 
         for (let i = 0; i < excess; i++) {
             messages[i].remove();
+        }
+
+        // A separator whose messages have all been pruned is a date heading for
+        // nothing. Drop any that now sit at the very top or back-to-back.
+        for (const rule of this.chat.querySelectorAll('.date-separator')) {
+            const next = rule.nextElementSibling;
+            if (!next || next.classList.contains('date-separator')) {
+                rule.remove();
+            }
         }
     }
     
@@ -556,6 +1360,8 @@ class ChatApp {
             this.addSystemMessage(`${event.UserLeft.animal_name} left`);
         } else if (event.Typing) {
             this.handleTypingIndicator(event.Typing.animal_name, event.Typing.is_typing);
+        } else if (event.Reaction) {
+            this.applyReaction(event.Reaction);
         } else if (event.ReadReceipt) {
             this.updateReadReceipt(event.ReadReceipt.animal_name, event.ReadReceipt.message_id);
         } else if (event.ServerShutdown) {
@@ -660,8 +1466,10 @@ class ChatApp {
     
     sendMessage() {
         const text = this.input.value.trim();
-        
-        if (!text) {
+
+        // An image on its own is a message. The server agrees: text is only
+        // required when there is nothing else to carry.
+        if (!text && !this.pendingAttachment) {
             this.input.focus();
             return;
         }
@@ -678,6 +1486,10 @@ class ChatApp {
         
         try {
             const messagePayload = { type: 'Message', text };
+
+            if (this.pendingAttachment) {
+                messagePayload.attachment = this.pendingAttachment;
+            }
             
             // Include reply info if replying
             if (this.replyingTo) {
@@ -690,6 +1502,8 @@ class ChatApp {
             
             this.ws.send(JSON.stringify(messagePayload));
             this.input.value = '';
+            this.clearAttachment();
+            this.toggleEmojiPanel(false);
             this.charCount.textContent = '0';
             this.isCurrentlyTyping = false;
             this.cancelReply(); // Clear reply state after sending
@@ -765,6 +1579,7 @@ class ChatApp {
 
         const wasAtBottom = this.shouldAutoScroll;
         this.shouldAutoScroll = this.isAtBottom();
+        this.updateJumpLatest();
 
         // Only send read receipt if user just scrolled to bottom (debounce)
         if (this.shouldAutoScroll && !wasAtBottom) {

@@ -18,6 +18,24 @@ use crate::config::{
 };
 use crate::error::{ChatError, ChatResult};
 
+/// Decrements an unsigned counter, flooring at zero.
+///
+/// Every counter in this module is compared against a ceiling, so a decrement
+/// that outruns its increment does not merely misreport — it wraps to
+/// `usize::MAX` and the comparison says "full" for the rest of the process's
+/// life, with no traffic and no way back. `MemoryTracker::remove_bytes` already
+/// guarded against exactly this; the connection counters had the same shape and
+/// none of the protection.
+///
+/// A CAS loop rather than `fetch_sub`, because the check and the subtraction
+/// have to be one atomic step: reading zero and then subtracting anyway is the
+/// same bug with extra instructions.
+fn saturating_dec(counter: &AtomicUsize) {
+    let _ = counter.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+        Some(current.saturating_sub(1))
+    });
+}
+
 // ---------------------------------------------------------------------------
 // Per-user rate limiting
 // ---------------------------------------------------------------------------
@@ -89,6 +107,11 @@ pub struct ResourceMonitor {
 impl ResourceMonitor {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Releases one connection reservation, flooring at zero.
+    pub fn release_connection(&self) {
+        saturating_dec(&self.total_connections);
     }
 
     pub fn can_accept_connection(&self) -> bool {
@@ -190,9 +213,19 @@ impl ConnectionPool {
 
     /// Drops counters for IPs that have not connected recently, so the map is
     /// bounded by *recent* clients rather than by every client ever seen.
+    ///
+    /// A counter that is not zero is never dropped, whatever its age.
+    /// `last_seen` is stamped when a connection is *added*, so a session that
+    /// outlives [`IP_COUNTER_RETENTION`] — which any user who keeps talking
+    /// does — used to have its counter evicted while it was still counting
+    /// live connections, silently lifting the per-IP limit for that address.
+    /// Eviction is for addresses that have gone away, and an address with a
+    /// live connection has not gone away.
     pub async fn cleanup_stale(&self) {
         let mut counters = self.ip_counters.write().await;
-        counters.retain(|_, (_, last_seen)| last_seen.elapsed() < IP_COUNTER_RETENTION);
+        counters.retain(|_, (counter, last_seen)| {
+            counter.load(Ordering::Relaxed) > 0 || last_seen.elapsed() < IP_COUNTER_RETENTION
+        });
     }
 
     pub async fn can_accept(&self, ip: &str) -> bool {
@@ -229,9 +262,9 @@ impl ConnectionPool {
     pub async fn remove_connection(&self, ip: &str) {
         let mut counters = self.ip_counters.write().await;
         if let Some((counter, _)) = counters.get_mut(ip) {
-            counter.fetch_sub(1, Ordering::SeqCst);
+            saturating_dec(counter);
         }
-        self.active.fetch_sub(1, Ordering::SeqCst);
+        saturating_dec(&self.active);
     }
 }
 
@@ -263,15 +296,28 @@ impl SecurityManager {
 
     /// Records one rejected attempt, banning the IP once it exceeds
     /// [`MAX_SUSPICIOUS_EVENTS`] within [`SUSPICIOUS_ACTIVITY_WINDOW`].
+    ///
+    /// The window **rolls**, the same way [`RateLimiter::roll_window`] does. It
+    /// used to count up forever from a `first_seen` that was never reset, while
+    /// the ban fired only if that original sighting was still inside the
+    /// window — so once an address had been known for longer than the window,
+    /// the ban condition was permanently false and no amount of abuse could
+    /// trip it. The attacker the counter stopped protecting against was the
+    /// patient one, which is the wrong way round.
     pub async fn record_suspicious_activity(&self, ip: &str) -> ChatResult<()> {
         let mut suspicious = self.suspicious_activity.write().await;
-        let (count, first_seen) = suspicious
+        let (count, window_start) = suspicious
             .entry(ip.to_string())
             .or_insert_with(|| (0, Instant::now()));
 
+        if window_start.elapsed() >= SUSPICIOUS_ACTIVITY_WINDOW {
+            *count = 0;
+            *window_start = Instant::now();
+        }
+
         *count += 1;
 
-        if *count > MAX_SUSPICIOUS_EVENTS && first_seen.elapsed() < SUSPICIOUS_ACTIVITY_WINDOW {
+        if *count > MAX_SUSPICIOUS_EVENTS {
             let mut banned = self.banned_ips.write().await;
             banned.insert(ip.to_string(), Instant::now());
             return Err(ChatError::SecurityError(
@@ -279,5 +325,25 @@ impl SecurityManager {
             ));
         }
         Ok(())
+    }
+
+    /// Drops expired bans and lapsed suspicion records.
+    ///
+    /// §3.5: both maps are keyed by client address — attacker-influenced, and
+    /// otherwise unbounded. An expired ban used to be *tested* for expiry on
+    /// every read but never removed, and a suspicion record was never removed
+    /// at all, so both grew by one entry per address ever seen and never gave
+    /// anything back. Checking expiry on read bounds what the entry *means*,
+    /// not how much of it there is.
+    pub async fn cleanup_stale(&self) {
+        self.banned_ips
+            .write()
+            .await
+            .retain(|_, banned_at| banned_at.elapsed() < IP_BAN_DURATION);
+
+        self.suspicious_activity
+            .write()
+            .await
+            .retain(|_, (_, window_start)| window_start.elapsed() < SUSPICIOUS_ACTIVITY_WINDOW);
     }
 }

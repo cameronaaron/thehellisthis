@@ -14,10 +14,11 @@ use tokio::sync::broadcast;
 use tracing::{debug, trace, warn};
 use uuid::Uuid;
 
-use crate::animals::ANIMAL_NAMES;
+use crate::animals::{ANIMAL_NAMES, is_animal_name};
 use crate::config::{
     CLEANUP_BATCH_SIZE, HEARTBEAT_TIMEOUT, MAX_MESSAGE_AGE, MAX_MESSAGES_PER_ROOM,
-    MAX_TOTAL_ROOMS_MEMORY, MAX_USERS_PER_ROOM, MEMORY_SOFT_LIMIT_RATIO, USER_IDLE_MESSAGE_TIMEOUT,
+    MAX_REACTIONS_PER_MESSAGE, MAX_ROOM_ATTACHMENT_BYTES, MAX_TOTAL_ROOMS_MEMORY,
+    MAX_USERS_PER_ROOM, MEMORY_SOFT_LIMIT_RATIO, USER_IDLE_MESSAGE_TIMEOUT,
 };
 use crate::limits::{MemoryTracker, RateLimiter};
 use crate::protocol::{OutgoingEvent, OutgoingMessage, SystemEvent};
@@ -52,6 +53,7 @@ pub struct UserData {
     pub is_typing: bool,
     pub last_typing_event: Option<Instant>,
     pub last_read_receipt_event: Option<Instant>,
+    pub last_reaction_event: Option<Instant>,
     pub rate_limiter: RateLimiter,
     pub last_sanitized_message: Option<(String, Instant)>,
 }
@@ -69,6 +71,24 @@ pub struct RoomState {
     pub available_animals: VecDeque<String>,
     pub sender: broadcast::Sender<OutgoingEvent>,
     pub chat_history: Vec<OutgoingMessage>,
+    /// Who has reacted to what, keyed by message id.
+    ///
+    /// Beside the history rather than inside it, because a reaction arrives as
+    /// its own event and applying it must be O(1) (§1.1). Held in the message
+    /// it belongs to, finding that message would be a scan of the history on
+    /// every reaction — linear work on a per-event path.
+    ///
+    /// Keyed by message id, so it needs an eviction path like any other
+    /// unbounded map (§3.5): `forget_reactions_for` runs from every place that
+    /// removes messages from `chat_history`, and
+    /// `reactions_never_outlive_the_messages_they_belong_to` fails if a new
+    /// removal path forgets to call it.
+    pub reactions: HashMap<Uuid, HashMap<String, HashSet<String>>>,
+    /// Running total of attachment payload bytes still held in `chat_history`.
+    ///
+    /// Tracked rather than recomputed so the fade check on the message path is
+    /// O(1); `recompute_memory` puts it back in step whenever it runs (§3.4).
+    pub attachment_bytes: usize,
 }
 
 /// True once a user has gone [`USER_IDLE_MESSAGE_TIMEOUT`] without speaking.
@@ -77,6 +97,20 @@ pub struct RoomState {
 /// read "people actually here" (ENGINEERING-STANDARDS.md §7).
 pub fn user_idle_for_too_long(user: &UserData, now: Instant) -> bool {
     now.duration_since(user.last_message_time) >= USER_IDLE_MESSAGE_TIMEOUT
+}
+
+/// The names currently held by connected users in a room.
+///
+/// Authoritative: whether a name is free is *derived* from the users, never
+/// read from separate bookkeeping that could drift out of step with them.
+/// Takes the map rather than the whole room so callers can hold this set while
+/// mutating the name pool — they are disjoint fields.
+fn names_in_use(users: &HashMap<String, UserData>) -> HashSet<&str> {
+    users
+        .values()
+        .filter(|u| u.is_connected())
+        .map(|u| u.animal_name.as_str())
+        .collect()
 }
 
 /// Builds an empty room with a freshly shuffled name pool.
@@ -96,6 +130,8 @@ pub fn create_room() -> RoomState {
         available_animals: animals.into_iter().map(String::from).collect(),
         sender,
         chat_history: Vec::new(),
+        reactions: HashMap::new(),
+        attachment_bytes: 0,
     }
 }
 
@@ -111,13 +147,21 @@ impl RoomState {
     /// (O(pool)). The previous form re-scanned every user for every candidate
     /// name, which is O(pool × users) — with a full room and a full pool that
     /// is ~25,000 string comparisons while holding the room write lock.
+    ///
+    /// The pool is a **rotation cursor, not a free list**: every name drawn is
+    /// pushed to the back whether or not it was handed out, so the pool is
+    /// always exactly the roster in this room's own order. It used to be a free
+    /// list that callers put names back into by hand, and the bookkeeping did
+    /// not balance — a name that was never drawn from *this* room's pool (one
+    /// carried in on a cookie, or a `guest_N` fallback) was still pushed back
+    /// when its user was reclaimed, so the pool grew on every such reclaim and
+    /// accumulated names that were not on the roster. Deriving "free" from
+    /// `users` instead deletes the whole class: there is no second copy of the
+    /// answer to get out of step.
     pub fn assign_animal(&mut self) -> String {
-        let taken: HashSet<&str> = self
-            .users
-            .values()
-            .filter(|u| u.is_connected())
-            .map(|u| u.animal_name.as_str())
-            .collect();
+        // Borrows `users` rather than `self`, so the pool below stays mutable.
+        let taken = names_in_use(&self.users);
+        let mut chosen = None;
 
         // Rotate the pool at most once. `pop_front` cannot fail inside this
         // bound, so it is unwrapped rather than guarded by a branch nothing
@@ -127,18 +171,46 @@ impl RoomState {
                 .available_animals
                 .pop_front()
                 .expect("pool length was just measured");
-
-            if !taken.contains(animal.as_str()) {
-                trace!(animal = %animal, "assigned animal name");
-                return animal;
-            }
+            let free = !taken.contains(animal.as_str());
             self.available_animals.push_back(animal);
+
+            if free {
+                chosen = self.available_animals.back().cloned();
+                break;
+            }
         }
 
-        // Pool exhausted: every name is held by a connected user.
+        if let Some(animal) = chosen {
+            trace!(animal = %animal, "assigned animal name");
+            return animal;
+        }
+
+        // Every roster name is held by a connected user. Unreachable while the
+        // roster is larger than `MAX_USERS_PER_ROOM`, which
+        // `the_roster_is_larger_than_a_room_can_ever_be` enforces.
         let name = format!("guest_{}", self.users.len() + 1);
         debug!(name = %name, "animal pool exhausted, assigned guest name");
         name
+    }
+
+    /// The name a joining visitor should get, honouring `preferred` only if it
+    /// is genuinely theirs to take.
+    ///
+    /// `preferred` comes from an identity cookie, which is a claim by the
+    /// client and nothing more: `HttpOnly` stops a page's script from touching
+    /// the cookie, but not the person driving the browser from sending any
+    /// `Cookie` header they like. It is honoured only when it is on the roster
+    /// *and* free in this room — so a returning visitor keeps their name, while
+    /// a forged one cannot invent a display name, cannot make it a megabyte
+    /// long, and cannot impersonate somebody already in the room.
+    pub fn claim_animal(&mut self, preferred: Option<&str>) -> String {
+        if let Some(name) = preferred
+            && is_animal_name(name)
+            && !names_in_use(&self.users).contains(name)
+        {
+            return name.to_string();
+        }
+        self.assign_animal()
     }
 
     /// Appends a message, pruning first if it would breach the memory ceiling.
@@ -158,7 +230,173 @@ impl RoomState {
 
         self.total_memory_bytes
             .fetch_add(msg_size, Ordering::SeqCst);
+        self.attachment_bytes += msg
+            .attachment
+            .as_ref()
+            .map_or(0, crate::protocol::Attachment::estimate_size);
         self.chat_history.push(msg);
+
+        self.fade_oldest_attachments(memory_tracker);
+    }
+
+    /// Drops the payloads of the oldest images once the room is over
+    /// [`MAX_ROOM_ATTACHMENT_BYTES`], keeping their messages.
+    ///
+    /// This is the §7 fade aimed at the most expensive thing in a room. A photo
+    /// is two orders of magnitude larger than a sentence, so without it one
+    /// room's pictures would take a share of the process-wide ceiling that
+    /// every other room then could not have — the failure §1.1 describes, with
+    /// a much bigger constant.
+    ///
+    /// The message stays and the attachment is marked `faded`, so the
+    /// conversation keeps its shape: readers see that a picture was here and
+    /// that it has gone, rather than finding a hole or a broken image.
+    ///
+    /// Normally does nothing and returns after one comparison. It only walks
+    /// the history when the room is actually over budget, and then only far
+    /// enough to get back under it.
+    fn fade_oldest_attachments(&mut self, memory_tracker: &MemoryTracker) {
+        if self.attachment_bytes <= MAX_ROOM_ATTACHMENT_BYTES {
+            return;
+        }
+
+        let mut freed = 0usize;
+        for msg in &mut self.chat_history {
+            if self.attachment_bytes - freed <= MAX_ROOM_ATTACHMENT_BYTES {
+                break;
+            }
+            let Some(attachment) = msg.attachment.as_mut() else {
+                continue;
+            };
+            if attachment.faded {
+                continue;
+            }
+
+            freed += attachment.estimate_size();
+            attachment.data = String::new();
+            attachment.faded = true;
+        }
+
+        if freed == 0 {
+            return;
+        }
+
+        debug!(bytes = freed, "faded oldest attachments");
+        self.attachment_bytes -= freed;
+        self.total_memory_bytes.fetch_sub(
+            freed.min(self.total_memory_bytes.load(Ordering::SeqCst)),
+            Ordering::SeqCst,
+        );
+        memory_tracker.remove_bytes(freed);
+    }
+
+    /// Drops reaction state for messages that no longer exist.
+    ///
+    /// §3.5: `reactions` is keyed by message id and would otherwise keep an
+    /// entry for every message the room has ever held. Called from every path
+    /// that removes messages from `chat_history` — there is no other way for a
+    /// message to leave.
+    fn forget_reactions_for(&mut self, removed: &[OutgoingMessage]) {
+        for msg in removed {
+            self.reactions.remove(&msg.message_id);
+        }
+    }
+
+    /// Adds or removes this user's reaction, returning the emoji's new total.
+    ///
+    /// Reacting is a **toggle**: the same emoji twice from the same person is
+    /// the person changing their mind, not two reactions. Returns `None` when
+    /// nothing changed — an unknown message, or a new emoji on a message that
+    /// already holds [`MAX_REACTIONS_PER_MESSAGE`] of them.
+    ///
+    /// O(1): the message is never searched for. `reactions` is keyed by id
+    /// precisely so this stays off the history (§1.1).
+    pub fn toggle_reaction(
+        &mut self,
+        message_id: Uuid,
+        emoji: &str,
+        user_id: &str,
+    ) -> Option<(bool, usize)> {
+        let buckets = self.reactions.entry(message_id).or_default();
+
+        let active = match buckets.get_mut(emoji) {
+            Some(reactors) => {
+                if reactors.remove(user_id) {
+                    false
+                } else {
+                    reactors.insert(user_id.to_string());
+                    true
+                }
+            }
+            None => {
+                if buckets.len() >= MAX_REACTIONS_PER_MESSAGE {
+                    debug!(%message_id, "message already holds its maximum distinct reactions");
+                    // Leave no empty bucket behind for a refused reaction.
+                    if buckets.is_empty() {
+                        self.reactions.remove(&message_id);
+                    }
+                    return None;
+                }
+                buckets
+                    .entry(emoji.to_string())
+                    .or_default()
+                    .insert(user_id.to_string());
+                true
+            }
+        };
+
+        let count = buckets.get(emoji).map_or(0, HashSet::len);
+
+        // An emoji nobody is in is not a reaction; drop the bucket so the map
+        // is bounded by *live* reactions rather than by every emoji ever tried.
+        if count == 0 {
+            buckets.remove(emoji);
+        }
+        if buckets.is_empty() {
+            self.reactions.remove(&message_id);
+        }
+
+        self.last_activity = Instant::now();
+        Some((active, count))
+    }
+
+    /// This message's reaction buckets, as `viewer` should see them.
+    ///
+    /// `reacted` is resolved per viewer here rather than shipping the reactor
+    /// list, so one user's identity is never sent to another.
+    pub fn reactions_for(&self, message_id: Uuid, viewer: &str) -> Vec<crate::protocol::Reaction> {
+        let Some(buckets) = self.reactions.get(&message_id) else {
+            return Vec::new();
+        };
+
+        let mut out: Vec<crate::protocol::Reaction> = buckets
+            .iter()
+            .map(|(emoji, reactors)| crate::protocol::Reaction {
+                emoji: emoji.clone(),
+                count: reactors.len(),
+                reacted: reactors.contains(viewer),
+            })
+            .collect();
+
+        // A stable order, so the same message does not shuffle its reactions
+        // between one reader's screen and another's.
+        out.sort_by(|a, b| a.emoji.cmp(&b.emoji));
+        out
+    }
+
+    /// History as `viewer` should receive it, with each message's reactions
+    /// resolved for them.
+    ///
+    /// O(history) — the join path, where that is the budget (§1.1).
+    pub fn history_for(&self, viewer: &str) -> Vec<OutgoingMessage> {
+        self.chat_history
+            .iter()
+            .map(|msg| {
+                let mut msg = msg.clone();
+                msg.reactions = self.reactions_for(msg.message_id, viewer);
+                msg
+            })
+            .collect()
     }
 
     /// Drops oldest messages until at least `needed_space` bytes are free.
@@ -183,12 +421,24 @@ impl RoomState {
             return;
         }
 
-        self.chat_history.drain(..drop_count);
+        let removed: Vec<OutgoingMessage> = self.chat_history.drain(..drop_count).collect();
+        self.forget_reactions_for(&removed);
+        self.release_attachment_bytes(&removed);
 
         let current = self.total_memory_bytes.load(Ordering::SeqCst);
         self.total_memory_bytes
             .store(current.saturating_sub(removed_size), Ordering::SeqCst);
         memory_tracker.remove_bytes(removed_size);
+    }
+
+    /// Subtracts the attachment payloads of messages that have just left.
+    fn release_attachment_bytes(&mut self, removed: &[OutgoingMessage]) {
+        let freed: usize = removed
+            .iter()
+            .filter_map(|m| m.attachment.as_ref())
+            .map(crate::protocol::Attachment::estimate_size)
+            .sum();
+        self.attachment_bytes = self.attachment_bytes.saturating_sub(freed);
     }
 
     /// Drops messages older than [`MAX_MESSAGE_AGE`], at most
@@ -205,6 +455,7 @@ impl RoomState {
 
         let mut removed = 0usize;
         let mut removed_bytes = 0usize;
+        let mut dropped_ids: Vec<Uuid> = Vec::new();
 
         self.chat_history.retain(|msg| {
             if removed >= CLEANUP_BATCH_SIZE {
@@ -223,10 +474,16 @@ impl RoomState {
 
             removed += 1;
             removed_bytes += msg.estimate_size();
+            dropped_ids.push(msg.message_id);
             false
         });
 
         if removed > 0 {
+            for id in &dropped_ids {
+                self.reactions.remove(id);
+            }
+            // Recomputes `attachment_bytes` too, so aged-out images stop
+            // counting against the room's picture budget.
             self.recompute_memory();
             memory_tracker.remove_bytes(removed_bytes);
         }
@@ -263,7 +520,8 @@ impl RoomState {
             .map(OutgoingMessage::estimate_size)
             .sum();
 
-        self.chat_history.drain(..drop_count);
+        let removed: Vec<OutgoingMessage> = self.chat_history.drain(..drop_count).collect();
+        self.forget_reactions_for(&removed);
         self.recompute_memory();
 
         if removed_bytes > 0 {
@@ -277,13 +535,23 @@ impl RoomState {
     /// Recomputing rather than subtracting is deliberate: it is self-healing,
     /// so an accounting slip anywhere else is corrected at the next trim
     /// instead of accumulating until the room wrongly reports itself full.
-    fn recompute_memory(&self) {
+    fn recompute_memory(&mut self) {
         let total: usize = self
             .chat_history
             .iter()
             .map(OutgoingMessage::estimate_size)
             .sum();
         self.total_memory_bytes.store(total, Ordering::SeqCst);
+
+        // Recomputed from the same walk for the same reason: a drift in the
+        // attachment total is corrected here rather than accumulating until the
+        // room fades pictures that were within budget all along.
+        self.attachment_bytes = self
+            .chat_history
+            .iter()
+            .filter_map(|m| m.attachment.as_ref())
+            .map(crate::protocol::Attachment::estimate_size)
+            .sum();
     }
 
     /// Broadcasts the number of users whose heartbeat is still current.

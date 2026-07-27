@@ -44,6 +44,23 @@ pub(crate) const RESERVED_ROOM_NAMES: &[&str] = &[
 // ---------------------------------------------------------------------------
 
 pub(crate) const MAX_MESSAGE_LEN: usize = 8_000;
+
+/// Ceiling on the *rendered* HTML a message may become.
+///
+/// [`MAX_MESSAGE_LEN`] bounds the Markdown a user types; it does not bound what
+/// the renderer makes of it, and the rendered HTML is what gets stored in
+/// history and broadcast to every socket in the room. Measured amplification
+/// for input that passes validation reaches 7.2x — `[a](b)` repeated to the
+/// input cap renders to 57 KB — so on its own the input cap bounded nothing
+/// that costs memory or bandwidth.
+///
+/// 5x is not a round number, it is the escaping worst case: `&` becomes
+/// `&amp;`, so the plain-text fallback in `render_message_html` produces at
+/// most 5x its input (measured: 8 000 → 40 000). Setting the ceiling there
+/// means the fallback always fits under it, which is what makes the fallback
+/// total rather than something that can itself overflow. Ordinary
+/// prose-with-formatting measures under 4x, so nothing legible is affected.
+pub(crate) const MAX_RENDERED_MESSAGE_LEN: usize = MAX_MESSAGE_LEN * 5;
 pub(crate) const MAX_MESSAGES_PER_ROOM: usize = 500;
 pub(crate) const MAX_MESSAGE_AGE: Duration = Duration::from_secs(86_400 * 30);
 pub(crate) const MAX_PAYLOAD_SIZE: usize = 512 * 1024;
@@ -66,6 +83,74 @@ pub(crate) const ESTIMATED_MESSAGE_SIZE: usize = 1024;
 /// Messages removed per cleanup pass. Bounds how long a GC sweep can hold the
 /// room write lock — the lock is what every connected user contends on.
 pub(crate) const CLEANUP_BATCH_SIZE: usize = 100;
+
+// ---------------------------------------------------------------------------
+// Image attachments
+//
+// There is no object store and no database, so an image is not a file with a
+// URL — it is bytes held in the room's history, and it disappears with the room
+// like everything else. That makes every constant here a memory decision.
+//
+// Nor can an image be a *link* to one: the CSP names no external origin, and
+// fetching a remote image would tell that host the address of every visitor in
+// the room (§5.7). `img-src 'self' data:` is what an inline attachment needs
+// and nothing more.
+// ---------------------------------------------------------------------------
+
+/// Largest base64 payload a single attachment may carry.
+///
+/// The client downscales and re-encodes before sending, so this is a ceiling on
+/// the *encoded* result rather than on what the user picked — a 12 MP phone
+/// photo arrives well under it. Base64 is 4 bytes per 3, so this is ~96 KB of
+/// actual image.
+pub(crate) const MAX_ATTACHMENT_BYTES: usize = 128 * 1024;
+
+/// Largest pixel dimension the client may report, in either axis.
+///
+/// Dimensions are sent so the client can reserve the right space before the
+/// image decodes, which is what stops a message arriving and shoving the
+/// conversation down the page (§10.3). They are display hints from an untrusted
+/// source, so they are bounded rather than believed.
+pub(crate) const MAX_ATTACHMENT_DIMENSION: u32 = 4096;
+
+/// Attachment bytes a single room keeps before the oldest images fade.
+///
+/// Deliberately small. 100 rooms each holding this much is 200 MB, half of
+/// [`MAX_TOTAL_ROOMS_MEMORY`], leaving the rest for text — one room full of
+/// photographs must not be able to stop every other room accepting messages
+/// (§1.1, §3).
+///
+/// Past it the *payloads* of the oldest attachments are dropped while their
+/// messages stay, so a conversation keeps its shape and only the pictures age
+/// out. That is the §7 fade applied to the most expensive thing in the room,
+/// and it is the reason this can be a small number without deleting anything a
+/// reader still needs.
+pub(crate) const MAX_ROOM_ATTACHMENT_BYTES: usize = 2 * 1024 * 1024;
+
+/// Image types an attachment may declare, checked against the payload's own
+/// magic bytes rather than trusted.
+///
+/// **`image/svg+xml` is deliberately absent and must stay absent.** An SVG is a
+/// document: it can carry `<script>`, and a browser rendering one from a
+/// `data:` URL in an `<img>` is one policy mistake away from executing it. The
+/// four here are raster formats a decoder either understands or rejects.
+pub(crate) const ALLOWED_ATTACHMENT_MIMES: &[&str] =
+    &["image/gif", "image/jpeg", "image/png", "image/webp"];
+
+// ---------------------------------------------------------------------------
+// Reactions
+// ---------------------------------------------------------------------------
+
+/// Distinct emoji a single message may carry.
+///
+/// Reactions are the one piece of message state that grows *after* the message
+/// is stored, so they are the one piece that can drift out of the memory
+/// accounting. This bounds how far.
+pub(crate) const MAX_REACTIONS_PER_MESSAGE: usize = 8;
+
+/// Minimum spacing between reaction events from one user, like the typing and
+/// read-receipt throttles. A reaction is a click, not a keystroke.
+pub(crate) const REACTION_MIN_INTERVAL: Duration = Duration::from_millis(100);
 
 // ---------------------------------------------------------------------------
 // Rate limiting

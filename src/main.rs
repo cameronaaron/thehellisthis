@@ -8,6 +8,7 @@
 mod animals;
 mod cleanup;
 mod config;
+mod emoji;
 mod error;
 mod identity;
 mod limits;

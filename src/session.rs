@@ -26,9 +26,10 @@ use uuid::Uuid;
 
 use crate::config::{
     DUPLICATE_MESSAGE_WINDOW, HEARTBEAT_INTERVAL, HEARTBEAT_TIMEOUT, MAX_MESSAGE_LEN,
-    MAX_MESSAGES_PER_ROOM, MAX_PAYLOAD_SIZE, MAX_ROOM_NAME_LEN, READ_RECEIPT_MIN_INTERVAL,
-    TYPING_EVENT_MIN_INTERVAL, USER_IDLE_MESSAGE_TIMEOUT,
+    MAX_MESSAGES_PER_ROOM, MAX_PAYLOAD_SIZE, MAX_ROOM_NAME_LEN, REACTION_MIN_INTERVAL,
+    READ_RECEIPT_MIN_INTERVAL, TYPING_EVENT_MIN_INTERVAL, USER_IDLE_MESSAGE_TIMEOUT,
 };
+use crate::emoji::is_reaction_emoji;
 use crate::error::ChatError;
 use crate::identity::{OptionalUserCookie, UserCookie, create_user_cookies};
 use crate::limits::RateLimiter;
@@ -37,8 +38,8 @@ use crate::room::{ConnectionState, RoomState, UserData, create_room, user_idle_f
 use crate::security::is_allowed_origin;
 use crate::state::AppState;
 use crate::validation::{
-    extract_client_ip, hash_client_address, render_message_html, sanitize_reply, validate_input,
-    validate_message,
+    extract_client_ip, hash_client_address, render_message_html, sanitize_attachment,
+    sanitize_reply, validate_input, validate_message,
 };
 
 /// Upgrades the connection to a WebSocket for `room`.
@@ -87,10 +88,7 @@ async fn release_connection_slot(state: &Arc<AppState>, ip: Option<&str>) {
     if let Some(ip) = ip {
         state.connection_pool.remove_connection(ip).await;
     }
-    state
-        .resource_monitor
-        .total_connections
-        .fetch_sub(1, Ordering::SeqCst);
+    state.resource_monitor.release_connection();
 }
 
 pub async fn ws_handler_inner(
@@ -206,11 +204,17 @@ pub(crate) async fn admit_user(
         room_state.trim_to_max_messages(&state.memory_tracker);
     }
 
+    // A cookie is a *claim*, not a fact. `HttpOnly` keeps a page's script away
+    // from it; it does nothing about the person driving the browser, who can
+    // send whatever `Cookie` header they like. So the id must be a server-issued
+    // UUID and the name is checked against the roster by `claim_animal` —
+    // otherwise a visitor could pick their own display name, make it a megabyte
+    // long, or take one somebody in the room is already using.
     let cookie_identity = cookie
-        .filter(|c| !c.user_id.is_empty() && !c.animal_name.is_empty())
-        .map(|c| (c.user_id.clone(), c.animal_name.clone()));
+        .filter(|c| !c.animal_name.is_empty())
+        .and_then(|c| Uuid::parse_str(&c.user_id).ok().map(|_| c));
 
-    let candidate_id = cookie_identity.as_ref().map(|(id, _)| id.as_str());
+    let candidate_id = cookie_identity.map(|c| c.user_id.as_str());
     if !room_state.is_user_allowed(candidate_id.unwrap_or("")) {
         return None;
     }
@@ -219,26 +223,21 @@ pub(crate) async fn admit_user(
 
     let identity = match cookie_identity {
         // Known user reconnecting: reclaim their slot and name.
-        Some((user_id, _)) if room_state.users.contains_key(&user_id) => {
-            let user = room_state.users.get_mut(&user_id)?;
+        Some(c) if room_state.users.contains_key(&c.user_id) => {
+            let user = room_state.users.get_mut(&c.user_id)?;
             user.connection_state = ConnectionState::Connected {
                 last_heartbeat: now,
                 connection_id: connection_id.to_string(),
             };
             user.last_active = now;
             user.last_message_time = now;
-            (user_id, user.animal_name.clone())
+            (c.user_id.clone(), user.animal_name.clone())
         }
-        // Cookie from a room they were never in: new slot, name they know.
-        Some((_, animal_name)) => {
+        // Either a cookie from a room they were never in, or no cookie at all:
+        // a fresh slot, keeping the name they know when it is theirs to keep.
+        preferred => {
             let user_id = Uuid::new_v4().to_string();
-            insert_user(room_state, &user_id, &animal_name, connection_id, now);
-            (user_id, animal_name)
-        }
-        // Brand-new visitor.
-        None => {
-            let user_id = Uuid::new_v4().to_string();
-            let animal_name = room_state.assign_animal();
+            let animal_name = room_state.claim_animal(preferred.map(|c| c.animal_name.as_str()));
             insert_user(room_state, &user_id, &animal_name, connection_id, now);
             (user_id, animal_name)
         }
@@ -270,16 +269,22 @@ fn insert_user(
             is_typing: false,
             last_typing_event: None,
             last_read_receipt_event: None,
+            last_reaction_event: None,
             rate_limiter: RateLimiter::new(),
             last_sanitized_message: None,
         },
     );
 }
 
-/// Runs one connection until any of its four tasks ends.
+/// Runs one connection and then releases it, whatever ended it.
 ///
-/// The tasks are raced rather than joined: a dead socket shows up in exactly
-/// one of them, and the first to notice should tear the whole session down.
+/// The teardown is here, wrapped around the session, rather than at each of the
+/// session's exits. It used to be the caller's duty at every `return`, and one
+/// of them — the "room vanished between admission and upgrade" path — did not
+/// do it, so that connection's global slot and per-IP slot were held for the
+/// life of the process. That is the same failure constraint #1 in `CLAUDE.md`
+/// describes, reintroduced one `return` at a time. A wrapper cannot forget:
+/// there is exactly one teardown call and no exit that can route around it.
 pub async fn handle_websocket(
     room: String,
     state: Arc<AppState>,
@@ -288,6 +293,40 @@ pub async fn handle_websocket(
     socket: WebSocket,
     connection_id: String,
     client_ip: Option<String>,
+) {
+    run_session(
+        room.clone(),
+        state.clone(),
+        user_id.clone(),
+        animal_name,
+        socket,
+        connection_id.clone(),
+    )
+    .await;
+
+    cleanup_user(
+        &state,
+        &room,
+        &user_id,
+        &connection_id,
+        client_ip.as_deref(),
+    )
+    .await;
+}
+
+/// The session itself: admission bookkeeping, the four raced tasks, and every
+/// early exit. Releasing the connection is [`handle_websocket`]'s job, so this
+/// function is free to `return` from anywhere.
+///
+/// The tasks are raced rather than joined: a dead socket shows up in exactly
+/// one of them, and the first to notice should tear the whole session down.
+async fn run_session(
+    room: String,
+    state: Arc<AppState>,
+    user_id: String,
+    animal_name: String,
+    socket: WebSocket,
+    connection_id: String,
 ) {
     let (ws_tx, mut ws_rx) = socket.split();
 
@@ -323,7 +362,10 @@ pub async fn handle_websocket(
             animal_name: animal_name.clone(),
         });
 
-        (receiver, room_state.chat_history.clone())
+        // Reactions are resolved for *this* viewer as the history is copied, so
+        // each client learns which buckets it is in without ever being told who
+        // else is in them.
+        (receiver, room_state.history_for(&user_id))
     };
 
     let ws_tx = Arc::new(Mutex::new(ws_tx));
@@ -351,15 +393,6 @@ pub async fn handle_websocket(
         let mut tx = ws_tx.lock().await;
         if tx.send(Message::Text(json.into())).await.is_err() {
             debug!(user_id = %user_id, "client left during history send");
-            drop(tx);
-            cleanup_user(
-                &state,
-                &room,
-                &user_id,
-                &connection_id,
-                client_ip.as_deref(),
-            )
-            .await;
             return;
         }
     }
@@ -512,15 +545,6 @@ pub async fn handle_websocket(
         _ = ping_task => trace!(user_id = %user_id, "ping task ended"),
         _ = heartbeat_task => trace!(user_id = %user_id, "heartbeat task ended"),
     }
-
-    cleanup_user(
-        &state,
-        &room,
-        &user_id,
-        &connection_id,
-        client_ip.as_deref(),
-    )
-    .await;
 }
 
 /// Applies one parsed client event under the room write lock.
@@ -563,15 +587,40 @@ pub async fn apply_client_event(
         *last_heartbeat = now;
     }
 
-    if !user.rate_limiter.can_send_message() {
-        debug!(user_id = %user_id, "rate limited");
-        return;
-    }
-
     match event {
-        ClientEvent::Message { text, reply_to } => {
-            // Same text twice in quick succession is a double-send, not intent.
-            if let Some((last_text, last_time)) = &user.last_sanitized_message
+        ClientEvent::Message {
+            text,
+            reply_to,
+            attachment,
+        } => {
+            // The message budget is spent by messages, and by nothing else.
+            // Every event used to be charged here, but the client sends a
+            // `Typing{true}` on the first keystroke and a `Typing{false}` when
+            // the message goes — so each message cost three units of a
+            // thirty-unit window and the real limit was ten a minute, not the
+            // thirty `MAX_MESSAGES_PER_WINDOW` advertises. Typing and read
+            // receipts carry their own O(1) throttles below; those are what
+            // bound them.
+            if !user.rate_limiter.can_send_message() {
+                debug!(user_id = %user_id, "rate limited");
+                return;
+            }
+
+            let attachment = match attachment.map(sanitize_attachment) {
+                Some(Ok(attachment)) => Some(attachment),
+                Some(Err(e)) => {
+                    debug!(user_id = %user_id, error = %e, "attachment rejected");
+                    return;
+                }
+                None => None,
+            };
+
+            // Same text twice in quick succession is a double-send, not intent —
+            // but only when the text is all there is. Two images share the empty
+            // caption, and picking two photographs is two decisions; treating
+            // the second as a stutter would silently drop it.
+            if attachment.is_none()
+                && let Some((last_text, last_time)) = &user.last_sanitized_message
                 && text == *last_text
                 && now.duration_since(*last_time) < DUPLICATE_MESSAGE_WINDOW
             {
@@ -579,9 +628,15 @@ pub async fn apply_client_event(
                 return;
             }
 
-            if let Err(e) = validate_message(&text) {
-                debug!(user_id = %user_id, error = %e, "message rejected");
-                return;
+            // An image on its own is a message. Text is required only when
+            // there is nothing else to carry, which is why this is not simply
+            // `validate_message(&text)?` — an empty caption under a photograph
+            // is not an empty message.
+            if attachment.is_none() || !text.trim().is_empty() {
+                if let Err(e) = validate_message(&text) {
+                    debug!(user_id = %user_id, error = %e, "message rejected");
+                    return;
+                }
             }
 
             user.last_sanitized_message = Some((text.clone(), now));
@@ -606,6 +661,9 @@ pub async fn apply_client_event(
                 // Never store what the client sent verbatim: these fields are
                 // as attacker-controlled as the message body.
                 reply_to: reply_to.and_then(sanitize_reply),
+                attachment,
+                // Nobody can have reacted to a message that does not exist yet.
+                reactions: Vec::new(),
             };
 
             user.last_message_time = now;
@@ -653,6 +711,53 @@ pub async fn apply_client_event(
                 message_id: msg_id,
             });
         }
+
+        ClientEvent::React { message_id, emoji } => {
+            // Validate before spending anything, the same ordering the
+            // admission path uses (§5.2): every check that can fail runs while
+            // nothing has been mutated yet.
+            //
+            // The throttle used to be stamped first, so a malformed event
+            // consumed the budget belonging to the *next* one — click two
+            // reactions in quick succession, or let one bad frame through, and
+            // a perfectly good reaction vanished with no error anywhere. That
+            // is the same defect as typing indicators spending the message
+            // budget (constraint #22): a budget must be spent by the thing it
+            // is for, and a refused event did no work worth rationing.
+
+            // A closed set, checked rather than sanitised: a reaction is stored
+            // and rebroadcast to the room, so an arbitrary string here would be
+            // the same defect as an arbitrary animal name (§5.9).
+            if !is_reaction_emoji(&emoji) {
+                debug!(user_id = %user_id, "reaction is not on the roster");
+                return;
+            }
+
+            let Ok(msg_id) = Uuid::parse_str(&message_id) else {
+                debug!(user_id = %user_id, "invalid message id in reaction");
+                return;
+            };
+
+            if let Some(last) = user.last_reaction_event
+                && now.duration_since(last) < REACTION_MIN_INTERVAL
+            {
+                return;
+            }
+            user.last_reaction_event = Some(now);
+
+            let uid = user.user_id.clone();
+            let Some((active, count)) = room_state.toggle_reaction(msg_id, &emoji, &uid) else {
+                return;
+            };
+
+            room_state.broadcast_system_event(SystemEvent::Reaction {
+                message_id: msg_id,
+                user_id: uid,
+                emoji,
+                active,
+                count,
+            });
+        }
     }
 }
 
@@ -672,10 +777,7 @@ pub async fn cleanup_user(
         state.connection_pool.remove_connection(ip).await;
     }
 
-    state
-        .resource_monitor
-        .total_connections
-        .fetch_sub(1, Ordering::SeqCst);
+    state.resource_monitor.release_connection();
 
     let mut rooms = state.rooms.write().await;
     let Some(room_state) = rooms.get_mut(room) else {
