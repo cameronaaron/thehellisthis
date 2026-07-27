@@ -18494,3 +18494,136 @@ async fn housekeeping_reports_the_rooms_it_deletes() {
         "a deleted room must be named in the log: {logged}"
     );
 }
+
+/// The reaction bar survives the pointer travelling to it.
+///
+/// It is `position: fixed` and a sibling of `#chat`, so moving towards it
+/// *leaves* the chat. The first version hid the bar on that event, which meant
+/// the buttons appeared and vanished the instant you aimed at them — visible,
+/// documented, and completely unclickable with a mouse.
+///
+/// Three things make it reachable, and all three are asserted because any one
+/// of them silently restores the bug:
+///   1. Hiding is delayed, not immediate.
+///   2. Entering the bar cancels the pending hide.
+///   3. Leaving the chat *onto the bar* is not treated as leaving.
+#[test]
+fn the_reaction_bar_can_actually_be_clicked() {
+    let js = EMBEDDED_JS;
+
+    assert!(
+        js.contains("const REACTION_BAR_GRACE_MS"),
+        "hiding the bar must be delayed; an immediate hide is unreachable by a \
+         pointer that has to travel to it"
+    );
+    assert!(
+        js.contains("scheduleReactionBarHide") && js.contains("cancelReactionBarHide"),
+        "the delayed hide must be cancellable, or the delay only postpones the bug"
+    );
+    assert!(
+        js.contains("this.reactionBar.addEventListener('pointerenter'"),
+        "arriving on the bar must cancel the hide"
+    );
+    assert!(
+        js.contains("this.reactionBar.contains(e.relatedTarget)"),
+        "leaving the chat onto the bar is not leaving"
+    );
+
+    // The chat's own pointerleave must not hide the bar outright.
+    let handler = js
+        .split_once("this.chat.addEventListener('pointerleave'")
+        .and_then(|(_, rest)| rest.split_once("});"))
+        .map(|(body, _)| body)
+        .expect("client.js should handle pointerleave on the chat");
+
+    assert!(
+        !handler.contains("this.hideReactionBar()"),
+        "leaving the chat must schedule the hide, not perform it — performing \
+         it is what made the buttons unclickable"
+    );
+
+    // Rebuilding the bar under the cursor replaced the button between
+    // pointerdown and pointerup, so the click landed on nothing.
+    assert!(
+        js.contains("this.reactionBarFor === messageId"),
+        "the bar must not be rebuilt while it is already showing for the same \
+         message"
+    );
+}
+
+/// §10.3 — the conversation is a column, not the whole window.
+///
+/// `#chat` spanned the full width with bubbles capped at 600px, so on a wide
+/// monitor one message sat against the left edge and the next against the
+/// right, with a metre of nothing between them. Reading it meant tracking
+/// across the screen line by line.
+#[test]
+fn the_conversation_is_a_readable_centred_column() {
+    let css = embedded_html_without_comments();
+
+    assert!(
+        css.contains("--conversation-width"),
+        "the column's width should be one named value, not repeated literals"
+    );
+
+    // The composer and the messages must share it, or the input floats free of
+    // the conversation it belongs to.
+    for surface in ["#chat", ".input-container"] {
+        let block = css
+            .split_once(&format!("\n{surface} {{"))
+            .and_then(|(_, rest)| rest.split_once('}'))
+            .map(|(body, _)| body.to_string())
+            .unwrap_or_default();
+        assert!(
+            block.contains("--conversation-width"),
+            "{surface} must be laid out against the conversation column, or it \
+             drifts away from the messages"
+        );
+    }
+}
+
+/// No selector is styled in two places.
+///
+/// A second rule for the same selector wins by being later, which is invisible
+/// in either block: the first says one thing, the second quietly overrides it,
+/// and the file reads as though both apply. `#chat`, `.message`,
+/// `.input-container` and `.reaction-bar` all ended up defined twice while the
+/// layout was being reworked, and "weirdly proportioned" is exactly what that
+/// produces — a value fixed in one place and undone thirteen hundred lines
+/// later.
+#[test]
+fn no_css_selector_is_defined_twice() {
+    let css = embedded_html_without_comments();
+    let Some(start) = css.find("<style>") else {
+        panic!("the page should carry its stylesheet");
+    };
+    let sheet = &css[start..];
+
+    let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+
+    for line in sheet.lines() {
+        // Top-level rules only: nested at-rule bodies are indented, and a
+        // selector may legitimately repeat inside a different media query.
+        if line.starts_with(char::is_whitespace) || !line.ends_with(" {") {
+            continue;
+        }
+        let selector = line.trim_end_matches(" {").trim();
+        if selector.is_empty()
+            || selector.starts_with('@')
+            || selector.starts_with(':')
+            || selector.contains(',')
+        {
+            continue;
+        }
+        *counts.entry(selector).or_default() += 1;
+    }
+
+    let mut duplicated: Vec<(&str, usize)> = counts.into_iter().filter(|(_, n)| *n > 1).collect();
+    duplicated.sort();
+
+    assert!(
+        duplicated.is_empty(),
+        "these selectors are styled in more than one place, so one block \
+         silently overrides the other: {duplicated:?}"
+    );
+}

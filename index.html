@@ -158,6 +158,8 @@
     box-sizing: border-box;
     margin: 0;
     padding: 0;
+    scrollbar-width: thin;
+    scrollbar-color: var(--outline) transparent;
 }
 
 *:focus {
@@ -443,11 +445,6 @@ h1 {
 }
 
 /* Reply feature styles */
-.message {
-    position: relative;
-    overflow: visible; /* ensure reply button outside bubble remains clickable */
-}
-
 .message .reply-btn {
     position: absolute;
     top: 8px;
@@ -472,12 +469,10 @@ h1 {
 .message .reply-btn:hover {
     display: flex;
     opacity: 1;
-}
-
-.message .reply-btn:hover {
     background: var(--primary-container);
     color: var(--on-primary-container);
 }
+
 
 .message .reply-btn .icon {
     font-size: 16px;
@@ -758,10 +753,17 @@ h1 {
 
 #chat {
     flex: 1;
+    /* The conversation is a centred column, not the whole window. It used to be
+       full width with bubbles capped at 600px, so on a wide monitor one message
+       sat against the left edge and the next against the right with a metre of
+       nothing between them — reading it meant tracking across the screen.
+       The padding centres the column while the scroller keeps its full width,
+       so the scrollbar stays at the edge of the window where people expect it. */
+    padding-inline: max(16px, calc((100% - var(--conversation-width)) / 2));
     /* Anchors the empty-state overlay below, which must not participate in
        flex layout — see the note on #chat:empty::before. */
     position: relative;
-    padding: 20px 20px 12px;
+    padding-block: 24px 16px;
     overflow-y: auto;
     overflow-x: hidden;
     display: flex;
@@ -823,15 +825,21 @@ h1 {
 }
 
 .message {
-    max-width: min(80%, 600px);
-    padding: 12px 16px;
-    border-radius: var(--radius-xl);
+    /* Read at conversational width rather than stretched to the column. */
+    max-width: min(72%, 560px);
+    padding: 10px 14px;
+    margin-block: 1px;
+    /* A softer, more even radius than the previous 24px pill: at that size a
+       large bubble looked like a button and a small one like a lozenge. */
+    border-radius: 18px;
     font-size: 14px;
-    line-height: 1.5;
+    line-height: 1.45;
     word-wrap: break-word;
     overflow-wrap: break-word;
     animation: messageSlide 0.3s var(--transition-medium);
     position: relative;
+    /* The reply button hangs outside the bubble and must stay clickable. */
+    overflow: visible;
 }
 
 @keyframes messageSlide {
@@ -849,16 +857,16 @@ h1 {
     background: var(--primary);
     color: var(--on-primary);
     align-self: flex-end;
-    border-bottom-right-radius: var(--radius-sm);
-    margin-left: 60px;
+    border-bottom-right-radius: 18px;
+    margin-left: auto;
 }
 
 .message.received {
     background: var(--surface-container-high);
     color: var(--on-surface);
     align-self: flex-start;
-    border-bottom-left-radius: var(--radius-sm);
-    margin-right: 60px;
+    border-bottom-left-radius: 18px;
+    margin-right: auto;
 }
 
 .message + .message.sent:not(.received + .sent),
@@ -958,10 +966,14 @@ h1 {
 
 .message .timestamp {
     font-size: 11px;
-    opacity: 0.7;
-    margin-top: 4px;
+    opacity: 0.65;
+    margin-top: 2px;
     text-align: right;
     font-variant-numeric: tabular-nums;
+    /* Inline with the last line where it fits, rather than always below. */
+    float: right;
+    margin-left: 10px;
+    line-height: 1.9;
 }
 
 .system-message {
@@ -1002,11 +1014,13 @@ h1 {
 
 .input-container {
     background: var(--surface-container);
-    padding: 12px 16px;
+    /* Laid out against the same column as the messages, so the composer sits
+       under the conversation rather than drifting to the window's edges. */
+    padding: 12px max(16px, calc((100% - var(--conversation-width)) / 2));
     padding-bottom: max(16px, env(safe-area-inset-bottom));
     display: flex;
-    align-items: center;
-    gap: 12px;
+    align-items: flex-end;
+    gap: 8px;
     flex-shrink: 0;
 }
 
@@ -1068,8 +1082,8 @@ h1 {
 }
 
 .send-button {
-    width: 56px;
-    height: 56px;
+    width: 48px;
+    height: 48px;
     min-width: 56px;
     min-height: 56px;
     flex-shrink: 0;
@@ -1084,6 +1098,7 @@ h1 {
     transition: all var(--transition-short);
     box-shadow: var(--shadow-3);
     -webkit-tap-highlight-color: transparent;
+    flex: none;
 }
 
 .send-button .icon {
@@ -1352,10 +1367,6 @@ h1 {
 }
 
 /* Firefox scrollbar */
-* {
-    scrollbar-width: thin;
-    scrollbar-color: var(--outline) transparent;
-}
 
 /* Selection styling */
 ::selection {
@@ -1420,6 +1431,7 @@ h1 {
     border-radius: var(--radius-xxl);
     padding: 4px;
     transition: box-shadow var(--transition-short), background var(--transition-short);
+    max-width: none;
 }
 
 .composer:focus-within {
@@ -1469,6 +1481,7 @@ h1 {
     flex: none;
     padding: 8px 16px 0;
     background: var(--surface);
+    padding-inline: max(16px, calc((100% - var(--conversation-width)) / 2));
 }
 
 .attachment-tray[hidden] {
@@ -1603,7 +1616,8 @@ h1 {
     display: flex;
     flex-wrap: wrap;
     gap: 4px;
-    margin-top: 6px;
+    margin-top: 4px;
+    margin-bottom: 2px;
 }
 
 .reactions:empty {
@@ -1659,7 +1673,10 @@ h1 {
     display: flex;
     align-items: center;
     gap: 2px;
-    padding: 4px;
+    /* A generous hit area: a pointer arriving slightly short of a 32px target
+       should still count as arriving. */
+    padding: 5px 6px;
+    gap: 3px;
     background: var(--surface-container-lowest);
     border: 1px solid var(--outline-variant);
     border-radius: var(--radius-full);
@@ -1977,10 +1994,16 @@ h1 {
     display: flex;
     align-items: center;
     gap: 12px;
-    margin: 16px 0 8px;
+    margin: 20px 0 12px;
     color: var(--on-surface-variant);
     font-size: 12px;
     font-weight: 500;
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    /* Its own backdrop, so text scrolling underneath does not show through. */
+    padding: 2px 0;
+    background: linear-gradient(var(--surface) 60%, transparent);
 }
 
 .date-separator::before,
@@ -2022,6 +2045,117 @@ h1 {
 
     .message-image-wrap {
         max-width: 100%;
+    }
+}
+
+/* ===================================================================
+   Layout refresh
+   ===================================================================
+   The conversation used to span the whole window: `#chat` was full width and
+   a bubble capped at 600px, so on a wide monitor one sat against the left
+   edge and the next against the right with a metre of nothing between them.
+   Reading it meant tracking across the screen line by line.
+
+   Everything now sits in one centred column of a readable width, which is
+   what every messaging application does and for the same reason. */
+
+:root {
+    --conversation-width: 780px;
+}
+
+/* ---- Message rhythm ---------------------------------------------- */
+
+/* The tail: only the last bubble of a run gets the squared corner, so a group
+   of messages from one person reads as one block rather than a stack of
+   separate cards. */
+
+
+.message.sent:last-child,
+.message.sent:has(+ .message.received),
+.message.sent:has(+ .date-separator) {
+    border-bottom-right-radius: 6px;
+}
+
+.message.received:last-child,
+.message.received:has(+ .message.sent),
+.message.received:has(+ .date-separator) {
+    border-bottom-left-radius: 6px;
+}
+
+/* A clear break between speakers, a tight run within one. */
+.message.sent + .message.received,
+
+/* ---- Grouping: the header repeats only when the speaker changes --- */
+
+.message.combo .header {
+    display: none;
+}
+
+
+/* ---- Timestamps stop taking a line of their own ------------------- */
+
+
+.message .message-content::after {
+    content: '';
+    display: block;
+    clear: both;
+}
+
+/* ---- Date separators stay visible while you scroll past them ------ */
+
+
+/* ---- Reactions sit under the bubble, not inside it ---------------- */
+
+
+.message.sent .reactions {
+    justify-content: flex-end;
+}
+
+/* ---- The reaction bar is reachable ------------------------------- */
+
+.reaction-bar::before {
+    /* An invisible bridge under the bar, covering the few pixels between it
+       and the message so a pointer travelling upward never crosses a gap. */
+    content: '';
+    position: absolute;
+    inset: 100% 0 auto 0;
+    height: 10px;
+}
+
+/* ---- Composer proportions ---------------------------------------- */
+
+
+.input-wrapper input {
+    /* 16px so iOS does not zoom the page on focus; the old 14px did. */
+    font-size: 16px;
+    padding: 10px 8px;
+}
+
+
+/* The character counter only matters when you are near the limit. */
+
+.composer:focus-within .input-info {
+    opacity: 0.7;
+}
+
+/* ---- Typing indicator and reply preview join the column ----------- */
+
+.typing-indicator,
+.reply-preview,
+
+/* ---- Narrow screens: the column is the screen --------------------- */
+
+@media (max-width: 820px) {
+    #chat,
+    .input-container,
+    .typing-indicator,
+    .reply-preview,
+    .attachment-tray {
+        padding-inline: 12px;
+    }
+
+    .message {
+        max-width: 84%;
     }
 }
 </style>

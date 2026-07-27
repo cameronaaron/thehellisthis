@@ -93,6 +93,17 @@ const MAX_ATTACHMENT_BYTES = 131072;
 /// the room it was just removed from, which is what stopped rooms fading.
 const IDLE_CLOSE_CODE = 4001;
 
+/// How long the reaction bar survives the pointer leaving the message.
+///
+/// The bar is `position: fixed`, so travelling to it means leaving the message
+/// — and, briefly, the chat. Without this grace period the buttons vanished on
+/// the way to them and could not be clicked at all with a mouse.
+const REACTION_BAR_GRACE_MS = 400;
+
+/// How far the bar sits *over* the message rather than above it, in pixels.
+/// A gap is a strip the pointer has to cross, and crossing it reads as leaving.
+const REACTION_BAR_OVERLAP = 8;
+
 /// Search keywords, so typing "fire" finds 🔥 without shipping a full
 /// annotation database. Only the emoji people actually search for by name.
 const EMOJI_KEYWORDS = {
@@ -166,6 +177,8 @@ class ChatApp {
         // Composer extras
         this.pendingAttachment = null;
         this.reactionTarget = null;
+        this.reactionBarFor = null;
+        this.reactionBarHideId = null;
         this.evictedForIdle = false;
         this.unreadCount = 0;
         this.dragDepth = 0;
@@ -791,12 +804,28 @@ class ChatApp {
         });
 
         // The reaction bar follows whichever message the pointer is over.
+        //
+        // Hiding it is deliberately *delayed*, and entering the bar cancels the
+        // hide. The bar is `position: fixed` and a sibling of #chat, so moving
+        // the pointer from a message towards the bar leaves #chat — which used
+        // to hide the bar instantly, on the way to it. The buttons were
+        // unreachable with a mouse: they appeared, and vanished the moment you
+        // aimed at them.
         this.chat.addEventListener('pointerover', (e) => {
             if (e.pointerType === 'touch') return;
             const message = e.target.closest('.message');
-            if (message) this.showReactionBar(message);
+            if (message) {
+                this.cancelReactionBarHide();
+                this.showReactionBar(message);
+            }
         });
-        this.chat.addEventListener('pointerleave', () => this.hideReactionBar());
+        this.chat.addEventListener('pointerleave', (e) => {
+            // Moving onto the bar itself is not leaving.
+            if (e.relatedTarget && this.reactionBar.contains(e.relatedTarget)) return;
+            this.scheduleReactionBarHide();
+        });
+        this.reactionBar.addEventListener('pointerenter', () => this.cancelReactionBarHide());
+        this.reactionBar.addEventListener('pointerleave', () => this.scheduleReactionBarHide());
         // A scroll invalidates the bar's position, and a bar left floating over
         // an unrelated message is worse than no bar.
         this.chat.addEventListener('scroll', () => this.hideReactionBar(), { passive: true });
@@ -1131,6 +1160,12 @@ class ChatApp {
         const messageId = messageNode.dataset.messageId;
         if (!messageId) return;
 
+        // Already showing for this message: leave it exactly as it is. Rebuilding
+        // on every pointerover replaced the button under the cursor between
+        // pointerdown and pointerup, so the click landed on nothing.
+        if (this.reactionBarFor === messageId && !this.reactionBar.hidden) return;
+        this.reactionBarFor = messageId;
+
         this.reactionBar.replaceChildren();
         for (const emoji of QUICK_REACTIONS) {
             const button = document.createElement('button');
@@ -1161,7 +1196,10 @@ class ChatApp {
         // of a message's box and never changes a row's height.
         const rect = messageNode.getBoundingClientRect();
         const barRect = this.reactionBar.getBoundingClientRect();
-        const top = Math.max(8, rect.top - barRect.height - 6);
+        // Overlapping the message by a few pixels rather than floating above it:
+        // a gap is a strip of nothing the pointer crosses on its way to the
+        // buttons, and crossing it counts as leaving.
+        const top = Math.max(8, rect.top - barRect.height + REACTION_BAR_OVERLAP);
         const left = Math.min(
             Math.max(8, rect.left),
             window.innerWidth - barRect.width - 8
@@ -1171,7 +1209,25 @@ class ChatApp {
     }
 
     hideReactionBar() {
+        this.cancelReactionBarHide();
         this.reactionBar.hidden = true;
+        this.reactionBarFor = null;
+    }
+
+    /// Hides the bar shortly, unless the pointer arrives on it first.
+    ///
+    /// The delay is the whole mechanism: it is the time the pointer needs to
+    /// travel from the message to the buttons.
+    scheduleReactionBarHide() {
+        this.cancelReactionBarHide();
+        this.reactionBarHideId = setTimeout(() => this.hideReactionBar(), REACTION_BAR_GRACE_MS);
+    }
+
+    cancelReactionBarHide() {
+        if (this.reactionBarHideId) {
+            clearTimeout(this.reactionBarHideId);
+            this.reactionBarHideId = null;
+        }
     }
 
     /// Opens the emoji panel showing only what the server accepts as a

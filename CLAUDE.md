@@ -326,12 +326,20 @@ up" readings: `programmaticScroll` (the client's own writes) and
 This is what fixed the chat visibly shifting on reload. See
 ENGINEERING-STANDARDS.md §10.2.
 
-### 16. Anything that appears only sometimes is an overlay
+### 16. Anything that appears only sometimes is an overlay, and anything
+### that appears on hover must survive being aimed at
 
 `#chat:empty` must not restyle the container. It used to set
 `justify-content: center`, so the first history message flipped the whole column
 from centred to top-aligned — a reorientation on every load. The placeholder is
 an absolutely-positioned `::before`/`::after` overlay (§10.3).
+
+The hover half: the reaction bar is `position: fixed` and a sibling of `#chat`,
+so moving the pointer towards it *leaves* the chat. Hiding on that event made
+the buttons appear and vanish the moment you aimed at them. The hide is delayed,
+arriving on the bar cancels it, leaving onto the bar is not leaving, and the bar
+is not rebuilt while showing — that last one replaced the button between
+`pointerdown` and `pointerup`. §10.7.
 
 ### 17. Client addresses are hashed, never stored
 

@@ -55,6 +55,8 @@ concrete, executable version of "obsessive engineering quality." Concretely:
 | §9.3 Docs are part of the artifact | `every_section_reference_resolves` |
 | §8 Naming | `animal_roster_is_sorted_unique_and_well_formed`, `the_roster_is_larger_than_a_room_can_ever_be`, `reaction_roster_is_sorted_unique_and_actually_emoji` |
 | §9 Shipped artifact | `router_mounts_every_public_route`, `page_references_the_versioned_script_url`, `every_element_the_client_looks_up_exists_in_the_page`, `the_client_declares_every_screaming_case_constant_it_uses` |
+| §10.6 One rule per selector | `no_css_selector_is_defined_twice`, `the_conversation_is_a_readable_centred_column` |
+| §10.7 Hover targets are reachable | `the_reaction_bar_can_actually_be_clicked` |
 | §10 Client | `empty_chat_placeholder_does_not_alter_container_layout`, `rendered_history_is_trimmed_from_the_dom_not_a_counter`, `the_page_does_not_block_pinch_zoom`, `images_reserve_their_space_before_they_load` |
 | Attachments | `an_attachment_must_be_the_image_type_it_claims_to_be`, `svg_is_not_an_allowed_attachment_type`, `a_rooms_oldest_images_fade_once_it_is_over_its_attachment_budget`, `images_are_re_encoded_rather_than_sent_as_picked` |
 | Reactions | `reacting_twice_with_the_same_emoji_removes_the_reaction`, `reactions_never_outlive_the_messages_they_belong_to`, `a_reaction_must_be_on_the_roster` |
@@ -1143,6 +1145,41 @@ properly by a 16px input font, which this client already had. The workaround had
 outlived the problem it was for.
 
 ---
+
+### 10.6 A selector styled twice is a value undone somewhere else
+
+Thirteen selectors were defined in two places at once — `#chat`, `.message`,
+`.input-container`, `.reaction-bar` among them. CSS resolves that by letting the
+later block win, silently, and both blocks read as though they apply. A padding
+set deliberately in one place was undone thirteen hundred lines later by a rule
+added during a different change.
+
+That is what "weirdly proportioned" looks like from the inside: no single wrong
+value, just two right ones disagreeing. Merged into one rule each, later
+declarations winning exactly as the cascade had them, and
+`no_css_selector_is_defined_twice` keeps it that way.
+
+The related shape: **the conversation is a column, not the window.** `#chat`
+spanned the full width with bubbles capped at 560px, so on a wide monitor one
+message sat against the left edge and the next against the right with a metre of
+nothing between. The composer is laid out against the same width, or it drifts
+away from the messages it belongs to.
+
+### 10.7 A control that appears on hover must survive being aimed at
+
+The reaction bar is `position: fixed` and a sibling of `#chat`, so moving the
+pointer towards it *leaves* the chat. Hiding on that event made the buttons
+appear and vanish the instant you aimed at them — visible, documented, and
+completely unclickable with a mouse.
+
+Three things are needed, and any one missing restores the bug: the hide is
+delayed, arriving on the control cancels it, and leaving the container *onto*
+the control is not leaving. A fourth almost as subtle: the bar must not be
+rebuilt while it is already showing, or the button under the cursor is replaced
+between `pointerdown` and `pointerup` and the click lands on nothing.
+
+**Anything that appears on hover and must then be clicked has a gap to cross.**
+Either bridge it or forgive it.
 
 ## Appendix: what changed, and why it is written down
 
