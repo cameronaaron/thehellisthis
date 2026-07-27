@@ -2,7 +2,9 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "infinite-chat",
   "main": "src/index.ts",
-  "compatibility_date": "2025-04-03",
+  // Kept current deliberately: the Workers runtime gates behaviour changes on
+  // this date, so leaving it pinned in the past opts out of fixes indefinitely.
+  "compatibility_date": "2026-07-01",
   
   // Custom domain configuration
   "routes": [
