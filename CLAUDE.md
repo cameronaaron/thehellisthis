@@ -333,6 +333,18 @@ Two client rules that were each a real bug:
   decrementing it. The count drifted above the real number of nodes and started
   deleting live chat messages. `pruneRenderedMessages()` counts the DOM instead.
 
+### 14a. The roster is asked for, not broadcast
+
+Showing who is in a room needs the names. Adding them to the `UserCount`
+broadcast — which already fires on every arrival and departure — would be
+O(users) *per recipient*: a hundred-person room paying ten thousand name-copies
+every time somebody's connection blips, to keep a panel current that almost
+nobody has open.
+
+`RequestRoster` is answered to the asker alone, and while the panel is open the
+client keeps it current from the `UserJoined` and `UserLeft` events it already
+receives. Names only — a client has no use for anybody else's id (§5.6). §10.10.
+
 ### 15a. A message is a row, not a bubble
 
 Only the *bubble* is the coloured, tailed part. The sender's name sits above
@@ -493,6 +505,7 @@ one user's list of reactors to another.
 { "type": "Typing", "is_typing": true }
 { "type": "ReadReceipt", "message_id": "<uuid>" }
 { "type": "React", "message_id": "<uuid>", "emoji": "🔥" }
+{ "type": "RequestRoster" }
 ```
 
 `text` and `attachment` are each optional *on their own* but not together: an
@@ -508,6 +521,7 @@ image with no caption is a message, an empty message is not.
 { "type": "System", "event": { "UserJoined": { "user_id": "...", "animal_name": "otter" } } }
 { "type": "System", "event": { "Reaction": { "message_id": "<uuid>", "user_id": "...", "emoji": "🔥", "active": true, "count": 3 } } }
 { "type": "UserCount", "count": 5 }
+{ "type": "Roster", "users": ["badger", "otter"] }
 { "type": "Heartbeat" }
 { "type": "ReconnectToken", "token": "<uuid>" }
 ```

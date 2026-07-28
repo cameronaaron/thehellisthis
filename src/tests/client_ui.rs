@@ -1954,3 +1954,57 @@ async fn the_session_handles_every_kind_of_client_frame() {
     );
     assert!(history[0].text.contains("still here"));
 }
+
+/// The header keeps every element the client reaches for.
+///
+/// It was restructured into the iMessage shape — a quiet back link, the room's
+/// name in the centre, round actions on the right — and a restructure is
+/// exactly when an id gets dropped by accident. The inventory catches that in
+/// general; this says *why* each of these has to survive, which the inventory
+/// cannot.
+#[test]
+fn the_navigation_bar_keeps_what_the_client_drives() {
+    for (id, purpose) in [
+        ("roomName", "which room you are in"),
+        ("userCountNum", "how many people are here"),
+        ("roomLifespan", "how long the room has left (§7)"),
+        (
+            "statusText",
+            "what the connection is doing when it is not fine",
+        ),
+        ("muteBtn", "the notification toggle"),
+        ("exploreLink", "the way to another room"),
+        ("userCount", "the control that opens the roster"),
+    ] {
+        assert!(
+            EMBEDDED_HTML.contains(&format!("id=\"{id}\"")),
+            "the header lost `{id}`, which is {purpose}"
+        );
+    }
+}
+
+/// The roster is asked for, not pushed.
+///
+/// Broadcasting the whole list to everyone whenever anybody arrives is
+/// O(users) per recipient — quadratic in the size of the room, for a panel
+/// almost nobody has open. The client asks on open and keeps it current from
+/// the join and leave events it already receives.
+#[test]
+fn the_client_asks_for_the_roster_rather_than_being_sent_it() {
+    assert!(
+        EMBEDDED_JS.contains("'RequestRoster'") || EMBEDDED_JS.contains("\"RequestRoster\""),
+        "the client must ask for the roster"
+    );
+    assert!(
+        EMBEDDED_JS.contains("updateRosterFrom"),
+        "and keep an open list current from the events it already gets, rather \
+         than asking again"
+    );
+
+    // Asking happens on open, not on a timer — a poll would be the quadratic
+    // broadcast with extra steps.
+    assert!(
+        !EMBEDDED_JS.contains("setInterval(() => this.requestRoster"),
+        "the roster must not be polled"
+    );
+}

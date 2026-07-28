@@ -189,6 +189,19 @@ pub enum OutgoingEvent {
     ReconnectToken {
         token: String,
     },
+    /// Who is in the room, by name.
+    ///
+    /// Sent on request rather than broadcast with every join. Pushing the whole
+    /// roster to everyone whenever anybody arrives is O(users) per recipient —
+    /// quadratic in the size of the room, for a panel almost nobody has open.
+    /// The client asks when it opens the list and keeps it current from the
+    /// `UserJoined` and `UserLeft` events it already receives.
+    ///
+    /// Names only. A client has no use for anybody else's id, and not sending
+    /// it is the same reasoning as resolving `reacted` per viewer (§5.6).
+    Roster {
+        users: Vec<String>,
+    },
     /// Sent once, first, on every connection: tells the client who it is.
     ///
     /// Before this existed the client inferred its own identity by assuming the
@@ -223,4 +236,7 @@ pub enum ClientEvent {
     /// Toggle this user's reaction on a message.
     #[serde(rename = "React")]
     React { message_id: String, emoji: String },
+    /// Ask who is in the room. Answered to the asker alone.
+    #[serde(rename = "RequestRoster")]
+    RequestRoster,
 }

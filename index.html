@@ -197,15 +197,18 @@ body {
 }
 
 .app-bar {
-    background: var(--surface-container);
-    padding: 0 16px;
-    display: flex;
+    background: color-mix(in srgb, var(--surface) 82%, transparent);
+    padding: 0 10px;
+    display: grid;
     align-items: center;
-    gap: 12px;
+    gap: 8px;
     z-index: 100;
-    height: 64px;
+    height: 56px;
     flex-shrink: 0;
     border-bottom: 1px solid var(--outline-variant);
+    grid-template-columns: 1fr auto 1fr;
+    backdrop-filter: saturate(180%) blur(20px);
+    -webkit-backdrop-filter: saturate(180%) blur(20px);
 }
 
 .brand {
@@ -2236,6 +2239,278 @@ h1 {
 .room-fading .message:nth-last-child(-n+3) .stack {
     opacity: 0.8;
 }
+
+/* ===================================================================
+   Navigation bar — iMessage
+   ===================================================================
+   The centre says who you are talking to; the sides are small and quiet.
+   Here the "who" is the room, and tapping it opens the list of everyone in
+   it, exactly as tapping a group's name does. */
+
+
+.nav-back {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    justify-self: start;
+    color: var(--imessage-blue);
+    text-decoration: none;
+    font-size: 15px;
+    padding: 6px 6px 6px 2px;
+    border-radius: var(--radius-sm);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+}
+
+.nav-back .icon {
+    font-size: 22px;
+    stroke-width: 2.4;
+    flex: none;
+}
+
+.nav-back:hover {
+    opacity: 0.75;
+}
+
+/* The centre column: name over a quiet subtitle, and the whole thing is the
+   button that opens the roster. */
+.room-title {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1px;
+    border: none;
+    background: transparent;
+    color: inherit;
+    font-family: inherit;
+    cursor: pointer;
+    padding: 4px 10px;
+    border-radius: var(--radius-md);
+    min-width: 0;
+    transition: background var(--transition-short);
+}
+
+.room-title:hover {
+    background: color-mix(in srgb, var(--on-surface) 6%, transparent);
+}
+
+.room-avatar {
+    width: 26px;
+    height: 26px;
+    border-radius: var(--radius-full);
+    display: grid;
+    place-items: center;
+    background: var(--surface-container-highest);
+    color: var(--on-surface-variant);
+    font-size: 14px;
+    margin-bottom: 1px;
+}
+
+.room-name {
+    font-size: 15px;
+    font-weight: 600;
+    line-height: 1.1;
+    max-width: 46vw;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.room-subtitle {
+    font-size: 11px;
+    color: var(--on-surface-variant);
+    line-height: 1.1;
+    display: inline-flex;
+    gap: 3px;
+    white-space: nowrap;
+}
+
+.app-bar-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    justify-self: end;
+}
+
+.app-bar-actions .nav-link,
+.app-bar-actions .mute-btn {
+    width: 34px;
+    height: 34px;
+    display: grid;
+    place-items: center;
+    border: none;
+    background: transparent;
+    color: var(--imessage-blue);
+    border-radius: var(--radius-full);
+    cursor: pointer;
+    font-size: 19px;
+    text-decoration: none;
+}
+
+.app-bar-actions .nav-link:hover,
+.app-bar-actions .mute-btn:hover {
+    background: color-mix(in srgb, var(--on-surface) 8%, transparent);
+}
+
+/* Connection state is a dot, not a sentence — it only needs to be readable
+   when something is wrong. */
+.app-bar-actions .status-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    padding: 4px 8px;
+    border-radius: var(--radius-full);
+    color: var(--on-surface-variant);
+    max-width: 0;
+    overflow: hidden;
+    padding-inline: 0;
+    transition: max-width var(--transition-medium), padding var(--transition-medium);
+}
+
+.app-bar-actions .status-chip:not(.connected) {
+    max-width: 160px;
+    padding-inline: 8px;
+    background: var(--warning-container);
+    color: var(--warning);
+}
+
+.app-bar-actions .status-chip.connected .status-dot {
+    background: var(--success);
+}
+
+/* ---- The roster ------------------------------------------------------ */
+
+.participants-sheet {
+    position: fixed;
+    top: 58px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 1200;
+    width: min(320px, calc(100vw - 24px));
+    max-height: min(60vh, 480px);
+    display: flex;
+    flex-direction: column;
+    background: var(--surface-container-lowest);
+    border: 1px solid var(--outline-variant);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-3);
+    overflow: hidden;
+    animation: sheet-in var(--transition-medium) both;
+}
+
+.participants-sheet[hidden] {
+    display: none;
+}
+
+@keyframes sheet-in {
+    from { opacity: 0; transform: translateX(-50%) translateY(-8px) scale(0.98); }
+    to   { opacity: 1; transform: translateX(-50%); }
+}
+
+.participants-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 10px 10px 16px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--on-surface-variant);
+    border-bottom: 1px solid var(--outline-variant);
+}
+
+.participants-close {
+    width: 30px;
+    height: 30px;
+    display: grid;
+    place-items: center;
+    border: none;
+    background: transparent;
+    color: var(--on-surface-variant);
+    border-radius: var(--radius-full);
+    cursor: pointer;
+    font-size: 17px;
+}
+
+.participants-close:hover {
+    background: var(--surface-container-high);
+}
+
+.participants-list {
+    list-style: none;
+    margin: 0;
+    padding: 6px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    flex: 1;
+}
+
+.participant {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: var(--radius-sm);
+    font-size: 15px;
+}
+
+.participant:hover {
+    background: var(--surface-container);
+}
+
+.participant-avatar {
+    width: 30px;
+    height: 30px;
+    flex: none;
+    border-radius: var(--radius-full);
+    display: grid;
+    place-items: center;
+    background: var(--surface-container-highest);
+    color: var(--on-surface-variant);
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.participant.is-me .participant-avatar {
+    background: var(--imessage-blue);
+    color: #fff;
+}
+
+.participant-name {
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.participant-you {
+    font-size: 11px;
+    color: var(--on-surface-variant);
+    padding: 2px 7px;
+    border-radius: var(--radius-full);
+    background: var(--surface-container-high);
+}
+
+.participants-note {
+    margin: 0;
+    padding: 10px 16px 14px;
+    font-size: 11px;
+    line-height: 1.45;
+    color: var(--on-surface-variant);
+    border-top: 1px solid var(--outline-variant);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .participants-sheet { animation: none; }
+}
+
+@media (max-width: 600px) {
+    .nav-back span { display: none; }
+    .room-name { max-width: 40vw; }
+}
 </style>
 </head>
 <body>
@@ -2258,40 +2533,67 @@ h1 {
 <g id="i-arrow-down"><path d="M12 5v14M6 13l6 6 6-6"/></g>
 <g id="i-search"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></g>
 <g id="i-add-reaction"><path d="M21 12a9 9 0 1 1-6.2-8.6"/><path d="M8.5 14.5a4.5 4.5 0 0 0 7 0"/><path d="M9 9.5h.01M15 9.5h.01"/><path d="M19 2v5M16.5 4.5h5"/></g>
+<g id="i-chevron-left"><path d="M15 18l-6-6 6-6"/></g>
 <g id="i-broken-image"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 14l4-4 3 3M14 12l3-3 4 4"/><path d="M3 3l18 18"/></g>
 </defs></svg>
 
 
 <header class="app-bar">
-    <a class="brand" href="/" title="Go to main room">
-        <div class="logo-icon">
-            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-chat"/></svg>
-        </div>
-        <h1>thehellisthis</h1>
+    <!-- Left: the way back, as a chevron and a word — iMessage's shape. -->
+    <a class="nav-back" href="/" title="Go to the main room">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-chevron-left"/></svg>
+        <span>thehellisthis</span>
     </a>
-    <div class="room-info">
-        <span class="room-badge" id="roomName">main</span>
-        <a class="nav-link" href="#" id="exploreLink">
-            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" style="font-size:18px;vertical-align:middle;margin-right:4px"><use href="#i-explore"/></svg>
-            Explore
-        </a>
-        <span id="userCount">
-            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-group"/></svg>
-            <span id="userCountNum">0</span>
+
+    <!-- Centre: who you are talking to. Here that is the room, and tapping it
+         opens the list of everyone in it, exactly as tapping a group's name
+         does. -->
+    <button class="room-title" id="userCount" type="button"
+            aria-haspopup="dialog" aria-expanded="false" aria-controls="participantsSheet">
+        <span class="room-avatar" id="roomAvatar" aria-hidden="true">
+            <svg class="icon" viewBox="0 0 24 24"><use href="#i-group"/></svg>
         </span>
-        <div class="status-chip connected" id="statusChip">
+        <span class="room-name" id="roomName">main</span>
+        <span class="room-subtitle">
+            <span id="userCountNum">0</span> here
+            <span class="room-heartbeat active" id="roomHeartbeat">
+                · <span class="room-lifespan" id="roomLifespan">0m alive</span>
+            </span>
+        </span>
+    </button>
+
+    <!-- Right: the actions, as plain round buttons. -->
+    <div class="app-bar-actions">
+        <div class="status-chip connected" id="statusChip" title="Connected">
             <span class="status-dot"></span>
             <span id="statusText">Connected</span>
         </div>
-        <div class="room-heartbeat active" id="roomHeartbeat">
-            <svg class="icon heart-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-heart"/></svg>
-            <span class="room-lifespan" id="roomLifespan">0m alive</span>
-        </div>
+        <a class="nav-link" href="#" id="exploreLink" title="Find another room" aria-label="Find another room">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-explore"/></svg>
+        </a>
         <button class="mute-btn" id="muteBtn" aria-label="Toggle notification sounds" title="Mute notifications">
             <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-volume-on"/></svg>
         </button>
     </div>
 </header>
+
+<!-- Who is in the room. An overlay (§10.3): it appears over the conversation
+     rather than pushing it down, so opening it never moves what you were
+     reading. -->
+<div id="participantsSheet" class="participants-sheet" role="dialog"
+     aria-label="People in this room" hidden>
+    <div class="participants-header">
+        <span id="participantsCount">0 here</span>
+        <button class="participants-close" id="participantsClose" type="button" aria-label="Close">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-close"/></svg>
+        </button>
+    </div>
+    <ul class="participants-list" id="participantsList"></ul>
+    <p class="participants-note">
+        Everyone here is an animal for as long as they stay. Names are handed
+        out on arrival and given back when the room forgets you.
+    </p>
+</div>
 
 <div class="header-bar" id="welcomeBanner">
     <div class="welcome-content">

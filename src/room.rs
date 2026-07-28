@@ -611,6 +611,25 @@ impl RoomState {
         self.message_ids = self.chat_history.iter().map(|m| m.message_id).collect();
     }
 
+    /// The names of everyone currently in the room, sorted.
+    ///
+    /// Sorted so the list does not reshuffle every time somebody asks — a
+    /// `HashMap` iterates in whatever order it likes, and a panel that reorders
+    /// itself on refresh reads as people coming and going.
+    ///
+    /// O(users), on a path a person triggers by opening a panel — not the
+    /// message path (§1.1).
+    pub fn roster(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .users
+            .values()
+            .filter(|u| u.is_connected())
+            .map(|u| u.animal_name.clone())
+            .collect();
+        names.sort_unstable();
+        names
+    }
+
     /// Broadcasts the number of users whose heartbeat is still current.
     pub fn broadcast_user_count(&self) {
         let now = Instant::now();

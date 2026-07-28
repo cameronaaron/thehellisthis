@@ -4340,3 +4340,114 @@ fn identity_cookies_are_secure_everywhere_except_loopback() {
         assert!(cookie.contains("Path=/"));
     }
 }
+
+/// The roster names everyone connected, sorted, and nobody else.
+///
+/// Sorted matters: a `HashMap` iterates in whatever order it likes, and a panel
+/// that reorders itself every time it opens reads as people coming and going.
+#[tokio::test]
+async fn the_roster_names_everyone_connected_in_a_stable_order() {
+    let mut room = create_room();
+    let now = Instant::now();
+
+    for (uid, animal) in [("u1", "otter"), ("u2", "badger"), ("u3", "crane")] {
+        room.users
+            .insert(uid.to_string(), connected_user(uid, animal, "c", now));
+    }
+
+    // Somebody who has gone is not in the room, whatever their slot says.
+    let mut gone = connected_user("u4", "zebu", "c", now);
+    gone.connection_state = ConnectionState::Disconnected { since: now };
+    room.users.insert("u4".to_string(), gone);
+
+    assert_eq!(
+        room.roster(),
+        vec![
+            "badger".to_string(),
+            "crane".to_string(),
+            "otter".to_string()
+        ],
+        "the roster is everyone *connected*, in a stable order"
+    );
+
+    assert!(
+        !room.roster().contains(&"zebu".to_string()),
+        "a disconnected user is not in the room"
+    );
+}
+
+/// Asking for the roster answers the asker, and nobody else pays for it.
+///
+/// Sent on request rather than broadcast with every arrival: pushing the whole
+/// list to everyone whenever anybody joins is O(users) per recipient, which is
+/// quadratic in the size of the room, for a panel almost nobody has open.
+#[tokio::test]
+async fn requesting_the_roster_answers_with_the_current_names() {
+    let state = Arc::new(AppState::new());
+    {
+        let mut rooms = state.rooms.write().await;
+        let mut room = create_room();
+        for (uid, animal) in [("u1", "otter"), ("u2", "badger")] {
+            room.users.insert(
+                uid.to_string(),
+                connected_user(uid, animal, "c", Instant::now()),
+            );
+        }
+        rooms.insert("who".to_string(), room);
+    }
+
+    let mut receiver = state
+        .rooms
+        .read()
+        .await
+        .get("who")
+        .unwrap()
+        .sender
+        .subscribe();
+
+    apply_client_event(&state, "who", "u1", "otter", ClientEvent::RequestRoster).await;
+
+    match receiver.try_recv().expect("a roster should be sent") {
+        OutgoingEvent::Roster { users } => {
+            assert_eq!(users, vec!["badger".to_string(), "otter".to_string()]);
+        }
+        other => panic!("expected a Roster, got {other:?}"),
+    }
+}
+
+/// Roster requests are throttled like any other thing a person clicks.
+#[tokio::test]
+async fn roster_requests_are_throttled() {
+    let state = Arc::new(AppState::new());
+    {
+        let mut rooms = state.rooms.write().await;
+        let mut room = create_room();
+        room.users.insert(
+            "u1".to_string(),
+            connected_user("u1", "otter", "c", Instant::now()),
+        );
+        rooms.insert("spam".to_string(), room);
+    }
+
+    let mut receiver = state
+        .rooms
+        .read()
+        .await
+        .get("spam")
+        .unwrap()
+        .sender
+        .subscribe();
+
+    for _ in 0..5 {
+        apply_client_event(&state, "spam", "u1", "otter", ClientEvent::RequestRoster).await;
+    }
+
+    let mut answered = 0;
+    while receiver.try_recv().is_ok() {
+        answered += 1;
+    }
+    assert_eq!(
+        answered, 1,
+        "five requests in a tick is one person's finger, not five questions"
+    );
+}

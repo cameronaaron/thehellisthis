@@ -905,6 +905,25 @@ pub async fn apply_client_event(
             });
         }
 
+        ClientEvent::RequestRoster => {
+            // Answered to the asker alone: the room's broadcast channel would
+            // send it to everybody, and this is a panel one person opened.
+            // Throttled with the reaction clock, which is the same "a person
+            // clicked something" cadence.
+            if let Some(last) = user.last_reaction_event
+                && now.duration_since(last) < REACTION_MIN_INTERVAL
+            {
+                return;
+            }
+            user.last_reaction_event = Some(now);
+
+            let roster = room_state.roster();
+            debug!(room = %room, user_id = %user_id, size = roster.len(), "roster requested");
+            let _ = room_state
+                .sender
+                .send(OutgoingEvent::Roster { users: roster });
+        }
+
         ClientEvent::React { message_id, emoji } => {
             // Validate before spending anything, the same ordering the
             // admission path uses (§5.2): every check that can fail runs while

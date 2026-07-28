@@ -57,6 +57,7 @@ concrete, executable version of "obsessive engineering quality." Concretely:
 | §8 Naming | `animal_roster_is_sorted_unique_and_well_formed`, `the_roster_is_larger_than_a_room_can_ever_be`, `reaction_roster_is_sorted_unique_and_actually_emoji` |
 | §9 Shipped artifact | `router_mounts_every_public_route`, `page_references_the_versioned_script_url`, `every_element_the_client_looks_up_exists_in_the_page`, `the_client_declares_every_screaming_case_constant_it_uses` |
 | §6.10 Removal is a decision | `the_shipped_client_still_contains_everything_it_did`, `the_servers_public_surface_still_exists` |
+| §10.10 The roster is asked for | `the_client_asks_for_the_roster_rather_than_being_sent_it`, `the_navigation_bar_keeps_what_the_client_drives`, `the_roster_names_everyone_connected_in_a_stable_order`, `requesting_the_roster_answers_with_the_current_names`, `roster_requests_are_throttled` |
 | §10.9 Show implies hide | `every_conditional_display_rule_has_a_base_that_hides_it` |
 | §10.8 Rendered classes are styled | `every_class_the_client_renders_is_styled` |
 | §10.6 One rule per selector | `no_css_selector_is_defined_twice`, `the_conversation_is_a_readable_centred_column` |
@@ -1304,6 +1305,25 @@ stylesheet does not know what a rule is for.** Each got its own contract
 afterwards, which is the right ratchet, but the cheaper lesson is that
 mechanical edits to CSS need mechanical verification in the same commit, not
 after somebody notices.
+
+### 10.10 Ask for what a panel needs; do not push it to everyone
+
+Showing who is in a room needs the list of names. The obvious way to get it is
+to add them to the `UserCount` broadcast that already fires on every arrival and
+departure — and that is O(users) *per recipient*, so a hundred-person room pays
+ten thousand name-copies every time somebody's connection blips, to keep a panel
+current that almost nobody has open.
+
+So `RequestRoster` is a client event answered to the asker alone, and while the
+panel is open the client keeps it current from the `UserJoined` and `UserLeft`
+events it already receives. The cost is O(users) once, when a person opens
+something, which is §1.1's "join / interaction" budget rather than the message
+path.
+
+The general shape: **a feature that needs a collection should ask for it at the
+moment it is looked at, not subscribe the whole room to it.** The same reasoning
+put reactions in a side table keyed by message id and resolved `reacted` per
+viewer.
 
 ### 10.7 A control that appears on hover must survive being aimed at
 

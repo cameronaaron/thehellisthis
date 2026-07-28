@@ -187,6 +187,7 @@ class ChatApp {
         this.reactionBarFor = null;
         this.reactionBarHideId = null;
         this.evictedForIdle = false;
+        this.roster = [];
         this.unreadCount = 0;
         this.dragDepth = 0;
         this.lightboxReturnFocus = null;
@@ -232,6 +233,11 @@ class ChatApp {
         this.jumpLatest = document.getElementById('jumpLatest');
         this.jumpLatestCount = document.getElementById('jumpLatestCount');
         this.dropOverlay = document.getElementById('dropOverlay');
+        this.participantsSheet = document.getElementById('participantsSheet');
+        this.participantsList = document.getElementById('participantsList');
+        this.participantsCount = document.getElementById('participantsCount');
+        this.participantsClose = document.getElementById('participantsClose');
+        this.roomTitle = document.getElementById('userCount');
         
         this.init();
     }
@@ -512,6 +518,7 @@ class ChatApp {
     rejoinAfterIdle() {
         if (!this.evictedForIdle || this.connected) return false;
         this.evictedForIdle = false;
+        this.roster = [];
         this.addSystemMessage('Rejoining...', 'info');
         this.connect();
         return true;
@@ -595,6 +602,11 @@ class ChatApp {
                 break;
             case 'UserCount':
                 this.updateUserCount(data.count);
+                break;
+            case 'Roster':
+                // Only ever arrives because this client asked.
+                this.roster = data.users;
+                this.renderParticipants();
                 break;
             case 'Heartbeat':
                 break;
@@ -830,6 +842,18 @@ class ChatApp {
         this.lightboxClose.addEventListener('click', () => this.closeLightbox());
         this.lightbox.addEventListener('click', (e) => {
             if (e.target === this.lightbox) this.closeLightbox();
+        });
+
+        // Tapping the room's name opens the list of who is in it, the way
+        // tapping a group's name does.
+        this.roomTitle.addEventListener('click', () => this.toggleParticipants());
+        this.participantsClose.addEventListener('click', () => this.toggleParticipants(false));
+        document.addEventListener('click', (e) => {
+            if (!this.participantsSheet.hidden
+                && !this.participantsSheet.contains(e.target)
+                && !this.roomTitle.contains(e.target)) {
+                this.toggleParticipants(false);
+            }
         });
 
         this.jumpLatest.addEventListener('click', () => {
@@ -1496,10 +1520,12 @@ class ChatApp {
             } else {
                 this.addSystemMessage(`${event.UserJoined.animal_name} joined`, 'success');
             }
+            this.updateRosterFrom(event.UserJoined.animal_name, true);
         } else if (event.UserLeft) {
             this.typingUsers.delete(event.UserLeft.animal_name);
             this.updateTypingIndicator();
             this.addSystemMessage(`${event.UserLeft.animal_name} left`);
+            this.updateRosterFrom(event.UserLeft.animal_name, false);
         } else if (event.Typing) {
             this.handleTypingIndicator(event.Typing.animal_name, event.Typing.is_typing);
         } else if (event.Reaction) {
@@ -1752,6 +1778,73 @@ class ChatApp {
     
     updateUserCount(count) {
         this.userCountNumEl.textContent = count;
+    }
+
+    /// Opens or closes the list of people in the room.
+    ///
+    /// The roster is asked for on open rather than pushed with every join:
+    /// broadcasting the whole list to everyone whenever anybody arrives is
+    /// quadratic in the size of the room, for a panel almost nobody has open.
+    /// While it *is* open, the `UserJoined` and `UserLeft` events the client
+    /// already receives keep it current.
+    toggleParticipants(force) {
+        const open = force ?? this.participantsSheet.hidden;
+        this.participantsSheet.hidden = !open;
+        this.roomTitle.setAttribute('aria-expanded', open ? 'true' : 'false');
+
+        if (open) {
+            this.requestRoster();
+            this.participantsClose.focus();
+        }
+    }
+
+    requestRoster() {
+        if (!this.connected || this.ws.readyState !== WebSocket.OPEN) return;
+        this.ws.send(JSON.stringify({ type: 'RequestRoster' }));
+    }
+
+    renderParticipants() {
+        this.participantsCount.textContent =
+            this.roster.length === 1 ? '1 here' : `${this.roster.length} here`;
+
+        this.participantsList.replaceChildren();
+        for (const name of this.roster) {
+            const row = document.createElement('li');
+            row.className = 'participant';
+
+            const avatar = document.createElement('span');
+            avatar.className = 'participant-avatar';
+            avatar.setAttribute('aria-hidden', 'true');
+            avatar.textContent = name[0].toUpperCase();
+
+            const label = document.createElement('span');
+            label.className = 'participant-name';
+            label.textContent = name;
+
+            row.append(avatar, label);
+
+            if (name === this.myAnimalName) {
+                row.classList.add('is-me');
+                const you = document.createElement('span');
+                you.className = 'participant-you';
+                you.textContent = 'you';
+                row.appendChild(you);
+            }
+
+            this.participantsList.appendChild(row);
+        }
+    }
+
+    /// Keeps an open list current without asking again.
+    updateRosterFrom(name, arrived) {
+        if (this.participantsSheet.hidden) return;
+
+        if (arrived && !this.roster.includes(name)) {
+            this.roster = [...this.roster, name].sort();
+        } else if (!arrived) {
+            this.roster = this.roster.filter((n) => n !== name);
+        }
+        this.renderParticipants();
     }
     
     updateConnectionStatus(status) {
