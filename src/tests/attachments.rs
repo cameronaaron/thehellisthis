@@ -31,47 +31,52 @@ async fn test_main_room_message_fade_logic() {
     );
 }
 
+/// The interactive fade indicator's thresholds are honest fractions of the
+/// real grace period, not independently invented numbers.
+///
+/// This used to hardcode 10/30/45 seconds under the belief that a room died
+/// at 60 seconds — a comment in this very test said so, twice. It does not:
+/// `EMPTY_ROOM_CLEANUP_DELAY` and `MAIN_ROOM_FADE_IDLE` are both 600 seconds.
+/// The warning toast ("Room fading soon... say something!") fired at 30
+/// seconds idle and the room read as visually dying at 45 — five percent of
+/// the way into a ten-minute grace period — every single time a conversation
+/// paused to think. §7.3 exists for exactly this: the UI must not lie about
+/// the mechanics, and this was lying by a factor of twenty.
+///
+/// The three inequality assertions this test used to make — `30 < 600`, `45 <
+/// 600`, `600 - 45 >= 15` — were all trivially true regardless of how early
+/// the warning actually fired, so none of them would have failed even at
+/// those wrong values. A weak assertion is not a check (§6.4). This instead
+/// asserts the real relationship: the client's grace-period constant equals
+/// the server's, and the warning/critical thresholds are late fractions of
+/// it — computed from that one constant, not chosen independently.
 #[tokio::test]
-async fn test_frontend_fade_thresholds_align_with_cleanup_delay() {
-    // Frontend shows warning at 30s, critical at 45s
-    // Backend deletes at 60s (EMPTY_ROOM_CLEANUP_DELAY)
-    // Warning should appear BEFORE cleanup happens!
-
-    let cleanup_seconds = EMPTY_ROOM_CLEANUP_DELAY.as_secs();
-
-    // Frontend warning threshold (idleSeconds < 45)
-    assert!(
-        SHIPPED_CLIENT.contains("idleSeconds < 45"),
-        "Frontend warning threshold should be at 45s idle"
-    );
-
-    // Frontend critical threshold (else clause after 45s check)
-    // This means critical starts at 45s, giving 15s warning before 60s deletion
-
-    // Verify the thresholds make sense relative to cleanup
-    let warning_threshold = 30; // When warning class is added
-    let critical_threshold = 45; // When critical class is added
-
-    assert!(
-        warning_threshold < cleanup_seconds,
-        "Warning ({}s) must appear BEFORE cleanup ({}s)!",
-        warning_threshold,
-        cleanup_seconds
+async fn the_fade_indicator_is_honest_about_when_the_room_actually_dies() {
+    assert_eq!(
+        EMPTY_ROOM_CLEANUP_DELAY, MAIN_ROOM_FADE_IDLE,
+        "the client shows one set of thresholds for both a room's deletion \
+         and main's fade; they must be the same duration or one of them is \
+         being told the wrong story"
     );
 
     assert!(
-        critical_threshold < cleanup_seconds,
-        "Critical ({}s) must appear BEFORE cleanup ({}s)!",
-        critical_threshold,
-        cleanup_seconds
+        SHIPPED_CLIENT.contains(&format!(
+            "ROOM_GRACE_PERIOD_SECONDS = {}",
+            EMPTY_ROOM_CLEANUP_DELAY.as_secs()
+        )),
+        "the client's grace-period constant must equal the backend's, or \
+         every fraction computed from it is a fraction of the wrong number"
     );
 
-    // Users should have at least 15 seconds of warning before room dies
-    let warning_buffer = cleanup_seconds - critical_threshold;
     assert!(
-        warning_buffer >= 15,
-        "Users need at least 15s warning before room deletion. Current buffer: {}s",
-        warning_buffer
+        SHIPPED_CLIENT.contains("ROOM_GRACE_PERIOD_SECONDS * 0.7"),
+        "the warning threshold should be a late fraction of the real grace \
+         period, not an early fixed number"
+    );
+    assert!(
+        SHIPPED_CLIENT.contains("ROOM_GRACE_PERIOD_SECONDS * 0.9"),
+        "the critical threshold should be a later fraction still, close to \
+         when the room actually dies"
     );
 }
 

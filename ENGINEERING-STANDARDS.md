@@ -1134,6 +1134,50 @@ backend had changed. Tests over `EMBEDDED_HTML` assert the user-facing text
 matches the backend constant. **A user-visible number is a constant with two
 call sites, and both must be checked.**
 
+### 7.3a The lie can outlive the fix, and the test can defend it
+
+The interactive fade indicator — the coloured dot, the "Room fading soon...
+say something!" toast — was built under the belief that a room died after 60
+seconds idle: `active` at 0-10s, `warning` at 30s, `critical`, visually dying,
+at 45s. `EMPTY_ROOM_CLEANUP_DELAY` is 600 seconds. The welcome banner's static
+prose ("go silent for ten minutes") was correct and checked; the *interactive*
+indicator was a second, unconnected implementation of the same fact, five
+percent of the way into the real grace period, and nothing checked it against
+`EMPTY_ROOM_CLEANUP_DELAY` at all — until a user watched it happen and said the
+site felt jank.
+
+Two tests were actively wrong, not merely silent. One asserted `warning_seconds
+(30) < cleanup_seconds (600)` and `600 - 45 >= 15` — both trivially true no
+matter how absurdly early the warning fired, so passing proved nothing (§6.4).
+The other literally required the client to contain the string `"1 minute room
+timeout"` — it did not check the mechanic was *right*, it checked that the
+*wrong* one was *documented*, and would have failed the moment someone fixed
+the number without also deleting the test. A test that enforces a comment
+matching a wrong belief is not a safety net for that belief; it is the belief,
+wearing a passing test as camouflage.
+
+The fix ties the client to one named constant instead of independently guessed
+numbers: `ROOM_GRACE_PERIOD_SECONDS` in `client.js`, and every threshold a
+fraction of it (`* 0.7`, `* 0.9`) rather than a fixed literal. A single Rust
+test asserts the constant equals `EMPTY_ROOM_CLEANUP_DELAY` (and that
+`EMPTY_ROOM_CLEANUP_DELAY` equals `MAIN_ROOM_FADE_IDLE`, since one indicator
+serves both) — one number to keep honest, not three independently.
+
+### 7.3b A prose scan needs comments stripped before it, not just the CSS one
+
+Fixing 7.3a's client constant meant a new doc comment, which meant an English
+possessive: "the room's real remaining life." `classes_the_page_can_render`
+(§10.11a) walks every `'` in `EMBEDDED_JS` pairing each as a string-literal
+delimiter with no idea some of them sit inside a `///` comment — one
+apostrophe in prose shifted every pairing after it for the rest of the file,
+and `.message.sent`/`.message.received` briefly read as dead CSS because the
+walker was reading bytes it thought were a different string entirely. Fixed
+the same way `embedded_html_without_comments` exists for CSS: `strip_js_comments`
+strips `//` to end-of-line before the walk runs. **Any sweep that treats raw
+source as data must strip comments before it, not just the sweep that was
+written first** — the CSS contracts got this from the start; the JS-literal
+broadening added later did not, and it took a real false positive to notice.
+
 ---
 
 ## 8. Naming and organisation law

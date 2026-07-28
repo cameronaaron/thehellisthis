@@ -2122,7 +2122,12 @@ fn classes_the_page_can_render() -> std::collections::HashSet<String> {
             && s.chars()
                 .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
     };
-    let mut rest = EMBEDDED_JS;
+    // Comments stripped first: an English possessive ("the room's real
+    // remaining life") is an unpaired `'` that this walk cannot tell from a
+    // string delimiter, and one apostrophe in a doc comment shifts every
+    // pairing after it for the rest of the file.
+    let js_without_comments = strip_js_comments(EMBEDDED_JS);
+    let mut rest: &str = &js_without_comments;
     while let Some(start) = rest.find('\'') {
         rest = &rest[start + 1..];
         let Some(end) = rest.find('\'') else { break };

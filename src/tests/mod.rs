@@ -193,6 +193,29 @@ fn classes_in_selector(selector: &str) -> Vec<String> {
         .collect()
 }
 
+/// The client script with its `//` comments removed.
+///
+/// §6.7 again, for JavaScript: a scan for string-literal content must read
+/// code, not prose. `classes_the_page_can_render`'s broad single-quote walk
+/// treats every `'` in the *entire file* as opening or closing a literal, with
+/// no idea which ones sit inside a `///` doc comment — so an English
+/// possessive like "the room's real remaining life" shifted every quote
+/// pairing after it, and classes as central as `.message.sent` briefly read
+/// as dead because the walker was no longer looking at the bytes it thought it
+/// was. No `//` appears inside a real string literal in this file today
+/// (checked before relying on it); if that ever changes this needs the
+/// state-machine treatment `strip_hash_comments` never needed either.
+fn strip_js_comments(script: &str) -> String {
+    script
+        .lines()
+        .map(|line| match line.find("//") {
+            Some(index) => &line[..index],
+            None => line,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// A workflow or shell script with its `#` comments removed.
 ///
 /// §6.7: a sweep over a script must read the commands, not the prose about

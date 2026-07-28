@@ -2284,19 +2284,6 @@ async fn test_cleanup_interval_is_sensible() {
 }
 
 #[tokio::test]
-async fn test_frontend_comment_documents_timeout() {
-    // Frontend JS should have a comment documenting the 1 minute timeout
-    // This helps future developers understand the timing
-
-    assert!(
-        SHIPPED_CLIENT.contains("1 minute room timeout")
-            || SHIPPED_CLIENT.contains("60s")
-            || SHIPPED_CLIENT.contains("60 second"),
-        "Frontend should document the room timeout in comments for maintainability"
-    );
-}
-
-#[tokio::test]
 async fn test_room_handler_reserved_paths() {
     let app_state = Arc::new(AppState::new());
     let app = Router::new()

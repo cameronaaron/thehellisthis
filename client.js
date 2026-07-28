@@ -109,6 +109,16 @@ const REACTION_BAR_OVERLAP = 8;
 /// separate cards, which is what iMessage does and why it feels continuous.
 const GROUPING_WINDOW_MS = 60000;
 
+/// How long a quiet room has before it is deleted or fades, in seconds.
+///
+/// Must equal the matching pair of room-death durations in config.rs — both
+/// 600 there. The fade indicator used to invent its own numbers (10/30/45
+/// seconds) under the belief a room died at 60; it does not, and the warning
+/// toast fired at 5% of the room's real remaining life, every single time a
+/// conversation paused to think. §7.3: the UI must not lie about the
+/// mechanics. A Rust test fails if this drifts from the backend value.
+const ROOM_GRACE_PERIOD_SECONDS = 600;
+
 /// Search keywords, so typing "fire" finds 🔥 without shipping a full
 /// annotation database. Only the emoji people actually search for by name.
 const EMOJI_KEYWORDS = {
@@ -1999,24 +2009,25 @@ class ChatApp {
             this.roomLifespan.textContent = `${hours}h ${mins}m alive`;
         }
         
-        // Update heartbeat state based on activity (1 minute room timeout)
+        // Update heartbeat state based on activity, as fractions of the real
+        // grace period — not independently invented numbers (§7.3).
         this.roomHeartbeat.classList.remove('active', 'warning', 'critical');
         this.chat.classList.remove('room-fading');
-        
-        if (idleSeconds < 10) {
-            // Active: recent messages (0-10s)
+
+        if (idleSeconds < 60) {
+            // Active: someone spoke in the last minute.
             this.roomHeartbeat.classList.add('active');
-        } else if (idleSeconds < 30) {
-            // Normal: 10-30s idle
-        } else if (idleSeconds < 45) {
-            // Warning: 30-45s idle - show warning
+        } else if (idleSeconds < ROOM_GRACE_PERIOD_SECONDS * 0.7) {
+            // Normal: quiet, but most of the grace period remains.
+        } else if (idleSeconds < ROOM_GRACE_PERIOD_SECONDS * 0.9) {
+            // Warning: the last 30% of the grace period.
             this.roomHeartbeat.classList.add('warning');
             if (!this.fadeWarningShown) {
                 this.fadeWarningShown = true;
                 this.showFadeWarning();
             }
         } else {
-            // Critical: 45+ seconds, room is dying (server deletes at 60s)
+            // Critical: the last 10%, close to when the room actually dies.
             this.roomHeartbeat.classList.add('critical');
             this.chat.classList.add('room-fading');
         }
