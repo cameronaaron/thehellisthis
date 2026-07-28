@@ -1208,7 +1208,11 @@ body {
 
 .emoji-group-label {
     grid-column: 1 / -1;
-    padding: 10px 4px 4px;
+    /* 8px, not 4px, below the text: a sticky label sits in its own stacking
+       context and paints above the non-positioned cells beneath it, so a tight
+       gap here is the kind of margin that only fails at a font size, zoom
+       level or touch target this session's browser did not happen to hit. */
+    padding: 10px 4px 8px;
     font-size: 11px;
     font-weight: 600;
     letter-spacing: 0.06em;

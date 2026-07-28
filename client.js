@@ -268,7 +268,7 @@ class ChatApp {
     
     setupEventListeners() {
         this.input.addEventListener('keydown', (e) => this.handleInputKeydown(e));
-        this.input.addEventListener('input', (e) => this.handleInput(e));
+        this.input.addEventListener('input', () => this.handleInput());
         this.sendButton.addEventListener('click', () => this.sendMessage());
         this.sendButton.addEventListener('touchend', (e) => {
             e.preventDefault();
@@ -1605,8 +1605,14 @@ class ChatApp {
         }
     }
     
-    handleInput(e) {
-        const text = e.target.value;
+    /// Reads `this.input` directly rather than `e.target`: `insertEmoji` calls
+    /// this after setting the value programmatically, with no event at all, so
+    /// an `e.target` read threw on every emoji pick from the composer — after
+    /// the character had already been inserted, so it looked like nothing was
+    /// wrong until the character counter and typing indicator silently stopped
+    /// updating.
+    handleInput() {
+        const text = this.input.value;
         this.charCount.textContent = text.length;
         
         // Send typing indicator
