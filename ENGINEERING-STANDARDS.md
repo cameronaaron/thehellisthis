@@ -1111,9 +1111,9 @@ site work.
 
 | Mechanic | Constant | Why |
 | --- | --- | --- |
-| Empty rooms are deleted | `EMPTY_ROOM_CLEANUP_DELAY` (10 min) | A room that outlives its conversation is a ghost town. Deleting it means every room you find has someone in it. |
+| Empty rooms are deleted | `EMPTY_ROOM_CLEANUP_DELAY` (5 min) | A spawned room is a spark, not a hearth. A room that outlives its conversation is a ghost town; deleting it means every room you find has someone in it. §7.4. |
 | Idle users are disconnected | `USER_IDLE_MESSAGE_TIMEOUT` (10 min) | So the user count reads "people actually here," not "tabs left open." |
-| `main` history fades | `MAIN_ROOM_FADE_IDLE` → `MAIN_ROOM_FADE_KEEP` | `main` can't be deleted, so it forgets instead. |
+| `main` history fades | `MAIN_ROOM_FADE_IDLE` (30 min) → `MAIN_ROOM_FADE_KEEP` (75) | `main` can't be deleted, so it forgets instead — patiently, because the hearth's job is not going out. §7.4. |
 
 These are **product decisions with technical implementations**, which is why
 they live in `config.rs` with their reasoning attached rather than as bare
@@ -1177,6 +1177,59 @@ strips `//` to end-of-line before the walk runs. **Any sweep that treats raw
 source as data must strip comments before it, not just the sweep that was
 written first** — the CSS contracts got this from the start; the JS-literal
 broadening added later did not, and it took a real false positive to notice.
+
+### 7.4 A spawned room is a spark; `main` is the hearth, and they should not share a clock
+
+`EMPTY_ROOM_CLEANUP_DELAY` and `MAIN_ROOM_FADE_IDLE` were both 600 seconds —
+not by design, by coincidence, from whenever each was last tuned in isolation.
+Timing them identically told neither story the product actually claims: a
+room you spawn is meant to feel struck on purpose, private, brief; `main` is
+meant to feel like the one place always findable. A visitor cannot tell "these
+happen to be the same number today" from "these are the same *kind* of thing"
+— the code has to mean the difference, or there isn't one.
+
+They now diverge on purpose. A spawned room is deleted five minutes after it
+goes **empty** (`EMPTY_ROOM_CLEANUP_DELAY`, 300s) — long enough for someone
+who left by accident to click back in, short enough that an abandoned room
+does not sit as a locked door with the light seemingly still on. `main` fades
+after thirty minutes of room-wide **silence** (`MAIN_ROOM_FADE_IDLE`, 1800s,
+`MAIN_ROOM_FADE_KEEP` raised 50 → 75) — patient, because the hearth's whole
+job is not going out, and it applies whether or not anyone is still connected
+(constraint #3), unlike a spawned room's clock, which cannot even start until
+everyone has left (§0.2: two different preconditions are two different
+mechanics, not one mechanic with two numbers).
+
+The divergence is why §7.3a's fade indicator needed a second constant, not
+just a corrected first one: `MAIN_ROOM_FADE_SECONDS` and
+`IDLE_EVICTION_SECONDS` in `client.js`, picked by `this.roomName ===
+MAIN_ROOM_NAME`. The second is not "a spawned room's death clock" at all —
+that room cannot die while its viewer is connected to it (constraint #3), so
+warning a present visitor "the room is about to disappear" would have been
+exactly the lie §7.3 rules out, just relocated rather than removed. What can
+actually happen to a present, silent visitor is losing their own seat
+(`USER_IDLE_MESSAGE_TIMEOUT`, unchanged at 600s — the one timer already tied
+to something real: *your own* silence, not the room's). The indicator now
+warns about that instead, which is the honest version of the same nudge.
+
+Three tests were asserting a config constant's value back at itself with no
+behavioural claim attached — `EMPTY_ROOM_CLEANUP_DELAY.as_secs() == 600` —
+including one whose name claimed to test that `main` is never deleted while
+its body tested neither. They broke on the retune for no reason connected to
+what they claimed to verify, which is what happens when a test's only
+assertion is a number restating itself: it cannot fail for being wrong, only
+for having changed (§6.4 again, a different shape of it). Deleted; the real
+boundary behaviour was already covered dynamically by
+`the_empty_room_grace_period_is_exact`
+and `the_housekeeping_boundaries_are_exact`, which read the constants rather
+than repeat them.
+
+A fourth, `test_frontend_timeout_text_matches_backend_constant`, had a subtler
+version of the same disease: it checked the welcome banner's fade sentence
+against `EMPTY_ROOM_CLEANUP_DELAY`, which only ever passed because that
+constant happened to equal the one the sentence actually describes
+(`MAIN_ROOM_FADE_IDLE`). Not a wrong number — a right number, checked against
+the wrong constant, invisible for as long as the two stayed accidentally
+equal. Repointed at the constant the sentence is actually about.
 
 ---
 

@@ -236,10 +236,11 @@ to HTML.
 
 ### 3. `main` is never deleted — it fades
 
-Every other room is deleted after `EMPTY_ROOM_CLEANUP_DELAY` (10 min) with no
-connected users. `main` is the entry point and must always exist, so it fades
-instead: idle for `MAIN_ROOM_FADE_IDLE`, its history trims to
-`MAIN_ROOM_FADE_KEEP` (50). `cleanup.rs` special-cases `MAIN_ROOM` and
+Every other room is deleted after `EMPTY_ROOM_CLEANUP_DELAY` (5 min) with no
+connected users — a spawned room is a spark, not a hearth (§7.4). `main` is
+the entry point and must always exist, so it fades instead, and far more
+patiently: idle for `MAIN_ROOM_FADE_IDLE` (30 min), its history trims to
+`MAIN_ROOM_FADE_KEEP` (75). `cleanup.rs` special-cases `MAIN_ROOM` and
 `continue`s before the deletion branch. Do not "simplify" that away.
 
 ### 4. Room-name check order is user-facing

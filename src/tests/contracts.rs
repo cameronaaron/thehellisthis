@@ -42,9 +42,9 @@ async fn test_claim_no_disk_persistence() {
 
 #[tokio::test]
 async fn test_empty_room_cleanup_delay_constant() {
-    // Verify the EMPTY_ROOM_CLEANUP_DELAY is 10 minutes (600 seconds)
-    // This is the timeout that drives the "keep talking or it fades" mechanic
-    assert_eq!(EMPTY_ROOM_CLEANUP_DELAY.as_secs(), 600);
+    // A spawned room is a spark: gone 5 minutes after the last person leaves
+    // it empty (§7.4).
+    assert_eq!(EMPTY_ROOM_CLEANUP_DELAY.as_secs(), 300);
 }
 
 #[tokio::test]
@@ -158,31 +158,32 @@ async fn test_estimated_message_size_constant() {
 
 // ========== CHAT ERROR INTO RESPONSE TESTS ==========
 
+/// The welcome banner's "go silent for X and it fades too" describes `main`
+/// fading, not a spawned room being deleted — it was checked against
+/// `EMPTY_ROOM_CLEANUP_DELAY` anyway, which only ever passed because the two
+/// constants happened to be equal (both 600s) before §7.4 gave them different
+/// values on purpose. The same class of bug as §7.3a's fade indicator, in the
+/// other direction: not a wrong number, a right number checked against the
+/// wrong constant.
 #[tokio::test]
 async fn test_frontend_timeout_text_matches_backend_constant() {
-    // CRITICAL: The user-facing text must match EMPTY_ROOM_CLEANUP_DELAY
-    // If this fails, the UX is lying to users about when rooms disappear
+    let fade_minutes = MAIN_ROOM_FADE_IDLE.as_secs() / 60;
 
-    let cleanup_seconds = EMPTY_ROOM_CLEANUP_DELAY.as_secs();
-
-    // Backend uses 600 seconds = 10 minutes
     assert_eq!(
-        cleanup_seconds, 600,
-        "EMPTY_ROOM_CLEANUP_DELAY changed! Update frontend text to match."
+        fade_minutes, 30,
+        "MAIN_ROOM_FADE_IDLE changed! Update the welcome banner text to match."
     );
 
-    // Frontend must say "ten minute" (not "one minute", "30 seconds", etc.)
     assert!(
-        SHIPPED_CLIENT.contains("go silent for ten minute"),
-        "Frontend instructions don't match backend! Backend deletes at {}s but HTML doesn't say 'ten minute'. \
-         Found text should say 'go silent for ten minute'.",
-        cleanup_seconds
+        SHIPPED_CLIENT.contains("go silent for thirty minute"),
+        "Frontend instructions don't match backend! main fades after {fade_minutes} \
+         minutes but the banner doesn't say 'thirty minute'."
     );
 
-    // Must NOT contain the old incorrect text
     assert!(
-        !SHIPPED_CLIENT.contains("go silent for one minute"),
-        "Frontend still contains outdated 'one minute' text!"
+        !SHIPPED_CLIENT.contains("go silent for one minute")
+            && !SHIPPED_CLIENT.contains("go silent for ten minute"),
+        "Frontend still contains outdated fade-timing text!"
     );
 }
 

@@ -2,81 +2,63 @@
 
 use super::*;
 
-#[tokio::test]
-async fn test_main_room_fade_thresholds_correct() {
-    // Verify the constants are set for 10-minute timeout
-    assert_eq!(
-        EMPTY_ROOM_CLEANUP_DELAY.as_secs(),
-        600,
-        "Room should die at 10 minutes"
-    );
-    assert_eq!(
-        ROOM_CLEANUP_INTERVAL.as_secs(),
-        60,
-        "Cleanup should run every 1 minute"
-    );
-}
-
-#[tokio::test]
-async fn test_main_room_message_fade_logic() {
-    // Verify that the main room fade thresholds make sense for UX:
-    // - 10min idle: trim to 50 messages (gentle fade at death)
-    // The logic in cleanup_rooms uses this threshold
-    let ten_minutes = EMPTY_ROOM_CLEANUP_DELAY;
-
-    assert_eq!(
-        ten_minutes.as_secs(),
-        600,
-        "Main room fades after 10 minutes"
-    );
-}
-
-/// The interactive fade indicator's thresholds are honest fractions of the
-/// real grace period, not independently invented numbers.
+/// The interactive fade indicator watches the right clock for each kind of
+/// room, and its thresholds are honest fractions of the real grace period —
+/// not independently invented numbers.
+///
+/// §7.4 gave a spawned room and `main` different grace periods on purpose: a
+/// spawned room is a spark (`EMPTY_ROOM_CLEANUP_DELAY`, 5 minutes, and only
+/// once it is *empty* — constraint #3), `main` is the hearth (
+/// `MAIN_ROOM_FADE_IDLE`, 30 minutes, on room-wide silence regardless of who
+/// is still connected). A single shared client constant stopped being able to
+/// represent both truthfully the moment they diverged, so a present viewer's
+/// indicator now reads `MAIN_ROOM_FADE_SECONDS` in `main` and
+/// `IDLE_EVICTION_SECONDS` — their own idle-eviction risk, the one thing that
+/// actually can happen to them in a room that cannot be deleted while they
+/// are in it — everywhere else.
 ///
 /// This used to hardcode 10/30/45 seconds under the belief that a room died
-/// at 60 seconds — a comment in this very test said so, twice. It does not:
-/// `EMPTY_ROOM_CLEANUP_DELAY` and `MAIN_ROOM_FADE_IDLE` are both 600 seconds.
-/// The warning toast ("Room fading soon... say something!") fired at 30
-/// seconds idle and the room read as visually dying at 45 — five percent of
-/// the way into a ten-minute grace period — every single time a conversation
-/// paused to think. §7.3 exists for exactly this: the UI must not lie about
-/// the mechanics, and this was lying by a factor of twenty.
-///
-/// The three inequality assertions this test used to make — `30 < 600`, `45 <
-/// 600`, `600 - 45 >= 15` — were all trivially true regardless of how early
-/// the warning actually fired, so none of them would have failed even at
-/// those wrong values. A weak assertion is not a check (§6.4). This instead
-/// asserts the real relationship: the client's grace-period constant equals
-/// the server's, and the warning/critical thresholds are late fractions of
-/// it — computed from that one constant, not chosen independently.
+/// at 60 seconds — a comment in this very test said so, twice — and the two
+/// tests that came before it in this file asserted nothing but a config
+/// constant's own value back at itself, which breaks on every retune for no
+/// behavioural reason; `the_empty_room_grace_period_is_exact` and
+/// `the_housekeeping_boundaries_are_exact` already cover the real boundary
+/// dynamically. Both deleted in favour of this.
 #[tokio::test]
 async fn the_fade_indicator_is_honest_about_when_the_room_actually_dies() {
-    assert_eq!(
-        EMPTY_ROOM_CLEANUP_DELAY, MAIN_ROOM_FADE_IDLE,
-        "the client shows one set of thresholds for both a room's deletion \
-         and main's fade; they must be the same duration or one of them is \
-         being told the wrong story"
-    );
-
     assert!(
         SHIPPED_CLIENT.contains(&format!(
-            "ROOM_GRACE_PERIOD_SECONDS = {}",
-            EMPTY_ROOM_CLEANUP_DELAY.as_secs()
+            "MAIN_ROOM_FADE_SECONDS = {}",
+            MAIN_ROOM_FADE_IDLE.as_secs()
         )),
-        "the client's grace-period constant must equal the backend's, or \
-         every fraction computed from it is a fraction of the wrong number"
+        "main's fade indicator constant must equal the backend's, or every \
+         fraction computed from it is a fraction of the wrong number"
+    );
+    assert!(
+        SHIPPED_CLIENT.contains(&format!(
+            "IDLE_EVICTION_SECONDS = {}",
+            USER_IDLE_MESSAGE_TIMEOUT.as_secs()
+        )),
+        "the idle-eviction indicator constant must equal the backend's"
     );
 
     assert!(
-        SHIPPED_CLIENT.contains("ROOM_GRACE_PERIOD_SECONDS * 0.7"),
+        SHIPPED_CLIENT.contains("gracePeriod * 0.7"),
         "the warning threshold should be a late fraction of the real grace \
          period, not an early fixed number"
     );
     assert!(
-        SHIPPED_CLIENT.contains("ROOM_GRACE_PERIOD_SECONDS * 0.9"),
+        SHIPPED_CLIENT.contains("gracePeriod * 0.9"),
         "the critical threshold should be a later fraction still, close to \
-         when the room actually dies"
+         when the applicable clock actually runs out"
+    );
+
+    assert!(
+        SHIPPED_CLIENT.contains("this.roomName === MAIN_ROOM_NAME"),
+        "the indicator must pick its clock by room, not use one constant for \
+         both — a spawned room cannot be deleted while anyone is connected \
+         to it (constraint #3), so main's room-wide silence clock does not \
+         apply there"
     );
 }
 

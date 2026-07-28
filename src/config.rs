@@ -192,12 +192,27 @@ pub(crate) const INACTIVE_TIMEOUT: Duration = Duration::from_secs(3_600);
 // These are product decisions, not technical limits. Scarcity is the point:
 // a room that nobody talks in disappears, and a user who lurks is disconnected
 // so the user count means "people actually here" (ENGINEERING-STANDARDS.md §7).
+//
+// A room you create and `main` are not the same kind of thing, and until
+// §7.4 they were timed as though they were: both 600 seconds, coincidentally.
+// A spawned room is a spark — struck on purpose, private, meant to be brief.
+// `main` is the hearth — the one place always findable, and its whole point is
+// that it does not go out. Giving them the same clock told neither story;
+// see §7.4.
 // ---------------------------------------------------------------------------
 
-/// Grace period before an empty room is deleted.
-pub(crate) const EMPTY_ROOM_CLEANUP_DELAY: Duration = Duration::from_secs(600);
+/// Grace period before an *empty* room is deleted — nobody connected, not
+/// merely nobody talking. A spark, not a hearth: five minutes is long enough
+/// for someone to realise they meant to stay and click back in, and short
+/// enough that an abandoned room does not linger as a locked door with a
+/// light seemingly still on. See §7.4.
+pub(crate) const EMPTY_ROOM_CLEANUP_DELAY: Duration = Duration::from_secs(300);
 
-/// A user who has sent nothing for this long is disconnected.
+/// A user who has sent nothing for this long is disconnected — the one timer
+/// here that was already honest and stays as it was. It is the real, personal
+/// stake behind "the user count means people actually here" (§7.1): sit
+/// silent for ten minutes in a room that is otherwise talking, and you are the
+/// one who stops counting as present, not the room that is punished for you.
 pub(crate) const USER_IDLE_MESSAGE_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// WebSocket close code for "you were disconnected for being quiet".
@@ -220,8 +235,17 @@ pub(crate) const IDLE_CLOSE_CODE: u16 = 4001;
 
 /// `main` is never deleted, so it fades instead: once idle this long its
 /// history is trimmed to [`MAIN_ROOM_FADE_KEEP`].
-pub(crate) const MAIN_ROOM_FADE_IDLE: Duration = Duration::from_secs(600);
-pub(crate) const MAIN_ROOM_FADE_KEEP: usize = 50;
+///
+/// Thirty minutes, not ten — `main` gets the patience the hearth deserves.
+/// This is the one timer that applies to people who are *present and silent*,
+/// not merely absent: `cleanup_rooms` fades `main` on room-wide idle
+/// regardless of who is still connected (constraint #3), so it is the one
+/// mechanic a viewer can genuinely watch happen to them. See §7.4.
+pub(crate) const MAIN_ROOM_FADE_IDLE: Duration = Duration::from_secs(1800);
+
+/// How much of `main`'s history survives a fade. 75, not 50 — thirty minutes
+/// of patience earns a real surviving thread, not a near-total wipe.
+pub(crate) const MAIN_ROOM_FADE_KEEP: usize = 75;
 
 // ---------------------------------------------------------------------------
 // Housekeeping intervals

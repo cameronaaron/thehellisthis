@@ -1957,8 +1957,8 @@ async fn test_room_survives_before_cleanup_delay() {
             attachment_bytes: 0,
             users: std::collections::HashMap::new(),
             available_animals: std::collections::VecDeque::new(),
-            // Only 450 seconds old (under 10 min threshold)
-            last_activity: Instant::now() - Duration::from_secs(450),
+            // Comfortably inside the cleanup window.
+            last_activity: Instant::now() - (EMPTY_ROOM_CLEANUP_DELAY / 2),
             total_memory_bytes: std::sync::atomic::AtomicUsize::new(0),
         };
         rooms.insert("should-survive".to_string(), room_state);
@@ -1985,8 +1985,8 @@ async fn test_room_deleted_after_cleanup_delay() {
             attachment_bytes: 0,
             users: std::collections::HashMap::new(),
             available_animals: std::collections::VecDeque::new(),
-            // 15 minutes old (over 10 min threshold)
-            last_activity: Instant::now() - Duration::from_secs(900),
+            // Comfortably past the cleanup window.
+            last_activity: Instant::now() - (EMPTY_ROOM_CLEANUP_DELAY * 2),
             total_memory_bytes: std::sync::atomic::AtomicUsize::new(0),
         };
         rooms.insert("should-die".to_string(), room_state);
@@ -2047,15 +2047,6 @@ async fn test_room_with_active_users_never_deleted() {
 
     // Should survive because it has users
     assert!(app_state.rooms.read().await.contains_key("has-users"));
-}
-
-#[tokio::test]
-async fn test_main_room_never_deleted() {
-    // Main room is protected by: if room_name == "main" { ... continue; }
-    // This test documents that the main room ONLY has message fade, never deletion.
-    // The continue statement skips the deletion logic entirely.
-    // The fade timeout should be 600 seconds (10 minutes)
-    assert_eq!(EMPTY_ROOM_CLEANUP_DELAY.as_secs(), 600);
 }
 
 #[tokio::test]

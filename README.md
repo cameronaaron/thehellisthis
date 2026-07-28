@@ -29,10 +29,12 @@ PORT=3000 ./target/release/infinite-chat
 
 Deliberate product decisions, not resource management.
 
-- Ephemeral rooms vanish after 10 minutes with nobody connected
+- Ephemeral rooms vanish 5 minutes after the last person leaves them empty — a
+  spark, not a hearth
 - Idle users are disconnected after 10 minutes without speaking, so the user
   count means "people actually here"
-- `main` can't be deleted, so its history fades instead
+- `main` can't be deleted, so its history fades instead — patiently, after 30
+  minutes of room-wide silence
 
 ### Reliability
 
@@ -129,8 +131,9 @@ its value. The ones worth knowing:
 | `MAX_MESSAGE_LEN` | 8 KB |
 | `MAX_CONCURRENT_CONNECTIONS_PER_IP` | 3 |
 | `HEARTBEAT_INTERVAL` | 5s |
-| `EMPTY_ROOM_CLEANUP_DELAY` | 10 min |
+| `EMPTY_ROOM_CLEANUP_DELAY` | 5 min |
 | `USER_IDLE_MESSAGE_TIMEOUT` | 10 min |
+| `MAIN_ROOM_FADE_IDLE` | 30 min |
 
 ## Testing
 

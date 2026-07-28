@@ -109,15 +109,37 @@ const REACTION_BAR_OVERLAP = 8;
 /// separate cards, which is what iMessage does and why it feels continuous.
 const GROUPING_WINDOW_MS = 60000;
 
-/// How long a quiet room has before it is deleted or fades, in seconds.
+/// The name of the one room that never gets deleted, only faded. Must match
+/// `MAIN_ROOM` in config.rs.
+const MAIN_ROOM_NAME = 'main';
+
+/// How long `main` can sit with nobody typing before its history fades, in
+/// seconds. Must equal main's fade duration in config.rs (1800 there). This
+/// is the one grace period a *present* viewer can genuinely watch run out:
+/// `main` fades on room-wide silence whether or not anyone is still
+/// connected (constraint #3), so someone reading quietly is not exempt.
+const MAIN_ROOM_FADE_SECONDS = 1800;
+
+/// How long *this browser* can go without sending a message before it is
+/// disconnected for idling, in seconds. Must equal the backend's idle-message
+/// timeout in config.rs (600 there).
 ///
-/// Must equal the matching pair of room-death durations in config.rs — both
-/// 600 there. The fade indicator used to invent its own numbers (10/30/45
-/// seconds) under the belief a room died at 60; it does not, and the warning
-/// toast fired at 5% of the room's real remaining life, every single time a
-/// conversation paused to think. §7.3: the UI must not lie about the
-/// mechanics. A Rust test fails if this drifts from the backend value.
-const ROOM_GRACE_PERIOD_SECONDS = 600;
+/// This, not a room-wide clock, is the honest stake in a room you spawned
+/// yourself: that room cannot be deleted while anyone is connected to it
+/// (constraint #3), so watching room-wide silence and warning "the room is
+/// about to disappear" was telling a present viewer something that could not
+/// happen to them yet. What can happen to them is losing their own seat for
+/// having gone quiet — the same rule that makes the user count mean "people
+/// actually here" (§7.1) — so the indicator now counts *their* silence, not
+/// the room's.
+///
+/// Both fixed a real bug: the indicator used to invent its own numbers
+/// (10/30/45 seconds) under the belief a room died at 60; it does not, and the
+/// warning toast fired at 5% of the real remaining time, every single time a
+/// conversation paused to think. §7.3/§7.4: the UI must not lie about the
+/// mechanics. A Rust test fails if either constant drifts from its backend
+/// value.
+const IDLE_EVICTION_SECONDS = 600;
 
 /// Search keywords, so typing "fire" finds 🔥 without shipping a full
 /// annotation database. Only the emoji people actually search for by name.
@@ -174,6 +196,12 @@ class ChatApp {
         // Room heartbeat tracking
         this.roomStartTime = Date.now();
         this.lastActivityTime = Date.now();
+        // When *this* browser last sent a message — distinct from
+        // `lastActivityTime`, which is room-wide. A custom room cannot be
+        // deleted while anyone is connected (constraint #3), so the real risk
+        // to a present, silent viewer there is their own idle eviction, keyed
+        // to their own last send, not to how quiet the room around them is.
+        this.myLastSentTime = Date.now();
         this.lastMessageTime = 0;
         this.recentMessageCount = 0;
         this.lastSenderId = null;
@@ -469,6 +497,7 @@ class ChatApp {
         this.connected = true;
         // Reset activity tracking on connect
         this.lastActivityTime = Date.now();
+        this.myLastSentTime = Date.now();
         this.roomStartTime = Date.now();
         this.fadeWarningShown = false;
         if (this.reconnectAttempts > 0) {
@@ -1695,6 +1724,7 @@ class ChatApp {
             }
             
             this.ws.send(JSON.stringify(messagePayload));
+            this.myLastSentTime = Date.now();
             this.input.value = '';
             this.clearAttachment();
             this.toggleEmojiPanel(false);
@@ -1995,11 +2025,22 @@ class ChatApp {
         }
     }
     
+    /// A room you spawned and `main` fail differently, so this watches
+    /// different clocks for each (§7.4): `main` fades on room-wide silence
+    /// whether or not anyone stays connected, so `idleSeconds` — time since
+    /// anyone last spoke — is the honest measure there. A spawned room cannot
+    /// be deleted while anyone is connected to it (constraint #3), so the
+    /// honest measure for a present viewer is their *own* idle time, which is
+    /// what actually gets them disconnected.
     updateHeartbeat() {
         const now = Date.now();
-        const idleSeconds = Math.floor((now - this.lastActivityTime) / 1000);
+        const isMain = this.roomName === MAIN_ROOM_NAME;
+        const idleSeconds = isMain
+            ? Math.floor((now - this.lastActivityTime) / 1000)
+            : Math.floor((now - this.myLastSentTime) / 1000);
+        const gracePeriod = isMain ? MAIN_ROOM_FADE_SECONDS : IDLE_EVICTION_SECONDS;
         const aliveMinutes = Math.floor((now - this.roomStartTime) / 60000);
-        
+
         // Update lifespan display
         if (aliveMinutes < 60) {
             this.roomLifespan.textContent = `${aliveMinutes}m alive`;
@@ -2008,40 +2049,53 @@ class ChatApp {
             const mins = aliveMinutes % 60;
             this.roomLifespan.textContent = `${hours}h ${mins}m alive`;
         }
-        
+
         // Update heartbeat state based on activity, as fractions of the real
         // grace period — not independently invented numbers (§7.3).
         this.roomHeartbeat.classList.remove('active', 'warning', 'critical');
         this.chat.classList.remove('room-fading');
 
         if (idleSeconds < 60) {
-            // Active: someone spoke in the last minute.
+            // Active: someone spoke — or, in a spawned room, *you* spoke — in
+            // the last minute.
             this.roomHeartbeat.classList.add('active');
-        } else if (idleSeconds < ROOM_GRACE_PERIOD_SECONDS * 0.7) {
+        } else if (idleSeconds < gracePeriod * 0.7) {
             // Normal: quiet, but most of the grace period remains.
-        } else if (idleSeconds < ROOM_GRACE_PERIOD_SECONDS * 0.9) {
+        } else if (idleSeconds < gracePeriod * 0.9) {
             // Warning: the last 30% of the grace period.
             this.roomHeartbeat.classList.add('warning');
             if (!this.fadeWarningShown) {
                 this.fadeWarningShown = true;
-                this.showFadeWarning();
+                this.showFadeWarning(isMain);
             }
         } else {
-            // Critical: the last 10%, close to when the room actually dies.
+            // Critical: the last 10%. `main`'s history is genuinely about to
+            // trim; a spawned room's *you* are genuinely about to be moved
+            // along for idling — the room itself is not at risk while you're
+            // reading this.
             this.roomHeartbeat.classList.add('critical');
-            this.chat.classList.add('room-fading');
+            if (isMain) this.chat.classList.add('room-fading');
         }
     }
-    
-    showFadeWarning() {
+
+    /// `isMain` picks which of two true things to say: `main`'s memory is
+    /// thinning, or you personally are about to be moved along for having
+    /// gone quiet. Neither is "the room is about to disappear" — for a
+    /// spawned room, that cannot happen while you're still connected to it
+    /// (constraint #3), so saying so would be exactly the lie §7.3 exists to
+    /// rule out, just relocated rather than fixed.
+    showFadeWarning(isMain) {
         const existing = document.querySelector('.fade-warning');
         if (existing) existing.remove();
-        
+
         const warning = document.createElement('div');
         warning.className = 'fade-warning';
-        warning.innerHTML = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-hourglass"/></svg>Room fading soon... say something!';
+        const message = isMain
+            ? "main's older messages are fading... say something to keep them!"
+            : "you've gone quiet... say something or you'll be moved along";
+        warning.innerHTML = `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-hourglass"/></svg>${message}`;
         document.body.appendChild(warning);
-        
+
         setTimeout(() => {
             if (warning.parentNode) warning.remove();
         }, 5000);
