@@ -1,671 +1,13 @@
 //! Meta-contracts: the tests that keep the other tests honest.
 //!
 //! Standards citing tests that exist, sweeps that are documented, exemptions
-//! that expire, inventories that catch a deletion (§6.10).
+//! that expire, inventories that catch a deletion (§6.10). Everything else
+//! that used to live in this one file has its own module now: individual
+//! constant values in `constants.rs`, frontend/backend agreement in
+//! `frontend_parity.rs`, the deploy pipeline in `ci.rs`, the memory and
+//! per-message-cost arithmetic in `memory_budget.rs`.
 
 use super::*;
-
-#[tokio::test]
-async fn test_claim_no_disk_persistence() {
-    // Verify no File operations in the message pipeline
-    let app_state = Arc::new(AppState::new());
-
-    // Add room with message
-    {
-        let mut rooms = app_state.rooms.write().await;
-        let room_state = RoomState {
-            sender: tokio::sync::broadcast::channel(1000).0,
-            chat_history: vec![Arc::new(OutgoingMessage {
-                message_id: uuid::Uuid::new_v4(),
-                user_id: "test".to_string(),
-                animal_name: "Lion".to_string(),
-                text: "<p>Hello</p>".to_string(),
-                timestamp: "12345".to_string(),
-                reply_to: None,
-                attachment: None,
-            })],
-            users: std::collections::HashMap::new(),
-            available_animals: std::collections::VecDeque::new(),
-            last_activity: Instant::now(),
-            total_memory_bytes: std::sync::atomic::AtomicUsize::new(1024),
-            reactions: std::collections::HashMap::new(),
-            message_ids: std::collections::HashSet::new(),
-            attachment_bytes: 0,
-        };
-        rooms.insert("test".to_string(), room_state);
-    }
-
-    // Drop app - no persistence
-    drop(app_state);
-    // No file was written (if it were, test would need a file cleanup)
-}
-
-#[tokio::test]
-async fn test_empty_room_cleanup_delay_constant() {
-    // A spawned room is a spark: gone 5 minutes after the last person leaves
-    // it empty (§7.4).
-    assert_eq!(EMPTY_ROOM_CLEANUP_DELAY.as_secs(), 300);
-}
-
-#[tokio::test]
-async fn test_max_messages_constant_for_history_limit() {
-    // Frontend displays "max 500" - verify constant matches
-    assert_eq!(MAX_MESSAGES_PER_ROOM, 500);
-}
-
-#[tokio::test]
-async fn test_max_rooms_constant() {
-    assert_eq!(MAX_ROOMS, 100);
-}
-
-#[tokio::test]
-async fn test_max_room_name_len_constant() {
-    assert_eq!(MAX_ROOM_NAME_LEN, 50);
-}
-
-#[tokio::test]
-async fn test_min_room_name_len_constant() {
-    assert_eq!(MIN_ROOM_NAME_LEN, 3);
-}
-
-#[tokio::test]
-async fn test_max_message_len_constant() {
-    assert_eq!(MAX_MESSAGE_LEN, 8000);
-}
-
-#[tokio::test]
-async fn test_max_messages_per_room_constant() {
-    assert_eq!(MAX_MESSAGES_PER_ROOM, 500);
-}
-
-#[tokio::test]
-async fn test_max_concurrent_connections_per_ip_constant() {
-    assert_eq!(MAX_CONCURRENT_CONNECTIONS_PER_IP, 3);
-}
-
-#[tokio::test]
-async fn test_max_concurrent_users_constant() {
-    assert_eq!(MAX_CONCURRENT_USERS, 400);
-}
-
-#[tokio::test]
-async fn test_message_rate_limit_constant() {}
-
-#[tokio::test]
-async fn test_max_messages_per_window_constant() {
-    assert_eq!(MAX_MESSAGES_PER_WINDOW, 30);
-}
-
-#[tokio::test]
-async fn test_rate_limit_window_constant() {
-    assert_eq!(RATE_LIMIT_WINDOW.as_secs(), 60);
-}
-
-#[tokio::test]
-async fn test_heartbeat_interval_constant() {
-    assert_eq!(HEARTBEAT_INTERVAL.as_secs(), 5);
-}
-
-#[tokio::test]
-async fn test_inactive_timeout_constant() {
-    assert_eq!(INACTIVE_TIMEOUT.as_secs(), 3600);
-}
-
-#[tokio::test]
-async fn test_max_payload_size_constant() {
-    assert_eq!(MAX_PAYLOAD_SIZE, 512 * 1024);
-}
-
-#[tokio::test]
-async fn test_sanitize_timeout_constant() {
-    assert_eq!(DUPLICATE_MESSAGE_WINDOW.as_millis(), 50);
-}
-
-#[tokio::test]
-async fn test_typing_event_min_interval_constant() {
-    assert_eq!(TYPING_EVENT_MIN_INTERVAL.as_millis(), 200);
-}
-
-#[tokio::test]
-async fn test_read_receipt_min_interval_constant() {
-    assert_eq!(READ_RECEIPT_MIN_INTERVAL.as_millis(), 200);
-}
-
-#[tokio::test]
-async fn test_max_room_join_attempts_constant() {
-    assert_eq!(MAX_ROOM_JOIN_ATTEMPTS, 10);
-}
-
-#[tokio::test]
-async fn test_cleanup_batch_size_constant() {
-    assert_eq!(CLEANUP_BATCH_SIZE, 100);
-}
-
-#[tokio::test]
-async fn test_max_message_age_constant() {
-    assert_eq!(MAX_MESSAGE_AGE.as_secs(), 86400 * 30);
-}
-
-#[tokio::test]
-async fn test_max_total_rooms_memory_constant() {
-    assert_eq!(MAX_TOTAL_ROOMS_MEMORY, 400_000_000);
-}
-
-#[tokio::test]
-async fn test_estimated_message_size_constant() {
-    assert_eq!(ESTIMATED_MESSAGE_SIZE, 1024);
-}
-
-// ========== CHAT ERROR INTO RESPONSE TESTS ==========
-
-/// The welcome banner's "go silent for X and it fades too" describes `main`
-/// fading, not a spawned room being deleted — it was checked against
-/// `EMPTY_ROOM_CLEANUP_DELAY` anyway, which only ever passed because the two
-/// constants happened to be equal (both 600s) before §7.4 gave them different
-/// values on purpose. The same class of bug as §7.3a's fade indicator, in the
-/// other direction: not a wrong number, a right number checked against the
-/// wrong constant.
-#[tokio::test]
-async fn test_frontend_timeout_text_matches_backend_constant() {
-    let fade_minutes = MAIN_ROOM_FADE_IDLE.as_secs() / 60;
-
-    assert_eq!(
-        fade_minutes, 30,
-        "MAIN_ROOM_FADE_IDLE changed! Update the welcome banner text to match."
-    );
-
-    assert!(
-        SHIPPED_CLIENT.contains("go silent for thirty minute"),
-        "Frontend instructions don't match backend! main fades after {fade_minutes} \
-         minutes but the banner doesn't say 'thirty minute'."
-    );
-
-    assert!(
-        !SHIPPED_CLIENT.contains("go silent for one minute")
-            && !SHIPPED_CLIENT.contains("go silent for ten minute"),
-        "Frontend still contains outdated fade-timing text!"
-    );
-}
-
-#[tokio::test]
-async fn test_all_timing_constants_are_consistent() {
-    // Meta-test: Verify all timing relationships make sense together
-
-    // Heartbeat should be sent more frequently than timeout
-    assert!(
-        HEARTBEAT_INTERVAL < HEARTBEAT_TIMEOUT,
-        "HEARTBEAT_INTERVAL must be less than HEARTBEAT_TIMEOUT"
-    );
-
-    // Cleanup interval should allow catching inactive rooms
-    assert!(
-        ROOM_CLEANUP_INTERVAL <= EMPTY_ROOM_CLEANUP_DELAY,
-        "Cleanup interval must be <= delay to catch rooms"
-    );
-
-    // Message rate limit window should be reasonable
-    assert!(
-        RATE_LIMIT_WINDOW >= Duration::from_secs(30),
-        "Rate limit window too short"
-    );
-    assert!(
-        RATE_LIMIT_WINDOW <= Duration::from_secs(120),
-        "Rate limit window too long"
-    );
-
-    // Inactive timeout should be much longer than room cleanup
-    assert!(
-        INACTIVE_TIMEOUT > EMPTY_ROOM_CLEANUP_DELAY,
-        "User inactive timeout should exceed room cleanup delay"
-    );
-}
-
-/// Truncation keeps as much as fits and never returns an empty string for
-/// input that had room.
-///
-/// The guard is `end > 0 && !is_char_boundary(end)`. With `||` in place of
-/// CI does not deploy, and must not start again.
-///
-/// Deploying moved to Cloudflare's own Git integration. What it replaced kept
-/// producing the same failure shape: the Rust gate green, and the deploy step
-/// failing afterwards on something nothing else looked at — a Node version,
-/// then a token permission. Both took an afternoon to find because every signal
-/// a person reads said the commit was fine.
-///
-/// The credential is what makes this worth pinning rather than just deleting.
-/// A workflow holding a deploy token is the most valuable thing in the
-/// repository to an attacker who lands a pull request, and "we removed it" is
-/// only true until somebody adds it back for a good reason.
-#[test]
-fn ci_holds_no_deploy_credential_and_does_not_deploy() {
-    const CI: &str = include_str!("../../.github/workflows/ci.yml");
-
-    let workflows = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/.github/workflows"))
-        .expect("the workflows directory should exist");
-
-    let mut files = Vec::new();
-    for entry in workflows {
-        let path = entry.expect("a readable directory entry").path();
-        let body = std::fs::read_to_string(&path).expect("a readable workflow");
-        files.push((
-            path.file_name().unwrap().to_string_lossy().to_string(),
-            body,
-        ));
-    }
-
-    for (name, body) in &files {
-        let commands = strip_hash_comments(body);
-        assert!(
-            !commands.contains("wrangler"),
-            "{name} invokes wrangler; deploying is Cloudflare's Git integration \
-             now, and a workflow that deploys needs a token"
-        );
-        assert!(
-            !body.contains("CLOUDFLARE_API_TOKEN") && !body.contains("CLOUDFLARE_ACCOUNT_ID"),
-            "{name} references a Cloudflare credential — CI has no reason to \
-             hold one, and a workflow secret is reachable from any pull request \
-             that can change a workflow"
-        );
-    }
-
-    // The gate still has to run on the push that Cloudflare deploys from, or
-    // nothing checks the commit that actually ships.
-    assert!(
-        CI.contains("push:") && CI.contains("branches: [main]"),
-        "the gate must run on pushes to main, since that is what deploys"
-    );
-}
-
-/// Constraint #9 — the guest fallback is unreachable, and that is a property of
-/// the numbers rather than an accident.
-///
-/// `assign_animal` mints `guest_N` only when every roster name is held by a
-/// connected user. A room holds at most `MAX_USERS_PER_ROOM`, so a roster
-/// larger than that makes the branch dead in production. Shrinking the roster
-/// below the room cap would quietly start handing out names that are not
-/// animals.
-#[test]
-fn the_roster_is_larger_than_a_room_can_ever_be() {
-    assert!(
-        ANIMAL_NAMES.len() > MAX_USERS_PER_ROOM,
-        "the roster ({}) must exceed the per-room cap ({MAX_USERS_PER_ROOM}) so \
-         every connected user can hold a distinct animal name",
-        ANIMAL_NAMES.len()
-    );
-}
-
-/// The client references no global it never declares.
-///
-/// A `const` that was used before it was written is a `ReferenceError` on the
-/// first image a user tries to send — and, with no build step, nothing between
-/// the editor and production would have said so. This is the sweep for that
-/// class rather than for the one instance of it.
-#[test]
-fn the_client_declares_every_screaming_case_constant_it_uses() {
-    // SCREAMING_SNAKE identifiers are this file's convention for module-level
-    // constants, which makes them the set worth checking mechanically.
-    let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-    let bytes = EMBEDDED_JS.as_bytes();
-    let mut start = None;
-    for (i, &c) in bytes.iter().enumerate() {
-        let wordish = c.is_ascii_alphanumeric() || c == b'_';
-        if wordish && start.is_none() {
-            start = Some(i);
-        } else if !wordish && let Some(s) = start.take() {
-            let word = &EMBEDDED_JS[s..i];
-            if word.len() > 3
-                && word.contains('_')
-                && word
-                    .chars()
-                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
-            {
-                used.insert(word.to_string());
-            }
-        }
-    }
-
-    let undeclared: Vec<&String> = used
-        .iter()
-        .filter(|name| !EMBEDDED_JS.contains(&format!("const {name}")))
-        .collect();
-
-    assert!(
-        undeclared.is_empty(),
-        "client.js uses constants it never declares: {undeclared:?}"
-    );
-}
-
-/// §3 — the memory budget closes, whatever the constants are set to.
-///
-/// Every ceiling here was chosen against the others: attachments are capped per
-/// room *because* a hundred rooms share one process-wide budget. Raising any
-/// one of them in isolation silently overcommits the container, and the symptom
-/// is an OOM kill that disconnects every user in every room — the failure the
-/// whole memory law exists to avoid. So the arithmetic is asserted rather than
-/// left in a comment for somebody to re-derive.
-#[test]
-fn the_memory_budget_still_closes() {
-    // Pictures may claim at most half the process, leaving the rest for text.
-    let attachment_ceiling = MAX_ROOM_ATTACHMENT_BYTES * MAX_ROOMS;
-    assert!(
-        attachment_ceiling <= MAX_TOTAL_ROOMS_MEMORY / 2,
-        "every room at its attachment budget is {attachment_ceiling} bytes, over \
-         half of the {MAX_TOTAL_ROOMS_MEMORY}-byte process ceiling — one room \
-         full of photographs would be taking what every other room needs"
-    );
-
-    // A single attachment cannot be a meaningful fraction of a room's budget,
-    // or "fading the oldest" would clear the room in one step.
-    //
-    // A `const` block, so this is checked when the crate is compiled rather
-    // than when the test is run: a constant edited to break it fails the build
-    // for everyone, including anyone who only runs a subset of the suite.
-    const {
-        assert!(
-            MAX_ATTACHMENT_BYTES * 8 <= MAX_ROOM_ATTACHMENT_BYTES,
-            "a room must hold at least 8 images at the per-image cap"
-        );
-    }
-
-    // A room's text is bounded by message count times the largest a message can
-    // be, and that has to fit too.
-    let text_ceiling = MAX_MESSAGES_PER_ROOM * (MAX_RENDERED_MESSAGE_LEN + ESTIMATED_MESSAGE_SIZE);
-    assert!(
-        text_ceiling <= MAX_TOTAL_ROOMS_MEMORY,
-        "one room of maximum-size messages is {text_ceiling} bytes, over the \
-         whole process ceiling"
-    );
-
-    // The rendered ceiling must stay at or above the escaping worst case, or
-    // `render_message_html`'s plain-text fallback could itself breach it.
-    const {
-        assert!(
-            MAX_RENDERED_MESSAGE_LEN >= MAX_MESSAGE_LEN * 5,
-            "escaping expands by up to 5x, so a lower ceiling makes the fallback able to exceed the limit it is the fallback for"
-        );
-    }
-}
-
-/// §2 — the join path shares stored messages; it does not copy them.
-///
-/// Deterministic, not timed: if `history_for` handed back copies, the strong
-/// count of the stored `Arc` would not move. Measured, the copy it replaced
-/// took 119 µs *under the room write lock*, so this is the largest single
-/// regression anyone could reintroduce here by changing a type back to owned.
-#[tokio::test]
-async fn the_join_path_shares_history_rather_than_copying_it() {
-    let tracker = MemoryTracker::new();
-    let mut room = create_room();
-
-    room.add_message(
-        OutgoingMessage {
-            message_id: Uuid::new_v4(),
-            user_id: "u".to_string(),
-            animal_name: "otter".to_string(),
-            text: "shared, not copied".to_string(),
-            timestamp: "1".to_string(),
-            reply_to: None,
-            attachment: None,
-        },
-        &tracker,
-    );
-
-    let before = Arc::strong_count(&room.chat_history[0]);
-
-    let first = room.history_for("alice");
-    let second = room.history_for("bob");
-
-    assert_eq!(
-        Arc::strong_count(&room.chat_history[0]),
-        before + 2,
-        "each viewer's history must be a reference to the stored message, not \
-         a copy of it"
-    );
-
-    // And they really are the same allocation, not equal values.
-    assert!(
-        Arc::ptr_eq(&first[0].0, &room.chat_history[0])
-            && Arc::ptr_eq(&second[0].0, &room.chat_history[0]),
-        "both viewers should be reading the one stored message"
-    );
-
-    drop(first);
-    drop(second);
-    assert_eq!(
-        Arc::strong_count(&room.chat_history[0]),
-        before,
-        "and the references go away with them"
-    );
-}
-
-/// §1.1 — per-message work does not grow with the size of the history.
-///
-/// The property, stated so it cannot be satisfied by a fast machine: adding a
-/// message to a room holding `MAX_MESSAGES_PER_ROOM` messages must touch the
-/// same amount of state as adding one to an almost-empty room. Asserted through
-/// the accounting rather than the clock — a message's cost to the room is its
-/// own size and nothing else, so if any history-proportional work crept back
-/// onto this path (a re-scan, a re-sum, a trim) the totals would diverge.
-#[tokio::test]
-async fn adding_a_message_costs_the_same_whatever_the_history_holds() {
-    fn message(text: &str) -> OutgoingMessage {
-        OutgoingMessage {
-            message_id: Uuid::new_v4(),
-            user_id: "u".to_string(),
-            animal_name: "otter".to_string(),
-            text: text.to_string(),
-            timestamp: "1700000000000".to_string(),
-            reply_to: None,
-            attachment: None,
-        }
-    }
-
-    let mut deltas = Vec::new();
-
-    for prefill in [1usize, MAX_MESSAGES_PER_ROOM - 1] {
-        let tracker = MemoryTracker::new();
-        let mut room = create_room();
-        for _ in 0..prefill {
-            room.add_message(message("filler"), &tracker);
-        }
-
-        let before_room = room.total_memory_bytes.load(Ordering::SeqCst);
-        let before_global = tracker.total_bytes.load(Ordering::SeqCst);
-
-        room.add_message(message("the measured one"), &tracker);
-
-        deltas.push((
-            room.total_memory_bytes.load(Ordering::SeqCst) - before_room,
-            tracker.total_bytes.load(Ordering::SeqCst) - before_global,
-            room.chat_history.len() - prefill,
-        ));
-    }
-
-    assert_eq!(
-        deltas[0], deltas[1],
-        "adding one message to a nearly-full room must cost exactly what it \
-         costs in an empty one; a difference means work proportional to the \
-         history got back onto the message path"
-    );
-}
-
-/// §1.1 — reacting is O(1) in the size of the history.
-///
-/// Reactions live beside the history, keyed by message id, precisely so this
-/// holds. Asserted structurally: reacting to the *oldest* message in a full
-/// room must leave the history untouched, which it cannot do if the message is
-/// being searched for or rewritten in place.
-#[tokio::test]
-async fn reacting_never_touches_the_history() {
-    let tracker = MemoryTracker::new();
-    let mut room = create_room();
-
-    for i in 0..MAX_MESSAGES_PER_ROOM {
-        room.add_message(
-            OutgoingMessage {
-                message_id: Uuid::new_v4(),
-                user_id: "u".to_string(),
-                animal_name: "otter".to_string(),
-                text: format!("m{i}"),
-                timestamp: "1700000000000".to_string(),
-                reply_to: None,
-                attachment: None,
-            },
-            &tracker,
-        );
-    }
-
-    let oldest = room.chat_history[0].message_id;
-    let stored = Arc::clone(&room.chat_history[0]);
-    let bytes_before = room.total_memory_bytes.load(Ordering::SeqCst);
-
-    room.toggle_reaction(oldest, "🔥", "alice");
-
-    assert!(
-        Arc::ptr_eq(&stored, &room.chat_history[0]),
-        "reacting must not rewrite the message it refers to"
-    );
-    assert_eq!(
-        room.total_memory_bytes.load(Ordering::SeqCst),
-        bytes_before,
-        "reacting must not re-derive the room's byte total"
-    );
-    assert_eq!(room.chat_history.len(), MAX_MESSAGES_PER_ROOM);
-}
-
-/// The Node that CI installs is one the toolchain can actually run on.
-///
-/// This is the test that would have saved the afternoon. `wrangler` requires
-/// Node >= 22 and pnpm 11 needs `node:sqlite`, which arrived in 22. Both
-/// workflows pinned Node 20. The Rust gate — fmt, clippy, 600 tests, release
-/// build, coverage — went green on every push, and then the *deploy step*
-/// failed, so nothing reached the live site while every signal a person looks
-/// at said the commit was fine.
-///
-/// §6.1 says the gate exists to answer "will this deploy". A gate that cannot
-/// see the deploy's own requirements is not answering it. The requirement lives
-/// in `cloudflare/package.json` under `engines`, once, and this asserts the
-/// workflow agrees with it. Deploying moved to Cloudflare's Git integration,
-/// but the Worker typecheck still runs here and still needs a Node that pnpm
-/// and wrangler can run on.
-#[test]
-fn ci_node_version_satisfies_the_toolchain() {
-    const PACKAGE_JSON: &str = include_str!("../../cloudflare/package.json");
-    const CI: &str = include_str!("../../.github/workflows/ci.yml");
-
-    // The declared floor, e.g. `"node": ">=22"`.
-    let required: u32 = PACKAGE_JSON
-        .split_once("\"node\":")
-        .and_then(|(_, rest)| rest.split_once('"'))
-        .and_then(|(_, rest)| rest.split_once('"'))
-        .map(|(spec, _)| {
-            spec.trim_start_matches(['>', '=', '^', '~', ' '])
-                .to_string()
-        })
-        .and_then(|spec| spec.split('.').next().unwrap_or_default().parse().ok())
-        .expect("cloudflare/package.json should declare engines.node");
-
-    assert!(
-        required >= 22,
-        "wrangler needs Node 22 or newer; the declared floor is {required}"
-    );
-
-    for (name, workflow) in [("ci.yml", CI)] {
-        let mut found = 0;
-        for (index, _) in workflow.match_indices("node-version: '") {
-            let rest = &workflow[index + "node-version: '".len()..];
-            let Some(end) = rest.find('\'') else { continue };
-            let major: u32 = rest[..end]
-                .split('.')
-                .next()
-                .unwrap_or_default()
-                .parse()
-                .unwrap_or_else(|_| panic!("{name} has an unparseable node-version"));
-
-            assert!(
-                major >= required,
-                "{name} installs Node {major}, below the {required} the Worker \
-                 toolchain requires — the Rust gate would still pass and the \
-                 deploy would still fail"
-            );
-            found += 1;
-        }
-        assert!(found > 0, "{name} should pin a Node version");
-    }
-}
-
-/// The deploy's install command is the one the lockfile format belongs to.
-///
-/// Switching package managers is easy to do halfway: a `pnpm-lock.yaml` in the
-/// tree and an `npm ci` in the workflow installs from `package.json` alone,
-/// silently resolving different versions than anything anyone tested.
-#[test]
-fn the_workflows_install_with_the_lockfile_that_exists() {
-    const CI: &str = include_str!("../../.github/workflows/ci.yml");
-    const DEPLOY_SH: &str = include_str!("../../deploy.sh");
-
-    for (name, script) in [("ci.yml", CI), ("deploy.sh", DEPLOY_SH)] {
-        // Tokens, and only from the commands — not substrings, and not prose.
-        // This test failed twice before it passed once: `pnpm install` contains
-        // "npm install", and then a comment mentioning "RUSTSEC and npm
-        // advisories" matched the token. §6.7, twice, in the same afternoon.
-        let commands = strip_hash_comments(script);
-        let invoked: Vec<&str> = commands
-            .split_whitespace()
-            .filter(|word| *word == "npm" || *word == "npx")
-            .collect();
-
-        assert!(
-            invoked.is_empty(),
-            "{name} invokes {invoked:?}, but the repository's lockfile is \
-             pnpm-lock.yaml — npm installs from package.json alone and npx \
-             resolves outside the pnpm store, either way running versions \
-             nothing was tested against"
-        );
-    }
-
-    assert!(
-        CI.contains("--frozen-lockfile"),
-        "CI must install from the lockfile, not update it"
-    );
-}
-
-/// `@types/node` describes the Node the workflows actually install.
-///
-/// Types are a claim about the runtime. A `@types/node` ahead of the installed
-/// Node promises APIs that will not be there, and one behind hides APIs that
-/// are — either way the typecheck is answering a question about a different
-/// machine than the one the build runs on.
-#[test]
-fn the_node_types_match_the_node_ci_installs() {
-    const PACKAGE_JSON: &str = include_str!("../../cloudflare/package.json");
-    const CI: &str = include_str!("../../.github/workflows/ci.yml");
-
-    let types_major: u32 = PACKAGE_JSON
-        .split_once("\"@types/node\":")
-        .and_then(|(_, rest)| rest.split_once('"'))
-        .and_then(|(_, rest)| rest.split_once('"'))
-        .map(|(spec, _)| {
-            spec.trim_start_matches(['^', '~', '>', '=', ' '])
-                .to_string()
-        })
-        .and_then(|spec| spec.split('.').next().unwrap_or_default().parse().ok())
-        .expect("cloudflare/package.json should depend on @types/node");
-
-    let ci = strip_hash_comments(CI);
-    let installed: u32 = ci
-        .split_once("node-version: '")
-        .and_then(|(_, rest)| rest.split_once('\''))
-        .and_then(|(version, _)| version.split('.').next().unwrap_or_default().parse().ok())
-        .expect("ci.yml should pin a node-version");
-
-    assert_eq!(
-        types_major, installed,
-        "@types/node is for Node {types_major} but CI installs Node {installed}; \
-         the typecheck would be describing a runtime nobody runs"
-    );
-}
 
 /// Every test named in the standards actually exists.
 ///
@@ -785,12 +127,17 @@ fn every_parked_decision_records_how_to_reopen_it() {
     );
 }
 
-/// No assertion in this file is one that cannot fail.
+/// No test in this suite is a dummy: one that cannot fail, or one that cannot
+/// even try.
 ///
-/// A test that cannot fail is worse than no test: it reports coverage it does
-/// not provide (§6.4). The recognisable forms are tautologies over a value's
-/// own shape — `is_ok() || is_err()`, `x == x`, `assert!(true)` — which pass
-/// whatever the code does.
+/// Two shapes, both worth catching mechanically rather than by review. A
+/// **tautology** — `is_ok() || is_err()`, `x == x`, `assert!(true)` — passes
+/// whatever the code does, which reports coverage it does not provide (§6.4).
+/// An **empty body** is the same failure with the assertion missing
+/// altogether: `test_message_rate_limit_constant() {}` compiled, ran, and
+/// passed on every commit since it was written, asserting nothing about a
+/// rate limit or anything else. Neither is hypothetical — both were found
+/// live in this file.
 #[test]
 fn no_assertion_in_this_suite_is_a_tautology() {
     // Each form is stored in halves and joined at run time, so the file never
@@ -811,7 +158,9 @@ fn no_assertion_in_this_suite_is_a_tautology() {
 
     let mut found: Vec<String> = Vec::new();
     let suite = suite_source();
-    for (number, line) in suite.lines().enumerate() {
+    let lines: Vec<&str> = suite.lines().collect();
+
+    for (number, line) in lines.iter().enumerate() {
         let code = line.split("//").next().unwrap_or(line);
         if !code.contains("assert") {
             continue;
@@ -823,9 +172,26 @@ fn no_assertion_in_this_suite_is_a_tautology() {
         }
     }
 
+    // An empty body: a `fn name(...) {` immediately followed by a line whose
+    // only content is `}`. A real test's opening line is never its closing
+    // one — this only matches a body with literally nothing between them.
+    for (number, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        let opens_a_test_fn = (trimmed.starts_with("fn ") || trimmed.starts_with("async fn "))
+            && trimmed.contains('(')
+            && trimmed.ends_with("{}");
+        if opens_a_test_fn {
+            let is_test = number > 0 && lines[number - 1].trim().starts_with('#');
+            if is_test {
+                found.push(format!("line {}: {}", number + 1, trimmed));
+            }
+        }
+    }
+
     assert!(
         found.is_empty(),
-        "these assertions cannot fail, so they test nothing: {found:#?}"
+        "these assertions cannot fail, or these test bodies cannot even try, \
+         so they test nothing: {found:#?}"
     );
 }
 
@@ -937,18 +303,6 @@ fn every_declared_dependency_is_used() {
         );
     }
 }
-
-// ========== SLOW TESTS: REAL TIME, LOCAL ONLY ==========
-//
-// `#[ignore]`, so `cargo test` — which is what CI runs — skips them. They are
-// run by `scripts/slow-tests.sh` and included in `scripts/coverage-full.sh`.
-//
-// They are here because the alternative was worse. The branches below only
-// happen after a real interval elapses, and the two ways to reach them without
-// waiting are both rejected: an injectable clock (§9.4 — the indirection costs
-// more than it buys, and kills four mutants that differ only at an exact
-// threshold), or asserting on timing, which §6.4 rules out as flaky. Waiting a
-// few seconds on a laptop is neither.
 
 /// Every contract test is documented somewhere a future session will look.
 ///
@@ -1076,11 +430,6 @@ fn coverage_exemptions_are_justified_and_current() {
         );
     }
 }
-
-// ========== MUTATION-DRIVEN: ARITHMETIC AND ACCOUNTING ==========
-//
-// Every test here exists because a mutant survived. Coverage said these lines
-// ran; nothing checked what they computed.
 
 /// Every `§` and `constraint #` pointer resolves to something that exists.
 ///

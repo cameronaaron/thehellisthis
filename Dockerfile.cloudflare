@@ -1,7 +1,11 @@
 # Multi-stage build for Cloudflare Containers
 # Compile with Rust toolchain, run on minimal runtime
 
-FROM rust:latest AS builder
+# Pinned, not `rust:latest`: an unpinned tag means today's build and
+# tomorrow's build of the same commit can pull a different compiler and a
+# different base OS layer with no diff to review — the classic unreproducible-
+# build supply-chain gap. Bump deliberately, alongside the MSRV in Cargo.toml.
+FROM rust:1.97-bookworm AS builder
 
 # Install minimal build deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -36,6 +40,13 @@ WORKDIR /app
 # date with itself. Copying them here too would be dead weight that could
 # mislead someone into thinking editing them post-build changes what is served.
 COPY --from=builder /app/target/release/infinite-chat /app/infinite-chat
+
+# Runs as an unprivileged user, not root. The server binds a single high port
+# and holds no capability that needs it — root here buys nothing and costs
+# everything a container-escape or a future memory-safety bug could reach.
+RUN useradd --system --no-create-home --shell /usr/sbin/nologin chat \
+  && chown chat:chat /app/infinite-chat
+USER chat
 
 # Cloudflare Containers expects port 3000 by default
 ENV PORT=3000

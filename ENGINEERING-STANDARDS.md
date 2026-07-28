@@ -68,7 +68,7 @@ concrete, executable version of "obsessive engineering quality." Concretely:
 | Reactions | `reacting_twice_with_the_same_emoji_removes_the_reaction`, `reactions_never_outlive_the_messages_they_belong_to`, `a_reaction_must_be_on_the_roster` |
 | §6.1 The gate answers "will this deploy" | `ci_node_version_satisfies_the_toolchain`, `the_workflows_install_with_the_lockfile_that_exists`, `ci_holds_no_deploy_credential_and_does_not_deploy` |
 | Startup lifecycle | `run_returns_cleanly_when_its_shutdown_fires`, `the_process_exit_code_reports_a_clean_stop`, `the_process_exit_code_reports_a_failed_bind`, `the_shutdown_sequence_waits_for_its_signal`, `a_server_error_is_reported_and_a_clean_stop_is_not_an_error`, `binding_a_port_already_in_use_is_an_error_not_a_panic`, `run_serves_until_it_is_shut_down`, `shutting_down_announces_departures_and_clears_the_rooms` |
-| Constraint #12 Frontend/backend agreement | `client_attachment_ceiling_matches_the_server`, `client_reaction_roster_matches_the_server`, `the_node_types_match_the_node_ci_installs` |
+| Constraint #12 Frontend/backend agreement | `client_attachment_ceiling_matches_the_server`, `client_reaction_roster_matches_the_server`, `the_node_types_match_the_node_ci_installs`, `every_mirrored_constant_matches_its_source_of_truth` |
 | §5.12 The log is an interface | `every_admission_says_what_became_of_the_identity`, `a_departure_is_logged_with_the_room_it_leaves`, `a_refused_connection_says_which_ceiling_refused_it`, `a_full_room_says_so_when_it_refuses`, `a_normal_session_reads_as_one_arrival_and_one_departure` |
 | Operational log is a contract | `housekeeping_reports_a_trim_only_when_it_trims`, `housekeeping_reports_the_rooms_it_deletes` |
 | §6.6 Boundaries a mutant can move | `the_script_version_is_the_fnv1a_hash_it_claims_to_be`, `a_room_name_at_either_length_boundary_is_accepted`, `an_existing_room_is_served_even_when_the_server_is_at_its_room_cap`, `housekeeping_leaves_rooms_alone_until_the_gc_interval_has_elapsed`, `the_process_memory_ceiling_trims_only_once_it_is_exceeded`, `a_quoted_reply_is_cut_at_the_limit_and_never_mid_character`, `an_attachment_exactly_at_its_ceilings_is_accepted`, `fading_pictures_stops_as_soon_as_the_room_is_back_under_its_budget`, `a_room_is_cleaned_only_once_it_is_past_the_soft_memory_limit`, `an_entry_exactly_at_its_retention_age_is_swept` |
@@ -1230,6 +1230,43 @@ constant happened to equal the one the sentence actually describes
 (`MAIN_ROOM_FADE_IDLE`). Not a wrong number — a right number, checked against
 the wrong constant, invisible for as long as the two stayed accidentally
 equal. Repointed at the constant the sentence is actually about.
+
+### 7.5 A mirrored constant is a table entry, not a bespoke test to remember to write
+
+§7.3a and §7.4 were the same root cause twice in one session: a number in
+`client.js` that was right when it was written and silently stopped being
+right when the backend constant it mirrored moved, with nothing checking the
+two against each other. Each time, the fix was a bespoke test with a rich
+explanation of the one incident. That pattern does not scale — every future
+mirrored constant needs someone to remember this happened before and write
+another bespoke test, which is exactly the kind of thing a person forgets
+under a deadline.
+
+`frontend_parity.rs::every_mirrored_constant_matches_its_source_of_truth`
+replaces "remember to write a test" with "add a row". `PARITY` is a table of
+every scalar the client is not allowed to invent independently — a JS constant
+name, the backend value it must equal, and why the two exist on both sides at
+all — and one test walks it, reading each `const NAME = value;` declaration
+out of the shipped script and comparing. Adding a new mirrored constant is a
+line in that table; a constant not in it, and not covered by one of the
+existing specialised parity tests (`client_attachment_ceiling_matches_the_server`,
+`client_reaction_roster_matches_the_server`,
+`client_and_server_agree_on_the_idle_close_code`), has no source of truth
+checking it — which is itself worth knowing, and now visible by reading the
+table rather than by an incident.
+
+The specialised tests were not replaced. Each covers something richer than a
+single scalar (a whole emoji roster, a wire-protocol code with its own
+failure story) and reads better as prose than as a table row. The registry is
+the floor under all of it: a mirrored *number* has nowhere left to hide,
+whether or not anyone thought to write it a bespoke test yet.
+
+The same pass found `test_message_rate_limit_constant() {}` — an empty test
+body, compiling and passing on every commit since it was written, asserting
+nothing about anything. The same disease as a tautology (§6.4: a test that
+cannot fail reports coverage it does not provide) with the assertion missing
+entirely rather than merely defeated. `no_assertion_in_this_suite_is_a_tautology`
+now also fails on a test function whose body is exactly `{}`.
 
 ---
 

@@ -614,9 +614,13 @@ fn suite_source() -> String {
 }
 
 mod attachments;
+mod ci;
 mod client_ui;
+mod constants;
 mod contracts;
+mod frontend_parity;
 mod limits;
+mod memory_budget;
 mod observability;
 mod protocol;
 mod reactions;

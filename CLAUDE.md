@@ -549,8 +549,14 @@ Frame order on connect is **guaranteed**: `Welcome`, then history, then
 
 ## Tests
 
-`src/tests.rs` — 612 tests, one file, run with `cargo test --all-features`.
-Notable classes:
+`src/tests/` — 705 tests across sixteen modules, run with
+`cargo test --all-features`. One module per concern rather than one 19,000-line
+file: `session.rs`/`rooms.rs`/`limits.rs` cover the corresponding server
+modules; `client_ui.rs` the shipped page and script; `contracts.rs` narrowly —
+only the meta-contracts that keep the *other* tests honest (documented
+sweeps, resolvable citations, no dead exports); `constants.rs`,
+`frontend_parity.rs`, `ci.rs` and `memory_budget.rs` split out what used to be
+inside `contracts.rs`. Notable classes:
 
 | Class | Pins |
 | --- | --- |
@@ -558,7 +564,7 @@ Notable classes:
 | Router wiring | every public route is mounted (`build_router`) |
 | Connection accounting | rejected upgrades leak no slots |
 | Identity contract | `Welcome` frame + `HttpOnly` cookies + no `document.cookie` |
-| Frontend/backend consistency | UI text matches `config.rs` constants |
+| Frontend/backend consistency | UI text matches `config.rs` constants; `frontend_parity.rs::PARITY` is the extensible table for it (§7.5) |
 | WebSocket integration | real server, real `tokio-tungstenite` client |
 | Security | XSS through the Markdown pipeline, IP bans, rate limits |
 | Memory | tracker accounting, pruning, underflow protection |
@@ -567,8 +573,9 @@ Run a subset: `cargo test --all-features roster`
 
 ## Deployment
 
-**Pushing to `main` deploys**, via `.github/workflows/deploy.yml` — which
-**waits for CI to pass first**. The Worker and container deploy together.
+**Pushing to `main` deploys**, via Cloudflare's own Git integration — CI holds
+no deploy credential and does not deploy (`ci_holds_no_deploy_credential_and_does_not_deploy`).
+The Worker and container deploy together.
 
 ```bash
 ./deploy.sh                            # manual: clear Docker cache, pnpm install, deploy

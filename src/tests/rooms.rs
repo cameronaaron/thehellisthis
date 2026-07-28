@@ -4261,3 +4261,56 @@ async fn a_room_is_cleaned_only_once_it_is_past_the_soft_memory_limit() {
         );
     }
 }
+
+#[tokio::test]
+async fn test_claim_no_disk_persistence() {
+    // Verify no File operations in the message pipeline
+    let app_state = Arc::new(AppState::new());
+
+    // Add room with message
+    {
+        let mut rooms = app_state.rooms.write().await;
+        let room_state = RoomState {
+            sender: tokio::sync::broadcast::channel(1000).0,
+            chat_history: vec![Arc::new(OutgoingMessage {
+                message_id: uuid::Uuid::new_v4(),
+                user_id: "test".to_string(),
+                animal_name: "Lion".to_string(),
+                text: "<p>Hello</p>".to_string(),
+                timestamp: "12345".to_string(),
+                reply_to: None,
+                attachment: None,
+            })],
+            users: std::collections::HashMap::new(),
+            available_animals: std::collections::VecDeque::new(),
+            last_activity: Instant::now(),
+            total_memory_bytes: std::sync::atomic::AtomicUsize::new(1024),
+            reactions: std::collections::HashMap::new(),
+            message_ids: std::collections::HashSet::new(),
+            attachment_bytes: 0,
+        };
+        rooms.insert("test".to_string(), room_state);
+    }
+
+    // Drop app - no persistence
+    drop(app_state);
+    // No file was written (if it were, test would need a file cleanup)
+}
+
+/// Constraint #9 — the guest fallback is unreachable, and that is a property of
+/// the numbers rather than an accident.
+///
+/// `assign_animal` mints `guest_N` only when every roster name is held by a
+/// connected user. A room holds at most `MAX_USERS_PER_ROOM`, so a roster
+/// larger than that makes the branch dead in production. Shrinking the roster
+/// below the room cap would quietly start handing out names that are not
+/// animals.
+#[test]
+fn the_roster_is_larger_than_a_room_can_ever_be() {
+    assert!(
+        ANIMAL_NAMES.len() > MAX_USERS_PER_ROOM,
+        "the roster ({}) must exceed the per-room cap ({MAX_USERS_PER_ROOM}) so \
+         every connected user can hold a distinct animal name",
+        ANIMAL_NAMES.len()
+    );
+}
