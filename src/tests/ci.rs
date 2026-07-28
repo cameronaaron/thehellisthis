@@ -197,8 +197,10 @@ fn the_node_types_match_the_node_ci_installs() {
 /// (`rust:1.97-bookworm`, `debian:bookworm-slim`) is that policy quietly
 /// reversed: it stops moving the moment it is written, and a base image that
 /// stops moving accumulates whatever it shipped with, forever, until someone
-/// remembers to bump it by hand. `latest`/`slim`/`stable` move on every
-/// rebuild instead.
+/// remembers to bump it by hand. `latest`/`slim`/`stable`/`nonroot` move on
+/// every rebuild instead — `nonroot` selects a distroless variant (the
+/// built-in unprivileged user), not a version, and is exactly as unpinned as
+/// the rest.
 ///
 /// Deliberately narrow: this checks the *tag*, not the CVE count a scanner
 /// reports for it. A scanner's count is a snapshot of today's image and
@@ -223,7 +225,7 @@ fn these_images_track_latest_on_purpose() {
     );
 
     // The moving tags this policy allows. Anything else is a pin.
-    const MOVING_TAGS: &[&str] = &["latest", "slim", "stable", "stable-slim"];
+    const MOVING_TAGS: &[&str] = &["latest", "slim", "stable", "stable-slim", "nonroot"];
 
     let mut pinned: Vec<&str> = Vec::new();
     for line in &from_lines {

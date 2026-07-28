@@ -47,6 +47,19 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 comrak = { version = "0.54.0", default-features = false }
 ammonia = "4.1.4"
 
+# The page's one `<style>` block is named in the CSP by its content hash
+# rather than by `'unsafe-inline'` — computed once at startup from the exact
+# bytes `include_str!` embedded, the same shape as the `fnv1a` cache-busting
+# hash for `/app.js` already uses. RustCrypto's `sha2`, not a hand-rolled
+# implementation: `fnv1a` is a cache key with no security property to get
+# wrong; this result goes in a header a browser trusts to decide what runs.
+# `base64` was already being compiled in, transitively, as one of axum's own
+# dependencies — declared directly rather than hand-rolled for the same
+# reason as `sha2`, and at zero additional supply-chain cost since it was
+# already in the dependency tree.
+sha2 = "0.10.9"
+base64 = "0.22.1"
+
 [dev-dependencies]
 # `test-util` gives tests simulated time, so the housekeeping loops can be
 # asserted to actually run on their 60-second intervals without a test that

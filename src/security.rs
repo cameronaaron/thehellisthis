@@ -5,8 +5,42 @@
 //! on its own for a Worker-proxied origin, so the browser was applying nothing
 //! but its defaults to a page that renders user-submitted Markdown as HTML.
 
+use std::sync::LazyLock;
+
 use axum::http::{HeaderName, HeaderValue};
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use sha2::{Digest, Sha256};
 use tower_http::set_header::SetResponseHeaderLayer;
+
+/// The page's one `<style>` block, exactly as a browser will read it — the
+/// text between the tags, not including them.
+///
+/// A CSP hash source is computed over this exact substring, so this has to
+/// extract precisely what the browser's HTML parser treats as the element's
+/// text content. There is exactly one `<style>` element in the page
+/// (`the_page_has_exactly_one_style_block` — a second one would be hashed
+/// into a name nothing points at, silently unstyled) so a single
+/// find-the-tags extraction is unambiguous.
+fn embedded_style_block() -> &'static str {
+    let html = crate::routes::CLIENT_HTML;
+    let start = html
+        .find("<style>")
+        .map(|i| i + "<style>".len())
+        .expect("the page has a <style> tag");
+    let end = html[start..]
+        .find("</style>")
+        .map(|i| start + i)
+        .expect("the <style> tag is closed");
+    &html[start..end]
+}
+
+/// `'sha256-<base64>'`, computed once, over the exact bytes of
+/// [`embedded_style_block`].
+static STYLE_BLOCK_HASH: LazyLock<String> = LazyLock::new(|| {
+    let digest = Sha256::digest(embedded_style_block().as_bytes());
+    format!("'sha256-{}'", BASE64.encode(digest))
+});
 
 /// Content Security Policy.
 ///
@@ -18,8 +52,35 @@ use tower_http::set_header::SetResponseHeaderLayer;
 /// to include `'unsafe-inline'`, which grants exactly the capability an
 /// injected `<script>` needs.
 ///
-/// `'unsafe-inline'` remains for **styles**, where the client sets a few inline
-/// `style` attributes and the exposure is CSS, not execution.
+/// `style-src` carries no `'unsafe-inline'` either, and takes the same
+/// approach `script-src` already established rather than a new one: name the
+/// one inline surface by its exact content hash instead of granting a
+/// capability to *any* inline style. Two things had to be true first. Every
+/// style the client sets at runtime is a direct CSSOM property assignment —
+/// `element.style.top = '4px'` — which `style-src` was never restricting in
+/// the first place; only `<style>` elements and `style=""` attributes are.
+/// Verified in a real browser with a `securitypolicyviolation` listener
+/// across every call site (the welcome banner's dismiss, the typing
+/// indicator, an attachment's reserved aspect-ratio box, the reaction bar's
+/// position): zero violations, and none of those paths needed the hash.
+/// The one thing that *did* need it was the page's own embedded stylesheet —
+/// the entire CSS for the page is one `<style>` block in `index.html`, found
+/// by actually loading the page with `'unsafe-inline'` removed and nothing
+/// else, which broke every rule on the page until the hash was added back.
+/// The hash is [`STYLE_BLOCK_HASH`], computed at startup so it can never drift
+/// from the content it names — hand-copying a hash into a string constant is
+/// exactly the kind of number that goes stale the next time someone edits the
+/// stylesheet, silently, since a wrong hash just fails closed with no visible
+/// error beyond unstyled HTML.
+///
+/// `cross-origin-resource-policy` is `same-origin`: nothing this page serves
+/// is meant to be embedded as a sub-resource by another origin, the same
+/// reasoning as `frame-ancestors 'none'` one layer lower. `require-corp` for
+/// `cross-origin-embedder-policy` was tried alongside it and rejected — see
+/// §9.4: it broke the WebSocket connection under a Private Network Access
+/// interaction in local testing, and the connection this server exists to
+/// serve was not a trade worth making without being able to verify the
+/// production origin directly.
 ///
 /// Every other directive is `'self'` or `'none'`. There are no third-party
 /// origins at all: the page used to load its typeface and icon font from
@@ -28,23 +89,29 @@ use tower_http::set_header::SetResponseHeaderLayer;
 /// and text uses the system stack, so `font-src 'none'` is achievable rather
 /// than aspirational — the browser is told, in the policy itself, that this
 /// page has no business talking to anyone else.
-const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; \
-     script-src 'self'; \
-     style-src 'self' 'unsafe-inline'; \
-     font-src 'none'; \
-     img-src 'self' data:; \
-     connect-src 'self' ws: wss:; \
-     frame-ancestors 'none'; \
-     base-uri 'none'; \
-     form-action 'none'; \
-     object-src 'none'";
+static CONTENT_SECURITY_POLICY: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "default-src 'self'; \
+         script-src 'self'; \
+         style-src 'self' {}; \
+         font-src 'none'; \
+         img-src 'self' data:; \
+         connect-src 'self' ws: wss:; \
+         frame-ancestors 'none'; \
+         base-uri 'none'; \
+         form-action 'none'; \
+         object-src 'none'",
+        *STYLE_BLOCK_HASH
+    )
+});
 
-/// Headers applied to every response.
+/// Headers applied to every response, other than the CSP — computed
+/// separately in [`security_header_layers`] since it is the one header built
+/// at startup rather than known at compile time.
 ///
 /// Each one is here because something concrete goes wrong without it, noted
 /// alongside.
 const SECURITY_HEADERS: &[(&str, &str)] = &[
-    ("content-security-policy", CONTENT_SECURITY_POLICY),
     // The chat is not a frameable widget; clickjacking it into a transparent
     // overlay would let another site harvest what a user types.
     ("x-frame-options", "DENY"),
@@ -67,22 +134,32 @@ const SECURITY_HEADERS: &[(&str, &str)] = &[
     ),
     ("cross-origin-opener-policy", "same-origin"),
     ("x-permitted-cross-domain-policies", "none"),
+    // Nothing this page ever serves is meant to be embedded as a sub-resource
+    // by another origin — the same reasoning as `frame-ancestors 'none'`, one
+    // layer lower.
+    ("cross-origin-resource-policy", "same-origin"),
 ];
 
-/// Builds the layers that stamp [`SECURITY_HEADERS`] onto every response.
+/// Builds the layers that stamp [`SECURITY_HEADERS`] and the computed CSP onto
+/// every response.
 ///
 /// `SetResponseHeaderLayer::overriding` rather than `if_not_present`: a header
 /// this server considers a security control must not be weakenable by anything
 /// downstream setting it first.
 pub fn security_header_layers() -> Vec<SetResponseHeaderLayer<HeaderValue>> {
-    SECURITY_HEADERS
-        .iter()
-        .map(|(name, value)| {
+    let csp = SetResponseHeaderLayer::overriding(
+        HeaderName::from_static("content-security-policy"),
+        HeaderValue::from_str(&CONTENT_SECURITY_POLICY)
+            .expect("the computed CSP is valid header ASCII"),
+    );
+
+    std::iter::once(csp)
+        .chain(SECURITY_HEADERS.iter().map(|(name, value)| {
             SetResponseHeaderLayer::overriding(
                 HeaderName::from_static(name),
                 HeaderValue::from_static(value),
             )
-        })
+        }))
         .collect()
 }
 

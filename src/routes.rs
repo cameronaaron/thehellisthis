@@ -25,7 +25,7 @@ use crate::validation::matches_room_name_shape;
 /// `include_str!` rather than a file read: the container image then has exactly
 /// one artifact that can be out of date with itself, and serving either costs
 /// no syscall.
-const CLIENT_HTML: &str = include_str!("../index.html");
+pub(crate) const CLIENT_HTML: &str = include_str!("../index.html");
 const CLIENT_JS: &str = include_str!("../client.js");
 
 /// FNV-1a (64-bit) — a cache key, not a security control.

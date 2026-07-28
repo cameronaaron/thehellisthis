@@ -55,6 +55,77 @@ async fn every_response_carries_security_headers() {
     }
 }
 
+/// `style-src` grants no blanket capability for inline style: no
+/// `'unsafe-inline'`, and the one legitimate inline surface — the page's own
+/// `<style>` block — is named by its exact content hash instead.
+///
+/// The hash is recomputed here independently, from `EMBEDDED_HTML` with
+/// `sha2` called directly, rather than by asking the production code for the
+/// value it already computed — calling the same function under test would
+/// prove the two calls agree with each other, not that either matches what
+/// the browser actually receives. If the hash and the served CSS ever drift,
+/// this is the test that notices: a wrong hash does not error, it silently
+/// leaves the entire page unstyled, which is exactly why `style.rs`
+/// (§9.4/security.rs) computes it from `include_str!` rather than a
+/// hand-copied string constant.
+#[tokio::test]
+async fn style_src_names_the_pages_inline_stylesheet_by_hash_not_by_unsafe_inline() {
+    let app = build_router(Arc::new(AppState::new()));
+    let response = app
+        .oneshot(Request::builder().uri("/main").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let csp = response
+        .headers()
+        .get("content-security-policy")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+
+    assert!(
+        !csp.contains("style-src 'self' 'unsafe-inline'"),
+        "CSP must not grant inline style a blanket capability: {csp}"
+    );
+
+    let open = EMBEDDED_HTML.find("<style>").expect("a <style> tag");
+    let start = open + "<style>".len();
+    let close = EMBEDDED_HTML[start..]
+        .find("</style>")
+        .expect("the <style> tag is closed");
+    let style_block = &EMBEDDED_HTML[start..start + close];
+
+    use base64::Engine;
+    use sha2::{Digest, Sha256};
+    let expected_hash = format!(
+        "'sha256-{}'",
+        base64::engine::general_purpose::STANDARD.encode(Sha256::digest(style_block.as_bytes()))
+    );
+
+    assert!(
+        csp.contains(&format!("style-src 'self' {expected_hash}")),
+        "the CSP's style-src hash must match the page's actual <style> \
+         content — a mismatch here means the two have silently drifted and \
+         the page will render unstyled: {csp}"
+    );
+}
+
+/// Exactly one `<style>` element exists in the page.
+///
+/// The CSP names it by content hash — a second `<style>` block would need a
+/// second hash, silently unstyled without one, and nothing about a passing
+/// build would say so.
+#[test]
+fn the_page_has_exactly_one_style_block() {
+    assert_eq!(
+        EMBEDDED_HTML.matches("<style>").count(),
+        1,
+        "a second <style> element needs a second CSP hash; the hash \
+         computation assumes there is exactly one"
+    );
+    assert_eq!(EMBEDDED_HTML.matches("</style>").count(), 1);
+}
+
 /// The client script must not be inline, or the CSP above cannot hold.
 #[test]
 fn client_script_is_external_so_csp_can_forbid_inline() {

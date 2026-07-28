@@ -11,12 +11,6 @@
 # the test suite fails if either `FROM` line names a specific version instead.
 FROM rust:slim AS builder
 
-# Install minimal build deps
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    pkg-config \
-    libssl-dev \
-  && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /app
 
 # Copy source files
@@ -25,18 +19,33 @@ COPY src ./src
 COPY index.html ./index.html
 COPY client.js ./client.js
 
-# Build release binary with optimizations
+# No build-dependency install here: nothing in the dependency tree links
+# OpenSSL (`grep openssl Cargo.lock` finds nothing — the server does no
+# outbound TLS of its own; Cloudflare terminates it), so the `pkg-config`/
+# `libssl-dev` this used to install were dead weight in the one stage that
+# still runs `apt-get`.
 RUN cargo build --release
 
-# `stable`, not a codename: tracks whatever Debian currently calls stable
-# rather than freezing on "bookworm" once trixie takes over that name. Same
-# unpinned-on-purpose policy as the builder stage, and this is the one that
-# actually ships.
-FROM debian:stable-slim AS runtime
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-  && rm -rf /var/lib/apt/lists/*
+# distroless, not a general-purpose OS: no shell, no package manager, no `ls`,
+# no `cat` — nothing a container-escape or a dependency RCE could use once it
+# is in, beyond the one binary this image exists to run. `ldd` against the
+# compiled binary names exactly `libc.so.6`, `libm.so.6` and `libgcc_s.so.1`,
+# which is what `cc-debian12` provides (`static-debian12` provides none of
+# them and needs a fully static musl binary instead — attempted, and the musl
+# target's linker invocation broke under this machine's x86_64-under-arm64
+# emulation; `cc-debian12` needed no cross-compilation and is what actually
+# built and ran).
+#
+# `:nonroot`, not `:latest`: the tag itself selects the built-in unprivileged
+# user (`nonroot`, uid 65532) rather than defaulting to root and needing a
+# `USER` line to opt out — there is no `useradd` here to run one with anyway.
+# Still an unpinned, moving tag — `nonroot` is a variant selector, not a
+# version, and both are allowed by `these_images_track_latest_on_purpose`.
+#
+# No `ca-certificates` layer: this server makes no outbound HTTPS calls to
+# verify a certificate for (§9.4 — no reqwest, no client TLS anywhere in the
+# dependency tree), so the package was never doing anything at runtime either.
+FROM gcr.io/distroless/cc-debian12:nonroot AS runtime
 
 WORKDIR /app
 
@@ -46,14 +55,16 @@ WORKDIR /app
 # than read from disk — this image has exactly one thing that can be out of
 # date with itself. Copying them here too would be dead weight that could
 # mislead someone into thinking editing them post-build changes what is served.
-COPY --from=builder /app/target/release/infinite-chat /app/infinite-chat
+#
+# `--chown=nonroot:nonroot`: BuildKit sets ownership at the COPY layer itself,
+# which is what a distroless target needs — there is no `chown` binary in it
+# to run one afterwards.
+COPY --from=builder --chown=nonroot:nonroot /app/target/release/infinite-chat /app/infinite-chat
 
-# Runs as an unprivileged user, not root. The server binds a single high port
-# and holds no capability that needs it — root here buys nothing and costs
-# everything a container-escape or a future memory-safety bug could reach.
-RUN useradd --system --no-create-home --shell /usr/sbin/nologin chat \
-  && chown chat:chat /app/infinite-chat
-USER chat
+# Belt and suspenders on top of the `:nonroot` tag already selecting this user:
+# explicit here so a future edit that swaps the base image back to a
+# root-default tag does not silently start running as root again.
+USER nonroot
 
 # Cloudflare Containers expects port 3000 by default
 ENV PORT=3000
@@ -62,7 +73,8 @@ ENV RUST_LOG=info
 # Expose the port for Cloudflare to connect
 EXPOSE 3000
 
-# Use exec form for proper signal handling
+# Exec form is the only form: distroless has no shell to interpret a shell-form
+# CMD in the first place.
 CMD ["./infinite-chat"]
 
 # Cloudflare Containers uses SIGINT for graceful shutdown
