@@ -2008,3 +2008,187 @@ fn the_client_asks_for_the_roster_rather_than_being_sent_it() {
         "the roster must not be polled"
     );
 }
+
+/// Every class the page renders, from markup, assignments and template strings.
+fn classes_the_page_can_render() -> std::collections::HashSet<String> {
+    let mut alive: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for source in [EMBEDDED_HTML, EMBEDDED_JS] {
+        for (index, _) in source.match_indices("class=\"") {
+            let rest = &source[index + "class=\"".len()..];
+            if let Some(end) = rest.find('"') {
+                alive.extend(rest[..end].split_whitespace().map(str::to_string));
+            }
+        }
+    }
+
+    for marker in [
+        "className = '",
+        "className = `",
+        "classList.add('",
+        "classList.toggle('",
+        "className: '",
+    ] {
+        for (index, _) in EMBEDDED_JS.match_indices(marker) {
+            let rest = &EMBEDDED_JS[index + marker.len()..];
+            let Some(end) = rest.find(['\'', '`']) else {
+                continue;
+            };
+
+            // `reaction-pill${mine ? ' mine' : ''}` is one class name and one
+            // expression. Cutting each `${…}` out leaves the literal parts;
+            // splitting on whitespace first would throw `reaction-pill` away
+            // along with the expression glued to it.
+            let mut literal = String::new();
+            let mut depth = 0usize;
+            let mut chars = rest[..end].chars().peekable();
+            while let Some(c) = chars.next() {
+                if depth == 0 && c == '$' && chars.peek() == Some(&'{') {
+                    chars.next();
+                    depth = 1;
+                    literal.push(' ');
+                } else if depth > 0 {
+                    if c == '{' {
+                        depth += 1;
+                    } else if c == '}' {
+                        depth -= 1;
+                    }
+                } else {
+                    literal.push(c);
+                }
+            }
+            alive.extend(literal.split_whitespace().map(str::to_string));
+        }
+    }
+
+    alive
+}
+
+/// No rule styles something the page never renders.
+///
+/// Dead CSS is not merely clutter. When the header was restructured, the rules
+/// for the design it replaced — `.brand`, `.room-info`, `.room-badge` — stayed
+/// behind. A rule for something that no longer exists is a rule nobody reads,
+/// and the next person to reuse that name inherits it.
+#[test]
+fn no_rule_styles_something_the_page_never_renders() {
+    let alive = classes_the_page_can_render();
+    assert!(alive.len() > 40, "expected to find the page's classes");
+
+    let css = embedded_html_without_comments();
+    let mut dead: Vec<String> = Vec::new();
+
+    for line in css.lines() {
+        if !line.ends_with(" {") || line.starts_with([' ', '\t', '@']) {
+            continue;
+        }
+        let selector = line.trim_end_matches(" {").trim();
+        if !selector.starts_with('.') {
+            continue;
+        }
+
+        let mentioned: Vec<String> = selector
+            .match_indices('.')
+            .map(|(i, _)| {
+                selector[i + 1..]
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+                    .collect::<String>()
+            })
+            .filter(|c| !c.is_empty())
+            .collect();
+
+        if !mentioned.is_empty() && !mentioned.iter().any(|c| alive.contains(c)) {
+            dead.push(selector.to_string());
+        }
+    }
+
+    assert!(
+        dead.is_empty(),
+        "these rules style classes the page never renders — leftovers from a \
+         design that was replaced, which the next person to reuse the name will \
+         inherit: {dead:?}"
+    );
+}
+
+/// Ids carry no layout, so a class can always win.
+///
+/// `#userCount` styled a small inline count. The header was restructured and
+/// that id moved onto the button in the centre — a column with a name over a
+/// subtitle — and the old rule beat every class on it, because an id selector
+/// outranks any number of classes. The centre of the navigation bar laid itself
+/// out as a row of chips inside a column: icons stacked, nothing errored, and
+/// it was reported as "the icons are really not showing up right".
+///
+/// Ids identify; classes style. The exceptions are structural containers that
+/// exist exactly once and are never restyled by role.
+#[test]
+fn stylesheet_ids_do_not_carry_layout() {
+    const STRUCTURAL: &[&str] = &[
+        "#chat",
+        "#typingIndicator",
+        "#replyPreview",
+        "#emojiPanel",
+        "#participantsSheet",
+        "#lightbox",
+        "#dropOverlay",
+        "#jumpLatest",
+        "#reactionBar",
+        "#attachmentTray",
+        "#welcomeBanner",
+        "#messageInput",
+        "#emojiSearch",
+        "#emojiGrid",
+        "#emojiTabs",
+        "#emojiEmpty",
+        "#sendBtn",
+        "#charCount",
+        "#participantsList",
+        "#attachmentPreview",
+        "#roomAvatar",
+        "#lightboxImage",
+        "#lightboxClose",
+        "#participantsClose",
+        "#jumpLatestCount",
+        "#typingText",
+        "#statusChip",
+        "#roomHeartbeat",
+    ];
+
+    let css = embedded_html_without_comments();
+    let mut offenders: Vec<String> = Vec::new();
+
+    for line in css.lines() {
+        if !line.ends_with(" {") || line.starts_with([' ', '\t', '@']) {
+            continue;
+        }
+        let selector = line.trim_end_matches(" {").trim();
+        if !selector.starts_with('#') {
+            continue;
+        }
+        let id = selector
+            .split([' ', ':', '.', ',', '>'])
+            .next()
+            .unwrap_or(selector);
+        if !STRUCTURAL.contains(&id) {
+            offenders.push(selector.to_string());
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "these style an element by id. An id beats every class, so the next time \
+         that id is reused for a different control the old layout wins silently \
+         — which is how the navigation bar ended up stacked. Style by class: \
+         {offenders:?}"
+    );
+
+    // Self-cleaning: an exemption must not outlive the element it names.
+    for id in STRUCTURAL {
+        let bare = id.trim_start_matches('#');
+        assert!(
+            EMBEDDED_HTML.contains(&format!("id=\"{bare}\"")),
+            "{id} is exempted here but is no longer in the page — delete the entry"
+        );
+    }
+}

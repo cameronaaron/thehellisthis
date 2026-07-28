@@ -211,43 +211,10 @@ body {
     -webkit-backdrop-filter: saturate(180%) blur(20px);
 }
 
-.brand {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    text-decoration: none;
-    color: inherit;
-    cursor: pointer;
-    padding: 8px;
-    margin: -8px;
-    border-radius: var(--radius-lg);
-    transition: background var(--transition-short);
-}
-
-.brand:hover {
-    background: rgba(0,0,0,var(--state-hover));
-}
-
 @media (prefers-color-scheme: dark) {
     .brand:hover {
         background: rgba(255,255,255,var(--state-hover));
     }
-}
-
-.brand:hover .logo-icon {
-    transform: scale(1.02);
-}
-
-.logo-icon {
-    width: 40px;
-    height: 40px;
-    background: var(--primary);
-    border-radius: var(--radius-md);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--on-primary);
-    transition: transform var(--transition-medium);
 }
 
 .logo-icon .icon {
@@ -260,32 +227,6 @@ h1 {
     font-weight: 400;
     color: var(--on-surface);
     letter-spacing: 0;
-}
-
-.room-info {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-left: auto;
-}
-
-.room-badge {
-    background: var(--secondary-container);
-    color: var(--on-surface);
-    padding: 6px 16px;
-    border-radius: var(--radius-full);
-    font-size: 14px;
-    font-weight: 500;
-    font-family: var(--font-display);
-    display: flex;
-    align-items: center;
-    gap: 6px;
-}
-
-.room-badge::before {
-    content: '#';
-    opacity: 0.6;
-    font-weight: 400;
 }
 
 .status-chip {
@@ -339,25 +280,18 @@ h1 {
 }
 
 /* Room Heartbeat Indicator */
+/* The room's remaining life reads as part of the subtitle now, not as its own
+   pill. It used to be a bordered chip in a row of chips; inside a 11px
+   subtitle that chip's padding and background stacked on the text around it. */
 .room-heartbeat {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 6px 12px;
-    border-radius: var(--radius-full);
-    font-size: 13px;
-    font-weight: 500;
-    font-family: var(--font-display);
-    background: var(--surface-container-high);
-    color: var(--on-surface-variant);
-    transition: all var(--transition-medium);
+    display: inline;
+    color: inherit;
+    background: none;
+    padding: 0;
+    border: none;
+    font-size: inherit;
 }
 
-.room-heartbeat .heart-icon {
-    font-size: 18px;
-    color: var(--error);
-    animation: heartbeat 1s infinite;
-}
 
 .room-heartbeat.active {
     background: var(--tertiary-container);
@@ -417,8 +351,8 @@ h1 {
 
 /* Room lifespan counter */
 .room-lifespan {
-    font-size: 12px;
-    opacity: 0.8;
+    font-size: inherit;
+    opacity: 1;
 }
 
 /* Mute button */
@@ -566,23 +500,6 @@ h1 {
 @keyframes blink {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.3; }
-}
-
-#userCount {
-    font-size: 14px;
-    font-weight: 500;
-    font-family: var(--font-display);
-    color: var(--on-surface-variant);
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 6px 14px;
-    background: var(--surface-container-high);
-    border-radius: var(--radius-full);
-}
-
-#userCount .icon {
-    font-size: 18px;
 }
 
 .nav-link {

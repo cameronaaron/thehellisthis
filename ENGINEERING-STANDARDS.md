@@ -60,6 +60,7 @@ concrete, executable version of "obsessive engineering quality." Concretely:
 | §10.10 The roster is asked for | `the_client_asks_for_the_roster_rather_than_being_sent_it`, `the_navigation_bar_keeps_what_the_client_drives`, `the_roster_names_everyone_connected_in_a_stable_order`, `requesting_the_roster_answers_with_the_current_names`, `roster_requests_are_throttled` |
 | §10.9 Show implies hide | `every_conditional_display_rule_has_a_base_that_hides_it` |
 | §10.8 Rendered classes are styled | `every_class_the_client_renders_is_styled` |
+| §10.11 Ids identify, classes style | `stylesheet_ids_do_not_carry_layout`, `no_rule_styles_something_the_page_never_renders` |
 | §10.6 One rule per selector | `no_css_selector_is_defined_twice`, `the_conversation_is_a_readable_centred_column` |
 | §10.7 Hover targets are reachable | `the_reaction_bar_can_actually_be_clicked` |
 | §10 Client | `empty_chat_placeholder_does_not_alter_container_layout`, `rendered_history_is_trimmed_from_the_dom_not_a_counter`, `the_page_does_not_block_pinch_zoom`, `images_reserve_their_space_before_they_load` |
@@ -1324,6 +1325,35 @@ The general shape: **a feature that needs a collection should ask for it at the
 moment it is looked at, not subscribe the whole room to it.** The same reasoning
 put reactions in a side table keyed by message id and resolved `reacted` per
 viewer.
+
+### 10.11 An id beats every class, so an id must never carry layout
+
+`#userCount` styled the small inline count in the old header: `display:
+inline-flex`, a gap, a padded background. The header was restructured and that
+id moved onto the button in the centre of the navigation bar — a column with a
+room name over a subtitle. The old rule outranked every class on it, because one
+id selector beats any number of classes. The centre of the bar laid itself out
+as a row: icons overlapping, text stacking, nothing logged, nothing thrown. It
+was reported as "the icons are really not showing up right and things are very
+misaligned and stacking on eachother", which is the only signal this class of
+bug produces.
+
+The rule is **ids identify, classes style**. `stylesheet_ids_do_not_carry_layout`
+allows an explicit list of structural containers — things that exist exactly
+once and are never restyled by role — and each entry is checked to still be in
+the page, so an exemption cannot outlive the element it names.
+
+The same restructure left `.brand`, `.brand:hover`, `.logo-icon`, `.room-info`
+and `.room-badge` behind: rules for a design that no longer renders. Dead CSS is
+not clutter, it is a trap with a name on it — the next person to use `.brand`
+inherits styling written for something else.
+`no_rule_styles_something_the_page_never_renders` fails on any class rule whose
+every selector names something neither the markup nor the renderer can produce.
+It reads template literals the way the browser will: `` `reaction-pill${mine ?
+' mine' : ''}` `` is one class and one expression, so each `${…}` is cut out
+before the literal is split — splitting on whitespace first would throw the
+class name away along with the expression glued to it, and the contract would
+then report a live rule as dead.
 
 ### 10.7 A control that appears on hover must survive being aimed at
 
