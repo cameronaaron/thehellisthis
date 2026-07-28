@@ -169,6 +169,30 @@ fn css_rule_selectors(css: &str) -> Vec<String> {
     selectors
 }
 
+/// Every class token named in a single selector, e.g. `.a.b:hover .c` → `[a,
+/// b, c]`.
+///
+/// A rule like `.system-message.error { … }` mentions `system-message` — but
+/// only ever matches an element that *also* has `error`. It does not style a
+/// bare `.system-message`. Checking "does the selector text contain this
+/// substring" instead of extracting real tokens is how `.system-message` read
+/// as styled when only its `.error`/`.warning`/`.success` modifiers existed —
+/// no base rule, so `addSystemMessage`'s default `type = 'info'` case, and
+/// every unmodified message, rendered with no padding, no radius, and no
+/// centring at all.
+fn classes_in_selector(selector: &str) -> Vec<String> {
+    selector
+        .match_indices('.')
+        .map(|(i, _)| {
+            selector[i + 1..]
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+                .collect::<String>()
+        })
+        .filter(|c| !c.is_empty())
+        .collect()
+}
+
 /// A workflow or shell script with its `#` comments removed.
 ///
 /// §6.7: a sweep over a script must read the commands, not the prose about

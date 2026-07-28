@@ -1853,13 +1853,16 @@ class ChatApp {
         this.renderParticipants();
     }
     
+    /// The chip exists in the DOM only while there is something to report:
+    /// hidden while connected, because that is the state nobody needs telling
+    /// about.
     updateConnectionStatus(status) {
+        this.statusChip.hidden = status === 'connected';
+        if (this.statusChip.hidden) return;
+
         this.statusChip.className = `status-chip ${status}`;
 
         switch (status) {
-            case 'connected':
-                this.statusText.textContent = 'Connected';
-                break;
             case 'disconnected':
                 this.statusText.textContent = 'Disconnected';
                 break;
@@ -1868,9 +1871,6 @@ class ChatApp {
                 break;
         }
 
-        // No static `title` in the markup: it never changed with the class, so
-        // hovering a disconnected chip kept reading "Connected" — a tooltip
-        // that was wrong exactly when it mattered most.
         this.statusChip.title = this.statusText.textContent;
     }
     

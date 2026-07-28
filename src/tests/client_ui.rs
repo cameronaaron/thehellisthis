@@ -1697,15 +1697,30 @@ fn every_class_the_client_renders_is_styled() {
         }
     }
 
-    // `className = 'a b'` and `` className = `a ${x} b` `` both appear.
+    // `className = 'a b'` and `` className = `a ${x} b` `` both appear. A
+    // static word immediately followed by a token that is *purely* `${…}` —
+    // nothing glued before or after it — marks that word as a base class
+    // combined with an independently varying modifier: `` `system-message
+    // ${type}` `` means every render is "system-message" plus whichever of
+    // `type`'s values won, never "system-message" with nothing else. That
+    // word needs a rule that names it *alone*, not merely a rule that
+    // mentions it — see `bare_base` below.
+    let mut bare_base: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for marker in ["className = '", "className = `"] {
         for (index, _) in js.match_indices(marker) {
             let rest = &js[index + marker.len()..];
             let end = rest.find(['\'', '`']).unwrap_or(0);
-            for word in rest[..end].split_whitespace() {
+            let words: Vec<&str> = rest[..end].split_whitespace().collect();
+            for (i, word) in words.iter().enumerate() {
                 let word = word.trim();
                 if word.starts_with(|c: char| c.is_ascii_lowercase()) && !word.contains('$') {
                     rendered.insert(word.to_string());
+                    let next_is_bare_placeholder = words
+                        .get(i + 1)
+                        .is_some_and(|w| w.starts_with("${") && w.ends_with('}'));
+                    if next_is_bare_placeholder {
+                        bare_base.insert(word.to_string());
+                    }
                 }
             }
         }
@@ -1716,9 +1731,40 @@ fn every_class_the_client_renders_is_styled() {
         "expected to find the renderer's classes; found {rendered:?}"
     );
 
+    // Every class token that appears in *any* selector, not "does the
+    // selector's raw text contain this substring" — `.icon-sprite` used to
+    // make a plain `css.contains(".icon")` check pass for `.icon` too.
+    let styled: std::collections::HashSet<String> = css_rule_selectors(&css)
+        .iter()
+        .flat_map(|s| classes_in_selector(s))
+        .collect();
+
+    // `bare_base` needs more than mention: `.system-message.error {}` mentions
+    // `system-message` as a token, same as a real base rule would, but only
+    // ever matches an element that *also* carries `error` — it does not style
+    // `system-message` on its own. `addSystemMessage`'s default `type =
+    // 'info'` case rendered with nothing applied at all — no padding, no
+    // radius, no centring — because no selector was ever just `.system-message`.
+    let bareless: Vec<&String> = bare_base
+        .iter()
+        .filter(|class| {
+            !css_rule_selectors(&css)
+                .iter()
+                .any(|s| classes_in_selector(s) == [(*class).clone()])
+        })
+        .collect();
+
+    assert!(
+        bareless.is_empty(),
+        "these are rendered alone, with no other literal class glued to them \
+         — `` `{{class}} ${{var}}` `` — so each needs a rule that is just \
+         `.{{class}}`, not merely a rule that mentions it alongside a \
+         modifier: {bareless:?}"
+    );
+
     let unstyled: Vec<&String> = rendered
         .iter()
-        .filter(|class| !css.contains(&format!(".{class}")))
+        .filter(|class| !styled.contains(class.as_str()))
         .collect();
 
     assert!(
@@ -2109,16 +2155,7 @@ fn no_rule_styles_something_the_page_never_renders() {
             continue;
         }
 
-        let mentioned: Vec<String> = selector
-            .match_indices('.')
-            .map(|(i, _)| {
-                selector[i + 1..]
-                    .chars()
-                    .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
-                    .collect::<String>()
-            })
-            .filter(|c| !c.is_empty())
-            .collect();
+        let mentioned = classes_in_selector(&selector);
 
         // Every class named in the selector must be alive, not merely one of
         // them. `.old-container .icon` only ever matches an `.icon` that is a
