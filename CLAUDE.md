@@ -77,8 +77,11 @@ cargo mutants -f src/room.rs    # one file, while iterating
 ```
 
 Coverage says a line ran; mutation testing says something would have noticed if
-it were wrong. See ENGINEERING-STANDARDS.md §6.6, including the classification
-of the six mutants that currently survive.
+it were wrong. See ENGINEERING-STANDARDS.md §6.6 for why, and
+**`MUTATION-SURVIVORS.md`** for the current list — the last full sweep was 496
+mutants, 375 caught, 57 missed. That file is the work queue: take one file,
+`cargo mutants -f src/<file>.rs`, which is minutes rather than the two hours a
+full run costs.
 
 ## Commits
 
