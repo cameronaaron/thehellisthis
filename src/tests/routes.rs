@@ -108,45 +108,17 @@ async fn test_health_endpoint() {
     assert!(health["memory_bytes"].is_number());
 }
 
+/// `/metrics` discloses operational counts to nobody who cannot produce the
+/// configured token — see `security::is_authorized_for_metrics`. Every case
+/// this handler can reach: no token configured, a missing header, a wrong
+/// token, and the one correct request, which is also where the response body
+/// itself is checked, since there is no point asserting the content twice
+/// under two different names for the same handler.
 #[tokio::test]
-async fn test_metrics_endpoint() {
+async fn metrics_requires_the_configured_bearer_token() {
+    let _env = METRICS_TOKEN_ENV.lock().await;
+
     let app_state = Arc::new(AppState::new());
-    let app = Router::new()
-        .route("/metrics", get(metrics_handler))
-        .with_state(app_state);
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/metrics")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        response.headers().get("content-type").unwrap(),
-        "text/plain; version=0.0.4"
-    );
-
-    let body_bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
-
-    assert!(body_str.contains("chat_rooms_total"));
-    assert!(body_str.contains("chat_connections_total"));
-    assert!(body_str.contains("chat_users_total"));
-    assert!(body_str.contains("chat_messages_total"));
-    assert!(body_str.contains("chat_memory_bytes"));
-    assert!(body_str.contains("chat_memory_peak_bytes"));
-}
-
-#[tokio::test]
-async fn test_metrics_handler_with_users() {
-    let app_state = Arc::new(AppState::new());
-
-    // Create a room with a user
     {
         let mut rooms = app_state.rooms.write().await;
         let mut room = create_room();
@@ -173,24 +145,70 @@ async fn test_metrics_handler_with_users() {
         rooms.insert("test-room".to_string(), room);
     }
 
-    let app = Router::new()
-        .route("/metrics", get(metrics_handler))
-        .with_state(app_state);
+    let app = || {
+        Router::new()
+            .route("/metrics", get(metrics_handler))
+            .with_state(Arc::clone(&app_state))
+    };
+    let request = |auth: Option<&str>| {
+        let mut builder = Request::builder().uri("/metrics");
+        if let Some(header) = auth {
+            builder = builder.header("authorization", header);
+        }
+        builder.body(Body::empty()).unwrap()
+    };
 
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/metrics")
-                .body(Body::empty())
-                .unwrap(),
-        )
+    // SAFETY: serialised by METRICS_TOKEN_ENV; cleared before the lock is
+    // released, on every path below.
+    unsafe { std::env::remove_var("METRICS_TOKEN") };
+
+    // Not configured at all: fails closed, whatever the request carries.
+    let unconfigured = app()
+        .oneshot(request(Some("Bearer anything")))
         .await
         .unwrap();
+    assert_eq!(unconfigured.status(), StatusCode::NOT_FOUND);
 
-    let body_bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    // SAFETY: still within the lock.
+    unsafe { std::env::set_var("METRICS_TOKEN", "correct-horse-battery-staple") };
+
+    let no_header = app().oneshot(request(None)).await.unwrap();
+    assert_eq!(no_header.status(), StatusCode::NOT_FOUND);
+
+    let wrong_token = app().oneshot(request(Some("Bearer wrong"))).await.unwrap();
+    assert_eq!(wrong_token.status(), StatusCode::NOT_FOUND);
+
+    let not_bearer = app()
+        .oneshot(request(Some("correct-horse-battery-staple")))
+        .await
+        .unwrap();
+    assert_eq!(
+        not_bearer.status(),
+        StatusCode::NOT_FOUND,
+        "the scheme matters, not just the token value"
+    );
+
+    let authorized = app()
+        .oneshot(request(Some("Bearer correct-horse-battery-staple")))
+        .await
+        .unwrap();
+    assert_eq!(authorized.status(), StatusCode::OK);
+    assert_eq!(
+        authorized.headers().get("content-type").unwrap(),
+        "text/plain; version=0.0.4"
+    );
+
+    let body_bytes = to_bytes(authorized.into_body(), usize::MAX).await.unwrap();
     let body = String::from_utf8(body_bytes.to_vec()).unwrap();
-
+    assert!(body.contains("chat_rooms_total"));
+    assert!(body.contains("chat_connections_total"));
     assert!(body.contains("chat_users_total 1"));
+    assert!(body.contains("chat_messages_total"));
+    assert!(body.contains("chat_memory_bytes"));
+    assert!(body.contains("chat_memory_peak_bytes"));
+
+    // SAFETY: still within the lock; removed before it is released.
+    unsafe { std::env::remove_var("METRICS_TOKEN") };
 }
 
 #[tokio::test]
@@ -233,25 +251,6 @@ async fn test_health_handler_returns_ok() {
         .unwrap();
     let body_str = String::from_utf8_lossy(&body);
     assert!(body_str.contains("ok") || body_str.contains("healthy"));
-}
-
-#[tokio::test]
-async fn test_metrics_handler_returns_metrics() {
-    let app_state = Arc::new(AppState::new());
-    let app = Router::new()
-        .route("/metrics", get(metrics_handler))
-        .with_state(app_state);
-
-    let req = Request::builder()
-        .uri("/metrics")
-        .body(Body::empty())
-        .unwrap();
-    let res = app.oneshot(req).await.unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-
-    // Check content type header
-    let content_type = res.headers().get("content-type").unwrap();
-    assert!(content_type.to_str().unwrap().contains("text/plain"));
 }
 
 #[tokio::test]
@@ -314,21 +313,6 @@ async fn test_health_handler_response() {
 
 // Test metrics_handler returns prometheus format - covers lines 2234-2265
 
-#[tokio::test]
-async fn test_metrics_handler_format() {
-    let state = Arc::new(AppState::new());
-
-    // Add some data
-    {
-        let mut rooms = state.rooms.write().await;
-        rooms.insert("metrics-test".to_string(), create_room());
-    }
-
-    let response = metrics_handler(State(state)).await;
-    let http_response = response.into_response();
-    assert_eq!(http_response.status(), StatusCode::OK);
-}
-
 // Test room_handler with reserved path - covers lines 1129-1145
 
 #[tokio::test]
@@ -373,7 +357,13 @@ async fn router_mounts_every_public_route() {
         ("/", StatusCode::PERMANENT_REDIRECT),
         ("/main", StatusCode::OK),
         ("/health", StatusCode::OK),
-        ("/metrics", StatusCode::OK),
+        // Mounted, but requires the bearer token this request does not carry
+        // — see `metrics_requires_the_configured_bearer_token`, which is
+        // where its real behaviour is checked. That 404 is deliberately
+        // indistinguishable from a path this router never mounted at all, so
+        // this row cannot tell the two apart by status code alone; it exists
+        // to keep every path in this list, not to re-prove the route exists.
+        ("/metrics", StatusCode::NOT_FOUND),
         ("/robots.txt", StatusCode::OK),
         ("/some-room", StatusCode::OK),
     ] {

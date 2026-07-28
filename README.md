@@ -113,7 +113,7 @@ cloudflare/       Worker + Container deployment
 | `GET /main` | main room |
 | `GET /:room` | dynamic room |
 | `GET /health` | liveness probe |
-| `GET /metrics` | Prometheus text exposition |
+| `GET /metrics` | Prometheus text exposition — requires `Authorization: Bearer $METRICS_TOKEN`, 404s if unset |
 | `WS /ws/:room` | WebSocket upgrade |
 
 ## Configuration

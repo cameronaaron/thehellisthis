@@ -66,7 +66,7 @@ concrete, executable version of "obsessive engineering quality." Concretely:
 | §10 Client | `empty_chat_placeholder_does_not_alter_container_layout`, `rendered_history_is_trimmed_from_the_dom_not_a_counter`, `the_page_does_not_block_pinch_zoom`, `images_reserve_their_space_before_they_load` |
 | Attachments | `an_attachment_must_be_the_image_type_it_claims_to_be`, `svg_is_not_an_allowed_attachment_type`, `a_rooms_oldest_images_fade_once_it_is_over_its_attachment_budget`, `images_are_re_encoded_rather_than_sent_as_picked` |
 | Reactions | `reacting_twice_with_the_same_emoji_removes_the_reaction`, `reactions_never_outlive_the_messages_they_belong_to`, `a_reaction_must_be_on_the_roster` |
-| §6.1 The gate answers "will this deploy" | `ci_node_version_satisfies_the_toolchain`, `the_workflows_install_with_the_lockfile_that_exists`, `ci_holds_no_deploy_credential_and_does_not_deploy` |
+| §6.1 The gate answers "will this deploy" | `ci_node_version_satisfies_the_toolchain`, `the_workflows_install_with_the_lockfile_that_exists`, `ci_holds_no_deploy_credential_and_does_not_deploy`, `these_images_track_latest_on_purpose` |
 | Startup lifecycle | `run_returns_cleanly_when_its_shutdown_fires`, `the_process_exit_code_reports_a_clean_stop`, `the_process_exit_code_reports_a_failed_bind`, `the_shutdown_sequence_waits_for_its_signal`, `a_server_error_is_reported_and_a_clean_stop_is_not_an_error`, `binding_a_port_already_in_use_is_an_error_not_a_panic`, `run_serves_until_it_is_shut_down`, `shutting_down_announces_departures_and_clears_the_rooms` |
 | Constraint #12 Frontend/backend agreement | `client_attachment_ceiling_matches_the_server`, `client_reaction_roster_matches_the_server`, `the_node_types_match_the_node_ci_installs`, `every_mirrored_constant_matches_its_source_of_truth` |
 | §5.12 The log is an interface | `every_admission_says_what_became_of_the_identity`, `a_departure_is_logged_with_the_room_it_leaves`, `a_refused_connection_says_which_ceiling_refused_it`, `a_full_room_says_so_when_it_refuses`, `a_normal_session_reads_as_one_arrival_and_one_departure` |
@@ -727,6 +727,37 @@ pub async fn handle_websocket(...) {
 **Prefer a structure where the invariant cannot be violated over a rule that
 must be remembered.** A test can only cover the exits that exist today.
 
+### 5.13 Operational disclosure is still disclosure
+
+`/metrics` names nothing private — no room name, no message text, no IP — and
+for a long time that was treated as the same thing as "fine to leave public".
+It is not: room counts, connection counts and memory usage watched over time
+tell an attacker when the server is near a ceiling, which is exactly the
+moment `MAX_CONCURRENT_USERS` or `MAX_ROOMS` is worth testing against, and a
+public Prometheus endpoint is a standing invitation to watch.
+
+Gated on a bearer token read from `METRICS_TOKEN`
+(`security::is_authorized_for_metrics`), and gated the way admission is
+gated (§5.2): the check runs first, and fails closed. No token configured
+means no amount of guessing gets in — the endpoint behaves as though it does
+not exist rather than defaulting to public because an operator forgot a step.
+The comparison is constant-time, because a token compared with `==` leaks
+itself one byte at a time to whoever is willing to measure response latency
+closely enough, and a security control that can be defeated by timing is a
+security control in name only. A wrong token and an unset one both read as a
+plain 404, not a 401 — the route's existence is not confirmed to a request
+that guessed wrong, the same reasoning as `is_allowed_origin` not
+distinguishing "wrong origin" from "no origin sent" (§4).
+
+Cloudflare Web Analytics — a beacon the site's own layer never requested,
+appearing only because a Cloudflare zone setting was once turned on — is the
+other side of this: §5.7 says a third-party asset is a disclosure made by
+every visitor, and that is true whether the third party is an ad network or
+Cloudflare's own analytics product. Not this server's code to fix; recorded
+here because "no third-party origins" is a claim this page's CSP makes in the
+policy itself; leaving the toggle on is the zone quietly disagreeing with what
+the origin says about itself.
+
 ---
 
 ## 6. The regression ratchet — how standards stay upheld
@@ -1356,6 +1387,7 @@ lore.
 | Rust nightly / experimental features | **Rejected** — this is a server that holds every room in one process, and nightly has no stability guarantee: a feature can change or vanish between two nights, and the build breaking is the site going down. The features that would actually help are already stable and in use — let-chains (1.88, which the MSRV bump turned on and clippy applied 49 times), inline `const` blocks for the budget assertions, `LazyLock`, async fn in traits. Nothing on nightly addresses a constraint this project actually has: the bottleneck is lock duration and the memory ceiling, neither of which a language feature moves | Reopens for a *specific* feature with a measured win that stable cannot express, pinned to an exact nightly, and only if the container build can be reproduced from it. "It is newer" is not a reason (§0.3) |
 | 100% mutation coverage | **Rejected as a target, pursued as a direction** — six mutants survive and are classified in §6.6. Four differ only when a duration is *exactly* its threshold and would need an injectable clock, which is separately rejected because the indirection costs more than the mutants are worth. Killing the last few would mean testing the clock rather than the behaviour | Reopens if a *reachable* mutant appears that is not one of the six classified, which is a real gap rather than an exclusion |
 | Load testing | **Never done** — every performance claim here is structural (complexity, lock duration), not empirical throughput | Before raising `MAX_CONCURRENT_USERS` (400) or `MAX_USERS_PER_ROOM` (100). Those numbers are currently unvalidated assumptions, and §0.5 says so out loud. |
+| Pinning `Dockerfile.cloudflare`'s base images | **Rejected, deliberately, twice** — briefly pinned to `rust:1.97-bookworm`/`debian:bookworm-slim` for build reproducibility, reverted on explicit instruction in favour of the project's standing policy: run dependencies at latest and catch problems via `cargo audit`/`pnpm audit` (already weekly) rather than pin and periodically catch up by hand. A vulnerability scan of `rust:latest` at the time showed 1 critical and 17 high findings in the *builder* stage — discarded after `cargo build --release`, never present in what ships — and `debian:stable-slim`, the stage that does ship, showed 1 critical and 2 high. Both numbers are a property of *today's* image and change on their own with the next `docker pull`; nothing in the test suite asserts on them for exactly that reason (`these_images_track_latest_on_purpose` checks the tag is a moving one, not a CVE count). Moved to `rust:slim`/`debian:stable-slim` — same policy, smaller package set to carry it | Reopens if this project's rebuild cadence ever stops being frequent enough for "latest" to mean anything — an unpinned tag only gets patched on the next build, not automatically in a container already running. A scheduled rebuild independent of code pushes (§9.4's own weekly-audit pattern, extended to the image) is the natural fix if that gap is ever observed. |
 | Injectable clock for the limiters | **Rejected** (§6.6) — would kill four surviving mutants that differ only when a duration is *exactly* its threshold | Reopens if a timing bug is ever observed at a limit boundary in production, or if the limiters need testable time for another reason. |
 | 100% line coverage | **Reached, and now the floor** — 100.00%, with the same number whether or not the `#[ignore]`d tests run. Two whole-file exemptions remain and both are structural: `tests.rs` is the suite, `main.rs` is an entry point a test can never call. Previously read: **Now the target, with a reasoned exemption list** — 98.18%, every module at 100% except `session.rs` (352/373). `main.rs` was reduced to an entry point and `startup.rs` split out of it so the exclusion is honest rather than a hiding place; the test file is excluded the way `*.test.ts` is on cameronaaron.com. The 21 remaining lines are listed individually in scripts/coverage-exemptions.toml | Reopens for any of those 21 that becomes reachable — the registry's line count is asserted, so it fails if the number moves either way. The old entry read: **Not the target** — the floor is 95% and ratchets. The remainder is the process shell (`main`, signal handling) and socket-failure paths inside the four connection tasks, which need a socket to fail at an exact instant | Reopens for any *reachable* branch: those are gaps, not exclusions. Chasing the rest would mean flaky timing tests, which §6.4 rules out as worse than none. |
 | Edge-caching the room pages | **Rejected** — the page is per-room and sets identity cookies, so a shared cache would serve one visitor's `Set-Cookie` to another | Reopens only if identity moves entirely to the socket and the page becomes byte-identical for all visitors. |

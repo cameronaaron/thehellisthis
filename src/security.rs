@@ -128,3 +128,49 @@ fn is_known_domain(host: &str) -> bool {
     const KNOWN: &[&str] = &["thehellisthis.com", "www.thehellisthis.com", "localhost"];
     KNOWN.iter().any(|k| host.eq_ignore_ascii_case(k)) || host == "127.0.0.1"
 }
+
+/// Byte-for-byte equality that takes the same time regardless of where the
+/// first difference falls.
+///
+/// `==` on `&[u8]` short-circuits at the first mismatch, so comparing a
+/// guessed token against the real one byte-by-byte is measurably faster for a
+/// closer guess — a timing side channel an attacker can use to recover a
+/// secret one byte at a time without ever seeing it. `bitwise-OR every
+/// difference, decide once` visits every byte of the shorter input every time
+/// regardless of where a mismatch is, so there is nothing for a timing
+/// measurement to distinguish. The length check that follows leaks only the
+/// length, which the token's transport (an `Authorization` header, sized
+/// however the client likes) already does not hide.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// Whether a request to `/metrics` may see it.
+///
+/// `/metrics` names nothing private — no room name, no message, no IP — but it
+/// is still real operational disclosure: room and connection counts an
+/// attacker could watch to infer traffic patterns or time an attempt against
+/// `MAX_CONCURRENT_USERS`. Cloudflare terminates in front of this server, so
+/// there is no network boundary to rely on here the way there might be for an
+/// internal-only Prometheus target — the check has to be the server's own.
+///
+/// Fails closed: with no `METRICS_TOKEN` set, the answer is always no, so an
+/// operator who forgets to configure one gets an endpoint that behaves as
+/// though it does not exist rather than one that is silently public. There is
+/// deliberately no distinction in the response between "not configured" and
+/// "wrong token" — both read as a 404, not a 401, so the route's very
+/// existence is not confirmed to a request that guessed wrong.
+pub fn is_authorized_for_metrics(headers: &axum::http::HeaderMap) -> bool {
+    let Ok(expected) = std::env::var("METRICS_TOKEN") else {
+        return false;
+    };
+
+    headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .is_some_and(|token| constant_time_eq(token.as_bytes(), expected.as_bytes()))
+}

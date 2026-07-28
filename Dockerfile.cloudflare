@@ -1,11 +1,15 @@
 # Multi-stage build for Cloudflare Containers
 # Compile with Rust toolchain, run on minimal runtime
 
-# Pinned, not `rust:latest`: an unpinned tag means today's build and
-# tomorrow's build of the same commit can pull a different compiler and a
-# different base OS layer with no diff to review — the classic unreproducible-
-# build supply-chain gap. Bump deliberately, alongside the MSRV in Cargo.toml.
-FROM rust:1.97-bookworm AS builder
+# Deliberately unpinned: `latest`/`slim`/`stable`, never a version number.
+# This project runs its dependencies at latest on purpose (Dependabot,
+# `cargo update`, weekly `cargo audit`/`pnpm audit`) rather than pinning and
+# periodically catching up — applied here to the compiler and the base OS too.
+# `slim`, not the full image: same policy, a smaller package set to scan and
+# patch — this stage is discarded after the build, but a smaller stage is
+# still a smaller window regardless. `these_images_track_latest_on_purpose` in
+# the test suite fails if either `FROM` line names a specific version instead.
+FROM rust:slim AS builder
 
 # Install minimal build deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -24,8 +28,11 @@ COPY client.js ./client.js
 # Build release binary with optimizations
 RUN cargo build --release
 
-# Runtime image - use minimal Alpine for smaller image
-FROM debian:bookworm-slim AS runtime
+# `stable`, not a codename: tracks whatever Debian currently calls stable
+# rather than freezing on "bookworm" once trixie takes over that name. Same
+# unpinned-on-purpose policy as the builder stage, and this is the one that
+# actually ships.
+FROM debian:stable-slim AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \

@@ -187,3 +187,63 @@ fn the_node_types_match_the_node_ci_installs() {
          the typecheck would be describing a runtime nobody runs"
     );
 }
+
+/// The container image's base images track latest on purpose, and stay that
+/// way.
+///
+/// This project's stated policy is to run at latest rather than pin and
+/// periodically catch up — Dependabot, `cargo update`, `cargo audit`/`pnpm
+/// audit` on a weekly schedule. A `FROM` line naming a specific version
+/// (`rust:1.97-bookworm`, `debian:bookworm-slim`) is that policy quietly
+/// reversed: it stops moving the moment it is written, and a base image that
+/// stops moving accumulates whatever it shipped with, forever, until someone
+/// remembers to bump it by hand. `latest`/`slim`/`stable` move on every
+/// rebuild instead.
+///
+/// Deliberately narrow: this checks the *tag*, not the CVE count a scanner
+/// reports for it. A scanner's count is a snapshot of today's image and
+/// changes on its own as upstream patches land — nothing in a test suite
+/// should assert on a number that is true right now and false by the next
+/// `docker pull`.
+#[test]
+fn these_images_track_latest_on_purpose() {
+    const DOCKERFILE: &str = include_str!("../../Dockerfile.cloudflare");
+
+    let from_lines: Vec<&str> = DOCKERFILE
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("FROM "))
+        .collect();
+
+    assert!(
+        from_lines.len() >= 2,
+        "expected a multi-stage build with at least a builder and a runtime \
+         stage; found {}",
+        from_lines.len()
+    );
+
+    // The moving tags this policy allows. Anything else is a pin.
+    const MOVING_TAGS: &[&str] = &["latest", "slim", "stable", "stable-slim"];
+
+    let mut pinned: Vec<&str> = Vec::new();
+    for line in &from_lines {
+        // `FROM rust:slim AS builder` -> `rust:slim`
+        let image = line
+            .strip_prefix("FROM ")
+            .and_then(|rest| rest.split(" AS ").next())
+            .unwrap_or(line)
+            .trim();
+
+        let tag = image.rsplit_once(':').map_or("latest", |(_, tag)| tag);
+
+        if !MOVING_TAGS.contains(&tag) {
+            pinned.push(line);
+        }
+    }
+
+    assert!(
+        pinned.is_empty(),
+        "these FROM lines name a specific version instead of a moving tag, \
+         reversing the project's run-at-latest policy: {pinned:?}"
+    );
+}

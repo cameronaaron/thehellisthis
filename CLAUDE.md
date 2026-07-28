@@ -540,7 +540,7 @@ Frame order on connect is **guaranteed**: `Welcome`, then history, then
 | `GET /main` | the client |
 | `GET /:room` | the client, if the room name is valid and there is capacity |
 | `GET /health` | liveness probe — the container runtime polls this |
-| `GET /metrics` | Prometheus text exposition, seven gauges |
+| `GET /metrics` | Prometheus text exposition, seven gauges — gated on `METRICS_TOKEN` (§5.13) |
 | `GET /robots.txt` | disallows `/ws/` |
 | `WS /ws/:room` | the chat itself |
 
@@ -549,14 +549,20 @@ Frame order on connect is **guaranteed**: `Welcome`, then history, then
 
 ## Tests
 
-`src/tests/` — 705 tests across sixteen modules, run with
-`cargo test --all-features`. One module per concern rather than one 19,000-line
-file: `session.rs`/`rooms.rs`/`limits.rs` cover the corresponding server
-modules; `client_ui.rs` the shipped page and script; `contracts.rs` narrowly —
-only the meta-contracts that keep the *other* tests honest (documented
-sweeps, resolvable citations, no dead exports); `constants.rs`,
-`frontend_parity.rs`, `ci.rs` and `memory_budget.rs` split out what used to be
-inside `contracts.rs`. Notable classes:
+`src/tests/` — 703 tests across 33 modules, run with `cargo test --all-features`.
+One module per concern rather than one 19,000-line file, and no module over
+~1,150 lines: `session_identity.rs`/`session_throttles.rs`/`session_presence.rs`/
+`session_broadcast.rs`/`session_frames.rs`/`session_join_and_room.rs` split what
+`session.rs` owns in `src/`; `rooms_routing.rs`/`rooms_animals.rs`/
+`rooms_history.rs`/`rooms_pruning.rs`/`rooms_deletion.rs`/`rooms_app_state.rs`
+split `room.rs`/`cleanup.rs`; `limits_rate_limiting.rs`/`limits_memory.rs`/
+`limits_connections.rs`/`limits_security.rs`/`limits_misc.rs` split `limits.rs`;
+`client_ui_client_ip.rs`/`client_ui_security_policy.rs`/
+`client_ui_protocol_events.rs`/`client_ui_rendering.rs` split the shipped page
+and script. `contracts.rs` stays narrow — only the meta-contracts that keep
+the *other* tests honest (documented sweeps, resolvable citations, no dead
+exports); `constants.rs`, `frontend_parity.rs`, `ci.rs` and
+`memory_budget.rs` are what used to be inside it. Notable classes:
 
 | Class | Pins |
 | --- | --- |

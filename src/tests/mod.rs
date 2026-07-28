@@ -216,6 +216,92 @@ fn strip_js_comments(script: &str) -> String {
         .join("\n")
 }
 
+/// Every class the page renders, from markup, assignments and template strings.
+fn classes_the_page_can_render() -> std::collections::HashSet<String> {
+    let mut alive: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for source in [EMBEDDED_HTML, EMBEDDED_JS] {
+        for (index, _) in source.match_indices("class=\"") {
+            let rest = &source[index + "class=\"".len()..];
+            if let Some(end) = rest.find('"') {
+                alive.extend(rest[..end].split_whitespace().map(str::to_string));
+            }
+        }
+    }
+
+    for marker in [
+        "className = '",
+        "className = `",
+        "classList.add('",
+        "classList.toggle('",
+        "className: '",
+    ] {
+        for (index, _) in EMBEDDED_JS.match_indices(marker) {
+            let rest = &EMBEDDED_JS[index + marker.len()..];
+            let Some(end) = rest.find(['\'', '`']) else {
+                continue;
+            };
+
+            // `reaction-pill${mine ? ' mine' : ''}` is one class name and one
+            // expression. Cutting each `${…}` out leaves the literal parts;
+            // splitting on whitespace first would throw `reaction-pill` away
+            // along with the expression glued to it.
+            let mut literal = String::new();
+            let mut depth = 0usize;
+            let mut chars = rest[..end].chars().peekable();
+            while let Some(c) = chars.next() {
+                if depth == 0 && c == '$' && chars.peek() == Some(&'{') {
+                    chars.next();
+                    depth = 1;
+                    literal.push(' ');
+                } else if depth > 0 {
+                    if c == '{' {
+                        depth += 1;
+                    } else if c == '}' {
+                        depth -= 1;
+                    }
+                } else {
+                    literal.push(c);
+                }
+            }
+            alive.extend(literal.split_whitespace().map(str::to_string));
+        }
+    }
+
+    // `row.className = \`message ${isSent ? 'sent' : 'received'} run-end\`;`
+    // and `updateConnectionStatus('connected')` both put a class-shaped word
+    // where the parsing above cannot reach it: one is inside a `${…}`
+    // ternary, the other is a value passed to a function that assembles the
+    // class somewhere else entirely. Neither is a pattern worth chasing
+    // individually — the general shape is "a bare, lowercase, hyphenated word
+    // in quotes", which in this file is overwhelmingly a class or state name.
+    // Any single-quoted JS string literal of that shape counts as alive,
+    // rather than trying to trace which ones a stylesheet selector consumes.
+    let is_class_shaped = |s: &str| {
+        !s.is_empty()
+            && s.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+            && s.chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    };
+    // Comments stripped first: an English possessive ("the room's real
+    // remaining life") is an unpaired `'` that this walk cannot tell from a
+    // string delimiter, and one apostrophe in a doc comment shifts every
+    // pairing after it for the rest of the file.
+    let js_without_comments = strip_js_comments(EMBEDDED_JS);
+    let mut rest: &str = &js_without_comments;
+    while let Some(start) = rest.find('\'') {
+        rest = &rest[start + 1..];
+        let Some(end) = rest.find('\'') else { break };
+        let literal = &rest[..end];
+        if is_class_shaped(literal) {
+            alive.insert(literal.to_string());
+        }
+        rest = &rest[end + 1..];
+    }
+
+    alive
+}
+
 /// A workflow or shell script with its `#` comments removed.
 ///
 /// §6.7: a sweep over a script must read the commands, not the prose about
@@ -393,6 +479,10 @@ impl crate::session::FrameSink for RecordingSink {
 /// fail when cargo-mutants ran the baseline in a copied tree, which is the
 /// worst shape a test failure comes in.
 static PORT_ENV: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Serialises the tests that set `METRICS_TOKEN`, for the same reason
+/// `PORT_ENV` exists: it is process-global, and the suite runs in parallel.
+static METRICS_TOKEN_ENV: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 const EMBEDDED_HTML: &str = include_str!("../../index.html");
 
@@ -615,17 +705,34 @@ fn suite_source() -> String {
 
 mod attachments;
 mod ci;
-mod client_ui;
+mod client_ui_client_ip;
+mod client_ui_protocol_events;
+mod client_ui_rendering;
+mod client_ui_security_policy;
 mod constants;
 mod contracts;
 mod frontend_parity;
-mod limits;
+mod limits_connections;
+mod limits_memory;
+mod limits_misc;
+mod limits_rate_limiting;
+mod limits_security;
 mod memory_budget;
 mod observability;
 mod protocol;
 mod reactions;
-mod rooms;
+mod rooms_animals;
+mod rooms_app_state;
+mod rooms_deletion;
+mod rooms_history;
+mod rooms_pruning;
+mod rooms_routing;
 mod routes;
-mod session;
+mod session_broadcast;
+mod session_frames;
+mod session_identity;
+mod session_join_and_room;
+mod session_presence;
+mod session_throttles;
 mod startup;
 mod validation;

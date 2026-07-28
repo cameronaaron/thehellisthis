@@ -180,7 +180,14 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> impl IntoResp
 /// Hand-rolled rather than pulling in a metrics runtime: seven gauges read
 /// straight from the atomics that already exist do not justify a registry, a
 /// background exporter task, and two dependencies.
-pub async fn metrics_handler(State(state): State<Arc<AppState>>) -> Response {
+pub async fn metrics_handler(headers: HeaderMap, State(state): State<Arc<AppState>>) -> Response {
+    // No distinction between "no token configured" and "wrong token": both
+    // read as though this route does not exist. See
+    // `security::is_authorized_for_metrics`.
+    if !crate::security::is_authorized_for_metrics(&headers) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
     let (room_count, total_users, total_messages) = {
         let rooms = state.rooms.read().await;
         (
