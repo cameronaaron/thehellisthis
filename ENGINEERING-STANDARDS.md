@@ -1394,17 +1394,49 @@ allows an explicit list of structural containers — things that exist exactly
 once and are never restyled by role — and each entry is checked to still be in
 the page, so an exemption cannot outlive the element it names.
 
-The same restructure left `.brand`, `.brand:hover`, `.logo-icon`, `.room-info`
-and `.room-badge` behind: rules for a design that no longer renders. Dead CSS is
-not clutter, it is a trap with a name on it — the next person to use `.brand`
-inherits styling written for something else.
-`no_rule_styles_something_the_page_never_renders` fails on any class rule whose
-every selector names something neither the markup nor the renderer can produce.
-It reads template literals the way the browser will: `` `reaction-pill${mine ?
-' mine' : ''}` `` is one class and one expression, so each `${…}` is cut out
-before the literal is split — splitting on whitespace first would throw the
-class name away along with the expression glued to it, and the contract would
-then report a live rule as dead.
+The same restructure left `.brand` and `.brand:hover` behind: rules for a
+design that no longer renders. Dead CSS is not clutter, it is a trap with a
+name on it — the next person to use `.brand` inherits styling written for
+something else. `no_rule_styles_something_the_page_never_renders` fails on any
+class rule whose every selector names something neither the markup nor the
+renderer can produce. It reads template literals the way the browser will:
+`` `reaction-pill${mine ? ' mine' : ''}` `` is one class and one expression, so
+each `${…}` is cut out before the literal is split — splitting on whitespace
+first would throw the class name away along with the expression glued to it,
+and the contract would then report a live rule as dead.
+
+### 10.11a Both contracts skipped every selector inside a `@media` block
+
+`.room-info` and `.logo-icon` were still in the stylesheet a session after
+§10.11 above claimed they were gone — inside `@media (max-width: 768px)`,
+alongside a `#userCount { display: none; }` that was a live, active instance of
+the exact stacking bug §10.11 describes, just at a viewport nobody had tested.
+Both contracts had `if line.starts_with([' ', '\t', '@']) { continue; }`, meant
+to skip declaration lines and `@media`/`@keyframes` headers — but every
+selector *inside* a media query is indented too, so the skip discarded every
+rule this session most needed to check. Coverage was not the gap; the loop
+never reached the line.
+
+The fix was to `.trim()` before the `@`-prefix check instead of before the
+indentation check — a media query's selectors are exactly as live as one that
+is not, and there was never a reason to treat them differently.
+
+Fixing the blind spot changed what "alive" meant, too. The dead-class contract
+originally required only *one* class in a selector to be alive — `.mentioned.
+iter().any(...)` — which let `.logo-icon .icon` (`.logo-icon` long gone,
+`.icon` on every SVG in the page) read as live indefinitely: a descendant
+selector only matches an `.icon` that is inside a `.logo-icon`, so if the
+container never renders the rule matches nothing, regardless of how common the
+inner class is elsewhere. Requiring *every* class in a selector to be alive
+(`.iter().all(...)`) models the cascade correctly, but it meant the alive set
+itself had to widen: `row.className = \`message ${isSent ? 'sent' :
+'received'} run-end\`` puts `sent`/`received` inside a `${…}` ternary, and
+`updateConnectionStatus('connected')` passes a bare status string to a
+function that builds the class somewhere else — neither is reachable by
+tracing template literals at their call site. Rather than chase each pattern,
+any single-quoted string shaped like a class name anywhere in the client
+script counts as alive, on the theory that a bare lowercase hyphenated word in
+quotes is overwhelmingly a class or state name in this file specifically.
 
 ### 10.7 A control that appears on hover must survive being aimed at
 

@@ -1849,7 +1849,7 @@ class ChatApp {
     
     updateConnectionStatus(status) {
         this.statusChip.className = `status-chip ${status}`;
-        
+
         switch (status) {
             case 'connected':
                 this.statusText.textContent = 'Connected';
@@ -1861,6 +1861,11 @@ class ChatApp {
                 this.statusText.textContent = 'Connecting...';
                 break;
         }
+
+        // No static `title` in the markup: it never changed with the class, so
+        // hovering a disconnected chip kept reading "Connected" — a tooltip
+        // that was wrong exactly when it mattered most.
+        this.statusChip.title = this.statusText.textContent;
     }
     
     addSystemMessage(text, type = 'info') {

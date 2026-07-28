@@ -2061,6 +2061,32 @@ fn classes_the_page_can_render() -> std::collections::HashSet<String> {
         }
     }
 
+    // `row.className = \`message ${isSent ? 'sent' : 'received'} run-end\`;`
+    // and `updateConnectionStatus('connected')` both put a class-shaped word
+    // where the parsing above cannot reach it: one is inside a `${…}`
+    // ternary, the other is a value passed to a function that assembles the
+    // class somewhere else entirely. Neither is a pattern worth chasing
+    // individually — the general shape is "a bare, lowercase, hyphenated word
+    // in quotes", which in this file is overwhelmingly a class or state name.
+    // Any single-quoted JS string literal of that shape counts as alive,
+    // rather than trying to trace which ones a stylesheet selector consumes.
+    let is_class_shaped = |s: &str| {
+        !s.is_empty()
+            && s.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+            && s.chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    };
+    let mut rest = EMBEDDED_JS;
+    while let Some(start) = rest.find('\'') {
+        rest = &rest[start + 1..];
+        let Some(end) = rest.find('\'') else { break };
+        let literal = &rest[..end];
+        if is_class_shaped(literal) {
+            alive.insert(literal.to_string());
+        }
+        rest = &rest[end + 1..];
+    }
+
     alive
 }
 
@@ -2078,11 +2104,7 @@ fn no_rule_styles_something_the_page_never_renders() {
     let css = embedded_html_without_comments();
     let mut dead: Vec<String> = Vec::new();
 
-    for line in css.lines() {
-        if !line.ends_with(" {") || line.starts_with([' ', '\t', '@']) {
-            continue;
-        }
-        let selector = line.trim_end_matches(" {").trim();
+    for selector in css_rule_selectors(&css) {
         if !selector.starts_with('.') {
             continue;
         }
@@ -2098,7 +2120,15 @@ fn no_rule_styles_something_the_page_never_renders() {
             .filter(|c| !c.is_empty())
             .collect();
 
-        if !mentioned.is_empty() && !mentioned.iter().any(|c| alive.contains(c)) {
+        // Every class named in the selector must be alive, not merely one of
+        // them. `.old-container .icon` only ever matches an `.icon` that is a
+        // descendant of `.old-container` — if the container never renders,
+        // the rule is entirely dead regardless of how common `.icon` is
+        // elsewhere. Requiring only one match let `.logo-icon .icon` survive
+        // the header rewrite that deleted `.logo-icon`: `.icon` alone is used
+        // on every SVG in the page, so the rule read as "alive" while
+        // matching nothing a browser could ever select.
+        if !mentioned.is_empty() && !mentioned.iter().all(|c| alive.contains(c)) {
             dead.push(selector.to_string());
         }
     }
@@ -2158,18 +2188,14 @@ fn stylesheet_ids_do_not_carry_layout() {
     let css = embedded_html_without_comments();
     let mut offenders: Vec<String> = Vec::new();
 
-    for line in css.lines() {
-        if !line.ends_with(" {") || line.starts_with([' ', '\t', '@']) {
-            continue;
-        }
-        let selector = line.trim_end_matches(" {").trim();
+    for selector in css_rule_selectors(&css) {
         if !selector.starts_with('#') {
             continue;
         }
         let id = selector
-            .split([' ', ':', '.', ',', '>'])
+            .split([' ', ':', '.', '>'])
             .next()
-            .unwrap_or(selector);
+            .unwrap_or(&selector);
         if !STRUCTURAL.contains(&id) {
             offenders.push(selector.to_string());
         }

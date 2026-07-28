@@ -130,6 +130,45 @@ fn embedded_html_without_comments() -> String {
     out
 }
 
+/// Every individual selector opening a rule in the embedded stylesheet, one
+/// entry per comma-separated alternative.
+///
+/// This codebase writes a multi-selector rule as one selector per line, each
+/// ending in `,` except the last, which ends in ` {` — e.g.
+/// `.app-bar-actions .nav-link,\n.app-bar-actions .mute-btn {`. A selector
+/// scan that only looks at lines ending in ` {` sees `.mute-btn` and never
+/// `.nav-link`: the first alternative in every multi-selector rule was
+/// unchecked by both dead-CSS contracts below. Accumulating `,`-terminated
+/// lines until the line that opens the block is what makes every alternative
+/// visible, not just the last one.
+fn css_rule_selectors(css: &str) -> Vec<String> {
+    let mut selectors = Vec::new();
+    let mut pending: Vec<String> = Vec::new();
+
+    for line in css.lines() {
+        let trimmed = line.trim();
+
+        if let Some(head) = trimmed.strip_suffix(',') {
+            pending.push(head.trim().to_string());
+            continue;
+        }
+
+        if let Some(head) = trimmed.strip_suffix(" {") {
+            pending.push(head.trim().to_string());
+            selectors.extend(pending.drain(..).filter(|s| !s.is_empty()));
+            continue;
+        }
+
+        // Any other line — a declaration, a blank line, a closing brace — ends
+        // whatever selector group was accumulating. A `,` inside a property
+        // value (there are none in this stylesheet, but nothing enforces that)
+        // would otherwise leak into the next rule's selector list.
+        pending.clear();
+    }
+
+    selectors
+}
+
 /// A workflow or shell script with its `#` comments removed.
 ///
 /// §6.7: a sweep over a script must read the commands, not the prose about
