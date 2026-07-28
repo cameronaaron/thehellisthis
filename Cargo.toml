@@ -12,8 +12,23 @@ license = "MIT"
 publish = false
 
 [dependencies]
-# Async runtime
-tokio = { version = "1.53.1", features = ["full"] }
+# Async runtime. Not "full": this server never touches `tokio::fs` or
+# `tokio::process` — no file I/O beyond `include_str!` at compile time, no
+# subprocess spawning — so `fs` and `process` compiled in nothing this binary
+# ever calls, only surface `cargo audit`/a future memory-safety bug in tokio
+# itself would have to cover for no reason. Named for exactly what this
+# crate's own source uses: the multi-threaded runtime and `#[tokio::main]`
+# (`rt-multi-thread`, `macros`), `TcpListener` (`net`), the broadcast/mutex/
+# rwlock primitives every room uses (`sync`), intervals and timeouts (`time`),
+# and `ctrl_c` for graceful shutdown (`signal`).
+tokio = { version = "1.53.1", features = [
+    "rt-multi-thread",
+    "macros",
+    "net",
+    "sync",
+    "time",
+    "signal",
+] }
 
 # Web framework
 axum = { version = "0.8.9", features = ["ws", "macros"] }
@@ -64,8 +79,21 @@ base64 = "0.22.1"
 # `test-util` gives tests simulated time, so the housekeeping loops can be
 # asserted to actually run on their 60-second intervals without a test that
 # takes 60 seconds. It is a dev-dependency feature, so the release build never
-# gets the pausable clock.
-tokio = { version = "1.53.1", features = ["full", "test-util"] }
+# gets the pausable clock. Not "full" here either — the same reasoning as the
+# main dependency above, plus `io-util` for `tokio_tungstenite`'s stream
+# handling in the integration tests. No `fs`/`process`: the full suite builds
+# and passes without them, which is the actual check — not an assumption
+# carried over from the release binary's own list.
+tokio = { version = "1.53.1", features = [
+    "rt-multi-thread",
+    "macros",
+    "net",
+    "sync",
+    "time",
+    "signal",
+    "io-util",
+    "test-util",
+] }
 tokio-tungstenite = "0.30.0"
 tower = { version = "0.5.3", features = ["util"] }
 url = "2.5.8"

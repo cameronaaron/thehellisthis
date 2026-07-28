@@ -374,3 +374,63 @@ fn the_page_names_no_font_it_does_not_ship_with() {
          {offenders:?}"
     );
 }
+
+/// CORS is granted to exactly the one route that needs it, not to the whole
+/// router.
+///
+/// `.layer(cors)` applied after every route was registered used to put
+/// `access-control-allow-origin: *` on `/main` and every room page along with
+/// `/health` — the comment above it claimed "the operational endpoints",
+/// which was already an overstatement (`/metrics` got it too, uselessly,
+/// since it needs an `Authorization` header this policy never allowed
+/// through a preflight) and did not mention the room pages at all. Attached
+/// directly to `/health`'s own route instead.
+#[tokio::test]
+async fn cors_is_granted_to_health_alone() {
+    let with_cors = ["/health"];
+    let without_cors = ["/main", "/metrics", "/robots.txt"];
+
+    for path in with_cors {
+        let app = build_router(Arc::new(AppState::new()));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .header("origin", "https://evil.example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response
+                .headers()
+                .get("access-control-allow-origin")
+                .map(|v| v.to_str().unwrap()),
+            Some("*"),
+            "{path} should carry a CORS grant for external monitors"
+        );
+    }
+
+    for path in without_cors {
+        let app = build_router(Arc::new(AppState::new()));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .header("origin", "https://evil.example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            !response
+                .headers()
+                .contains_key("access-control-allow-origin"),
+            "{path} should not grant cross-origin access — a client fetching \
+             it same-origin (the only client this server has) needs no CORS \
+             grant, and one on the room pages is scope nothing here asked for"
+        );
+    }
+}

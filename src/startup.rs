@@ -31,10 +31,17 @@ pub(crate) const DEFAULT_PORT: u16 = 3000;
 /// Builds the router. Separate from [`main`] so tests can exercise the real
 /// route table rather than a hand-assembled approximation of it.
 pub(crate) fn build_router(state: Arc<AppState>) -> Router {
-    // The client is same-origin, so CORS is needed only so the operational
-    // endpoints can be scraped. It is restricted to GET and grants no
-    // credentials — it used to allow every method from every origin, which is
-    // reach nothing here ever needed.
+    // The client is same-origin and needs no CORS grant at all. `/health` is
+    // the one route an external monitor might poll cross-origin, so it is the
+    // only route this applies to — attached directly to that route's
+    // `MethodRouter` rather than the whole router with `.layer()`, which used
+    // to put `access-control-allow-origin: *` on every route including `/main`
+    // and every room page, far past what the comment here claimed it granted.
+    // `/metrics` does not get it either: it requires an `Authorization` header
+    // this policy does not allow through a CORS preflight, so granting it here
+    // would not have made cross-origin scraping of `/metrics` work anyway —
+    // real scrapers (Prometheus, curl) are not browsers and CORS is a
+    // browser-enforced restriction that does not apply to them regardless.
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods([Method::GET])
@@ -44,13 +51,12 @@ pub(crate) fn build_router(state: Arc<AppState>) -> Router {
         .route("/", get(root_redirect))
         .route("/main", get(main_room_handler))
         .route("/app.js", get(app_js_handler))
-        .route("/health", get(health_handler))
+        .route("/health", get(health_handler).layer(cors))
         .route("/metrics", get(metrics_handler))
         .route("/robots.txt", get(robots_txt_handler))
         .route("/ws/{room}", get(ws_handler))
         // Last: every other single segment is a room name.
-        .route("/{room}", get(room_handler))
-        .layer(cors);
+        .route("/{room}", get(room_handler));
 
     for layer in security_header_layers() {
         router = router.layer(layer);
