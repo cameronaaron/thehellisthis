@@ -260,8 +260,10 @@ reason.
 
 Per-message work must be O(1). Work proportional to history length
 (`retain_newest`, `cleanup_messages`, `recompute_memory`) runs on the join path
-or the housekeeping loop, never per message. `HISTORY_TRIM_SLACK` exists purely
-so trimming cannot land on the message path.
+or the housekeeping loop, never per message — that placement is the whole
+guarantee. A `HISTORY_TRIM_SLACK` used to sit in front of the join-path trim as
+a second line of defence; it was dead, because the call after it trimmed
+unconditionally. See ENGINEERING-STANDARDS.md §1.5.
 
 ### 7. `panic = "abort"` is deliberately not set
 

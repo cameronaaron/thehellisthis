@@ -166,7 +166,7 @@ async fn test_metrics_handler_with_users() {
                 last_typing_event: None,
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
-                last_sanitized_message: None,
+                last_message_text: None,
                 last_reaction_event: None,
             },
         );
@@ -300,7 +300,7 @@ async fn test_health_handler_response() {
                 last_typing_event: None,
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
-                last_sanitized_message: None,
+                last_message_text: None,
                 last_reaction_event: None,
             },
         );

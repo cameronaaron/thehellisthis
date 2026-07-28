@@ -1065,7 +1065,7 @@ async fn test_app_state_shutdown() {
                 last_typing_event: None,
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
-                last_sanitized_message: None,
+                last_message_text: None,
                 last_reaction_event: None,
             },
         );
@@ -1169,32 +1169,6 @@ async fn test_room_handler_too_long_name() {
 }
 
 #[tokio::test]
-async fn test_room_state_preserve_messages() {
-    let mut room_state = create_room();
-    let memory_tracker = MemoryTracker::new();
-
-    // Add messages
-    for i in 0..10 {
-        let msg = OutgoingMessage {
-            message_id: Uuid::new_v4(),
-            user_id: "user1".to_string(),
-            animal_name: "Tiger".to_string(),
-            text: format!("Message {}", i),
-            timestamp: "1234567890".to_string(),
-            reply_to: None,
-            attachment: None,
-        };
-        room_state.add_message(msg, &memory_tracker);
-    }
-
-    assert_eq!(room_state.chat_history.len(), 10);
-
-    // Preserve messages should keep them
-    room_state.preserve_messages(&memory_tracker);
-    assert_eq!(room_state.chat_history.len(), 10);
-}
-
-#[tokio::test]
 async fn test_health_handler_with_rooms() {
     let app_state = Arc::new(AppState::new());
 
@@ -1291,7 +1265,7 @@ async fn test_is_user_allowed_existing_user() {
             last_typing_event: None,
             last_read_receipt_event: None,
             rate_limiter: RateLimiter::new(),
-            last_sanitized_message: None,
+            last_message_text: None,
             last_reaction_event: None,
         },
     );
@@ -1359,7 +1333,7 @@ async fn test_room_state_user_removal_returns_animal() {
             last_typing_event: None,
             last_read_receipt_event: None,
             rate_limiter: RateLimiter::new(),
-            last_sanitized_message: None,
+            last_message_text: None,
             last_reaction_event: None,
         },
     );
@@ -1790,7 +1764,7 @@ async fn test_assign_animal_with_all_animals_in_use() {
                 last_typing_event: None,
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
-                last_sanitized_message: None,
+                last_message_text: None,
                 last_reaction_event: None,
             },
         );
@@ -1853,7 +1827,7 @@ async fn test_cleanup_rooms_keeps_rooms_with_users() {
                 last_typing_event: None,
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
-                last_sanitized_message: None,
+                last_message_text: None,
                 last_reaction_event: None,
             },
         );
@@ -2049,7 +2023,7 @@ async fn test_room_with_active_users_never_deleted() {
                 last_typing_event: None,
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
-                last_sanitized_message: None,
+                last_message_text: None,
                 last_reaction_event: None,
             },
         );
@@ -2186,7 +2160,7 @@ async fn test_room_cleanup_connected_users_prevent_deletion() {
                 last_typing_event: None,
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
-                last_sanitized_message: None,
+                last_message_text: None,
                 last_reaction_event: None,
             },
         );
@@ -2228,7 +2202,7 @@ async fn test_room_cleanup_multiple_users_one_connected_blocks_deletion() {
                 last_typing_event: None,
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
-                last_sanitized_message: None,
+                last_message_text: None,
                 last_reaction_event: None,
             },
         );
@@ -2249,7 +2223,7 @@ async fn test_room_cleanup_multiple_users_one_connected_blocks_deletion() {
                 last_typing_event: None,
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
-                last_sanitized_message: None,
+                last_message_text: None,
                 last_reaction_event: None,
             },
         );
@@ -2408,7 +2382,7 @@ async fn test_user_removed_during_message_processing() {
                 last_typing_event: None,
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
-                last_sanitized_message: None,
+                last_message_text: None,
                 last_reaction_event: None,
             },
         );
@@ -2743,7 +2717,7 @@ async fn test_room_max_users() {
                     last_typing_event: None,
                     last_read_receipt_event: None,
                     rate_limiter: RateLimiter::new(),
-                    last_sanitized_message: None,
+                    last_message_text: None,
                     last_reaction_event: None,
                 },
             );
@@ -2811,7 +2785,7 @@ async fn test_user_still_active() {
         last_typing_event: None,
         last_read_receipt_event: None,
         rate_limiter: RateLimiter::new(),
-        last_sanitized_message: None,
+        last_message_text: None,
         last_reaction_event: None,
     };
 
@@ -3019,7 +2993,7 @@ async fn test_app_state_shutdown_notifies_users() {
                 last_typing_event: None,
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
-                last_sanitized_message: None,
+                last_message_text: None,
                 last_reaction_event: None,
             },
         );
@@ -3211,7 +3185,7 @@ async fn assign_animal_never_repeats_a_connected_name() {
                 last_typing_event: None,
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
-                last_sanitized_message: None,
+                last_message_text: None,
                 last_reaction_event: None,
             },
         );
@@ -3293,7 +3267,7 @@ async fn assign_animal_skips_names_already_in_use() {
             last_typing_event: None,
             last_read_receipt_event: None,
             rate_limiter: RateLimiter::new(),
-            last_sanitized_message: None,
+            last_message_text: None,
             last_reaction_event: None,
         },
     );
@@ -3418,7 +3392,7 @@ async fn a_full_room_refuses_and_releases_its_reservations() {
                     last_typing_event: None,
                     last_read_receipt_event: None,
                     rate_limiter: RateLimiter::new(),
-                    last_sanitized_message: None,
+                    last_message_text: None,
                     last_reaction_event: None,
                 },
             );
@@ -4213,44 +4187,6 @@ async fn the_process_memory_ceiling_trims_only_once_it_is_exceeded() {
             "at {bytes} bytes against a ceiling of {MAX_TOTAL_ROOMS_MEMORY}, \
              trimming should be {expect_trim}"
         );
-    }
-}
-
-/// The trim slack is what keeps trimming off the message path.
-///
-/// `preserve_messages` fires at `MAX_MESSAGES_PER_ROOM + HISTORY_TRIM_SLACK`,
-/// and both halves of that expression survived mutation: `>` could become `>=`,
-/// and `+` could become `-`. The second is the expensive one — trimming a
-/// hundred messages *below* the cap means a linear move of the whole history on
-/// almost every message, which is exactly the per-message cost §1.1 forbids and
-/// nothing would have failed.
-#[test]
-fn history_is_trimmed_only_once_it_has_drifted_a_full_slack_past_the_cap() {
-    let tracker = MemoryTracker::new();
-
-    for (extra, expect_trim) in [(HISTORY_TRIM_SLACK, false), (HISTORY_TRIM_SLACK + 1, true)] {
-        let mut room = create_room();
-        for i in 0..(MAX_MESSAGES_PER_ROOM + extra) {
-            message_in(&mut room, &tracker, &format!("message {i}"));
-        }
-        let before = room.chat_history.len();
-
-        room.preserve_messages(&tracker);
-
-        if expect_trim {
-            assert_eq!(
-                room.chat_history.len(),
-                MAX_MESSAGES_PER_ROOM,
-                "one message past the slack must trim back to the cap"
-            );
-        } else {
-            assert_eq!(
-                room.chat_history.len(),
-                before,
-                "at exactly the cap plus the slack there is nothing to do — \
-                 trimming here would put a linear pass on the message path"
-            );
-        }
     }
 }
 

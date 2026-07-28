@@ -27,10 +27,9 @@ use uuid::Uuid;
 
 use crate::config::{
     DUPLICATE_MESSAGE_WINDOW, HEARTBEAT_INTERVAL, HEARTBEAT_TIMEOUT, IDLE_CLOSE_CODE,
-    MAX_CONCURRENT_CONNECTIONS_PER_IP, MAX_CONCURRENT_USERS, MAX_MESSAGE_LEN,
-    MAX_MESSAGES_PER_ROOM, MAX_PAYLOAD_SIZE, MAX_ROOM_NAME_LEN, MAX_USERS_PER_ROOM,
-    REACTION_MIN_INTERVAL, READ_RECEIPT_MIN_INTERVAL, TYPING_EVENT_MIN_INTERVAL,
-    USER_IDLE_MESSAGE_TIMEOUT,
+    MAX_CONCURRENT_CONNECTIONS_PER_IP, MAX_CONCURRENT_USERS, MAX_MESSAGE_LEN, MAX_PAYLOAD_SIZE,
+    MAX_ROOM_NAME_LEN, MAX_USERS_PER_ROOM, REACTION_MIN_INTERVAL, READ_RECEIPT_MIN_INTERVAL,
+    TYPING_EVENT_MIN_INTERVAL, USER_IDLE_MESSAGE_TIMEOUT,
 };
 use crate::emoji::is_reaction_emoji;
 use crate::error::ChatError;
@@ -247,14 +246,15 @@ pub(crate) async fn admit_user(
     });
 
     // Bound the history a joining user is about to be sent.
-    if room_state.chat_history.is_empty()
-        || room_state.chat_history.len() > MAX_MESSAGES_PER_ROOM * 2
-    {
-        room_state.preserve_messages(&state.memory_tracker);
-    }
-    if room_state.chat_history.len() > MAX_MESSAGES_PER_ROOM {
-        room_state.trim_to_max_messages(&state.memory_tracker);
-    }
+    //
+    // One call, not three. There used to be a `preserve_messages` behind two
+    // conditions and then this, and every mutation of those conditions survived
+    // — `||` for `&&`, `*` for `+`, four comparisons — because the block could
+    // not change anything: `preserve_messages` trims to `MAX_MESSAGES_PER_ROOM`
+    // and so does this, so whatever the first pass did the second reached the
+    // same length. Six unkillable mutants were six spellings of dead code
+    // (§0.2, §6.6d), and `trim_to_max_messages` makes its own comparison.
+    room_state.trim_to_max_messages(&state.memory_tracker);
 
     // A cookie is a *claim*, not a fact. `HttpOnly` keeps a page's script away
     // from it; it does nothing about the person driving the browser, who can
@@ -352,7 +352,7 @@ fn insert_user(
             last_read_receipt_event: None,
             last_reaction_event: None,
             rate_limiter: RateLimiter::new(),
-            last_sanitized_message: None,
+            last_message_text: None,
         },
     );
 }
@@ -754,6 +754,26 @@ pub async fn apply_client_event(
     animal_name: &str,
     event: ClientEvent,
 ) {
+    apply_client_event_at(state, room, user_id, animal_name, event, Instant::now()).await;
+}
+
+/// The same, with the instant supplied.
+///
+/// Six throttles here compare against `now`, and every one of them survived
+/// mutation as `<=`: the clock was read *inside* this function, so a test could
+/// set a user's last event to exactly one interval ago and the reading would
+/// have moved past it by the time the comparison ran. The boundary was not
+/// unimportant, it was unreachable. Taking the instant is the same edge
+/// injection `cleanup_rooms_at` and `cleanup_stale_at` use, and it needs no
+/// injectable clock (§9.4, §6.6f).
+pub async fn apply_client_event_at(
+    state: &Arc<AppState>,
+    room: &str,
+    user_id: &str,
+    animal_name: &str,
+    event: ClientEvent,
+    now: Instant,
+) {
     let mut rooms = state.rooms.write().await;
 
     let Some(room_state) = rooms.get_mut(room) else {
@@ -765,7 +785,6 @@ pub async fn apply_client_event(
         return;
     };
 
-    let now = Instant::now();
     user.last_active = now;
 
     // A connection whose heartbeat has already lapsed is treated as gone; its
@@ -815,7 +834,7 @@ pub async fn apply_client_event(
             // caption, and picking two photographs is two decisions; treating
             // the second as a stutter would silently drop it.
             if attachment.is_none()
-                && let Some((last_text, last_time)) = &user.last_sanitized_message
+                && let Some((last_text, last_time)) = &user.last_message_text
                 && text == *last_text
                 && now.duration_since(*last_time) < DUPLICATE_MESSAGE_WINDOW
             {
@@ -834,7 +853,7 @@ pub async fn apply_client_event(
                 return;
             }
 
-            user.last_sanitized_message = Some((text.clone(), now));
+            user.last_message_text = Some((text.clone(), now));
 
             if text.len() > MAX_MESSAGE_LEN {
                 warn!(user_id = %user_id, len = text.len(), "message too long");

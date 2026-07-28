@@ -25,7 +25,7 @@ async fn test_user_data_initial_state() {
         last_typing_event: None,
         last_read_receipt_event: None,
         rate_limiter: RateLimiter::new(),
-        last_sanitized_message: None,
+        last_message_text: None,
         last_reaction_event: None,
     };
 
@@ -108,7 +108,7 @@ async fn test_user_count_with_mixed_states() {
         last_typing_event: None,
         last_read_receipt_event: None,
         rate_limiter: RateLimiter::new(),
-        last_sanitized_message: None,
+        last_message_text: None,
         last_reaction_event: None,
     };
     room.users.insert("user1".to_string(), connected_user);
@@ -125,7 +125,7 @@ async fn test_user_count_with_mixed_states() {
         last_typing_event: None,
         last_read_receipt_event: None,
         rate_limiter: RateLimiter::new(),
-        last_sanitized_message: None,
+        last_message_text: None,
         last_reaction_event: None,
     };
     room.users.insert("user2".to_string(), disconnected_user);
@@ -159,7 +159,7 @@ async fn test_stale_user_detection() {
         last_typing_event: None,
         last_read_receipt_event: None,
         rate_limiter: RateLimiter::new(),
-        last_sanitized_message: None,
+        last_message_text: None,
         last_reaction_event: None,
     };
 
@@ -192,7 +192,7 @@ async fn test_fresh_user_not_stale() {
         last_typing_event: None,
         last_read_receipt_event: None,
         rate_limiter: RateLimiter::new(),
-        last_sanitized_message: None,
+        last_message_text: None,
         last_reaction_event: None,
     };
 
@@ -229,7 +229,7 @@ async fn test_broadcast_user_count_sends_event() {
             last_typing_event: None,
             last_read_receipt_event: None,
             rate_limiter: RateLimiter::new(),
-            last_sanitized_message: None,
+            last_message_text: None,
             last_reaction_event: None,
         },
     );
@@ -250,7 +250,7 @@ async fn test_broadcast_user_count_sends_event() {
             last_typing_event: None,
             last_read_receipt_event: None,
             rate_limiter: RateLimiter::new(),
-            last_sanitized_message: None,
+            last_message_text: None,
             last_reaction_event: None,
         },
     );
@@ -1593,7 +1593,7 @@ async fn test_heartbeat_timeout_detection() {
         last_typing_event: None,
         last_read_receipt_event: None,
         rate_limiter: RateLimiter::new(),
-        last_sanitized_message: None,
+        last_message_text: None,
         last_reaction_event: None,
     };
 
@@ -1612,7 +1612,7 @@ async fn test_heartbeat_timeout_detection() {
         last_typing_event: None,
         last_read_receipt_event: None,
         rate_limiter: RateLimiter::new(),
-        last_sanitized_message: None,
+        last_message_text: None,
         last_reaction_event: None,
     };
 
@@ -1656,7 +1656,7 @@ async fn test_room_cleanup_stale_users() {
             last_typing_event: None,
             last_read_receipt_event: None,
             rate_limiter: RateLimiter::new(),
-            last_sanitized_message: None,
+            last_message_text: None,
             last_reaction_event: None,
         },
     );
@@ -1796,7 +1796,7 @@ async fn test_assign_animal_reuses_disconnected_animal() {
             last_typing_event: None,
             last_read_receipt_event: None,
             rate_limiter: RateLimiter::new(),
-            last_sanitized_message: None,
+            last_message_text: None,
             last_reaction_event: None,
         },
     );
@@ -1836,7 +1836,7 @@ async fn test_graceful_shutdown_broadcasts_shutdown() {
                 last_typing_event: None,
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
-                last_sanitized_message: None,
+                last_message_text: None,
                 last_reaction_event: None,
             },
         );
@@ -1908,7 +1908,7 @@ async fn test_user_data_typing_state_default() {
         last_typing_event: None,
         last_read_receipt_event: None,
         rate_limiter: RateLimiter::new(),
-        last_sanitized_message: None,
+        last_message_text: None,
         last_reaction_event: None,
     };
 
@@ -1944,7 +1944,7 @@ async fn test_room_cleanup_disconnected_users_dont_block_deletion() {
                 last_typing_event: None,
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
-                last_sanitized_message: None,
+                last_message_text: None,
                 last_reaction_event: None,
             },
         );
@@ -2024,7 +2024,7 @@ fn test_user_idle_for_too_long() {
         last_typing_event: None,
         last_read_receipt_event: None,
         rate_limiter: RateLimiter::new(),
-        last_sanitized_message: None,
+        last_message_text: None,
         last_reaction_event: None,
     };
 
@@ -2124,7 +2124,7 @@ async fn test_message_rejected_after_heartbeat_timeout() {
                 last_typing_event: None,
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
-                last_sanitized_message: None,
+                last_message_text: None,
                 last_reaction_event: None,
             },
         );
@@ -2176,7 +2176,7 @@ async fn test_typing_event_debounce_interval() {
                 last_typing_event: Some(recent_time), // Just typed
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
-                last_sanitized_message: None,
+                last_message_text: None,
                 last_reaction_event: None,
             },
         );
@@ -2228,7 +2228,7 @@ async fn test_read_receipt_debounce_interval() {
                 last_typing_event: None,
                 last_read_receipt_event: Some(recent_time), // Just sent receipt
                 rate_limiter: RateLimiter::new(),
-                last_sanitized_message: None,
+                last_message_text: None,
                 last_reaction_event: None,
             },
         );
@@ -2357,7 +2357,7 @@ async fn test_broadcast_user_count_with_disconnected_users() {
                 last_typing_event: None,
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
-                last_sanitized_message: None,
+                last_message_text: None,
                 last_reaction_event: None,
             },
         );
@@ -2378,7 +2378,7 @@ async fn test_broadcast_user_count_with_disconnected_users() {
                 last_typing_event: None,
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
-                last_sanitized_message: None,
+                last_message_text: None,
                 last_reaction_event: None,
             },
         );
@@ -2802,7 +2802,7 @@ async fn test_room_state_broadcast_user_count() {
             last_typing_event: None,
             last_read_receipt_event: None,
             rate_limiter: RateLimiter::new(),
-            last_sanitized_message: None,
+            last_message_text: None,
             last_reaction_event: None,
         },
     );
@@ -3042,7 +3042,7 @@ async fn teardown_of_an_already_disconnected_user_is_a_no_op() {
                 last_typing_event: None,
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
-                last_sanitized_message: None,
+                last_message_text: None,
                 last_reaction_event: None,
             },
         );
@@ -4450,4 +4450,168 @@ async fn roster_requests_are_throttled() {
         answered, 1,
         "five requests in a tick is one person's finger, not five questions"
     );
+}
+
+/// Every per-event throttle admits the event that lands exactly on its interval.
+///
+/// Six comparisons in `apply_client_event` survived mutation as `<=`, all for
+/// the same reason: the clock was read inside the function, so a test could set
+/// a user's last event to exactly one interval ago and the reading had already
+/// moved past it by the time the comparison ran (§6.6f). With the instant
+/// supplied, the boundary is a case.
+///
+/// The answer matters in both directions. A throttle that refuses the event
+/// exactly at its interval is a throttle slightly tighter than the number it
+/// advertises, and these numbers are what the client paces itself against —
+/// typing indicators at 200 ms, reactions at 100 ms. `is_typing` stopping one
+/// frame short is a "still typing…" that flickers off mid-sentence.
+#[tokio::test]
+async fn a_throttled_event_exactly_on_its_interval_is_admitted() {
+    let now = Instant::now();
+
+    // (what the user last did, how long ago, the event, what the room sees)
+    // Built per iteration rather than cloned: `ClientEvent` is a wire type and
+    // deriving `Clone` on it purely for a test is production surface a test
+    // asked for (§8).
+    type ThrottleCase = (&'static str, Duration, fn() -> ClientEvent);
+    let cases: Vec<ThrottleCase> = vec![
+        ("typing", TYPING_EVENT_MIN_INTERVAL, || {
+            ClientEvent::Typing { is_typing: true }
+        }),
+        ("read receipt", READ_RECEIPT_MIN_INTERVAL, || {
+            ClientEvent::ReadReceipt {
+                message_id: Uuid::new_v4().to_string(),
+            }
+        }),
+        ("roster", REACTION_MIN_INTERVAL, || {
+            ClientEvent::RequestRoster
+        }),
+    ];
+
+    for (label, interval, event) in cases {
+        for (gap, admitted) in [
+            (interval, true),
+            (interval - Duration::from_nanos(1), false),
+        ] {
+            let state = Arc::new(AppState::new());
+            {
+                let mut rooms = state.rooms.write().await;
+                let mut room = create_room();
+                let mut user = connected_user("u1", "otter", "c1", now);
+                user.last_typing_event = Some(now - gap);
+                user.last_read_receipt_event = Some(now - gap);
+                user.last_reaction_event = Some(now - gap);
+                room.users.insert("u1".to_string(), user);
+                rooms.insert("r".to_string(), room);
+            }
+
+            let mut rx = state.rooms.read().await["r"].sender.subscribe();
+            apply_client_event_at(&state, "r", "u1", "otter", event(), now).await;
+
+            assert_eq!(
+                rx.try_recv().is_ok(),
+                admitted,
+                "a {label} event {gap:?} after the last one, against an interval \
+                 of {interval:?}, should be admitted: {admitted}"
+            );
+        }
+    }
+}
+
+/// A repeat of the same text is refused only while it is still a double-send.
+///
+/// `DUPLICATE_MESSAGE_WINDOW` catches the double-click and the retry, not the
+/// person who means it. `<` mutating to `<=` survived because the window's edge
+/// was unreachable — and the edge is exactly where "they sent it twice by
+/// accident" stops being true.
+#[tokio::test]
+async fn a_repeated_message_is_refused_only_inside_the_duplicate_window() {
+    let now = Instant::now();
+
+    for (gap, delivered) in [
+        (DUPLICATE_MESSAGE_WINDOW, true),
+        (DUPLICATE_MESSAGE_WINDOW - Duration::from_nanos(1), false),
+    ] {
+        let state = Arc::new(AppState::new());
+        {
+            let mut rooms = state.rooms.write().await;
+            let mut room = create_room();
+            let mut user = connected_user("u1", "otter", "c1", now);
+            user.last_message_text = Some(("hello".to_string(), now - gap));
+            room.users.insert("u1".to_string(), user);
+            rooms.insert("r".to_string(), room);
+        }
+
+        let mut rx = state.rooms.read().await["r"].sender.subscribe();
+        apply_client_event_at(
+            &state,
+            "r",
+            "u1",
+            "otter",
+            ClientEvent::Message {
+                text: "hello".to_string(),
+                reply_to: None,
+                attachment: None,
+            },
+            now,
+        )
+        .await;
+
+        assert_eq!(
+            rx.try_recv().is_ok(),
+            delivered,
+            "the same text {gap:?} later, against a window of \
+             {DUPLICATE_MESSAGE_WINDOW:?}, should be delivered: {delivered}"
+        );
+    }
+}
+
+/// An event arriving exactly at the heartbeat timeout is still this connection's.
+///
+/// A lapsed heartbeat means the socket is being torn down, and the event is
+/// dropped rather than raced against teardown. `>` mutating to `>=` survived
+/// unnoticed: at exactly the timeout the connection has not yet lapsed, and
+/// dropping its message would lose a message from a live user for being one
+/// instant slow.
+#[tokio::test]
+async fn an_event_exactly_at_the_heartbeat_timeout_is_still_delivered() {
+    let now = Instant::now();
+
+    for (age, delivered) in [
+        (HEARTBEAT_TIMEOUT, true),
+        (HEARTBEAT_TIMEOUT + Duration::from_nanos(1), false),
+    ] {
+        let state = Arc::new(AppState::new());
+        {
+            let mut rooms = state.rooms.write().await;
+            let mut room = create_room();
+            room.users.insert(
+                "u1".to_string(),
+                connected_user("u1", "otter", "c1", now - age),
+            );
+            rooms.insert("r".to_string(), room);
+        }
+
+        let mut rx = state.rooms.read().await["r"].sender.subscribe();
+        apply_client_event_at(
+            &state,
+            "r",
+            "u1",
+            "otter",
+            ClientEvent::Message {
+                text: "still here".to_string(),
+                reply_to: None,
+                attachment: None,
+            },
+            now,
+        )
+        .await;
+
+        assert_eq!(
+            rx.try_recv().is_ok(),
+            delivered,
+            "a heartbeat {age:?} old against a timeout of {HEARTBEAT_TIMEOUT:?} \
+             should still be this connection's: {delivered}"
+        );
+    }
 }

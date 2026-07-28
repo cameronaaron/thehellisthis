@@ -169,37 +169,6 @@ async fn test_message_memory_tracking() {
 }
 
 #[tokio::test]
-async fn test_preserve_messages_trims_and_updates_tracker() {
-    let mut room = create_room();
-    let tracker = MemoryTracker::new();
-
-    // Add messages beyond MAX_MESSAGES_PER_ROOM
-    for _i in 0..(MAX_MESSAGES_PER_ROOM + 150) {
-        let msg = OutgoingMessage {
-            message_id: uuid::Uuid::new_v4(),
-            user_id: "user1".to_string(),
-            animal_name: "Lion".to_string(),
-            text: "<p>Test</p>".to_string(),
-            timestamp: "1000".to_string(),
-            reply_to: None,
-            attachment: None,
-        };
-        let msg_size = msg.estimate_size();
-        tracker.add_bytes(msg_size);
-        room.total_memory_bytes
-            .fetch_add(msg_size, Ordering::SeqCst);
-        room.chat_history.push(Arc::new(msg));
-    }
-
-    let before_tracker = tracker.total_bytes.load(Ordering::Relaxed);
-    room.preserve_messages(&tracker);
-
-    assert!(room.chat_history.len() <= MAX_MESSAGES_PER_ROOM);
-    let after_tracker = tracker.total_bytes.load(Ordering::Relaxed);
-    assert!(after_tracker < before_tracker);
-}
-
-#[tokio::test]
 async fn test_trim_to_max_messages_limits_history() {
     let mut room = create_room();
     let tracker = MemoryTracker::new();
@@ -287,7 +256,7 @@ async fn test_room_capacity_tracking() {
             last_typing_event: None,
             last_read_receipt_event: None,
             rate_limiter: RateLimiter::new(),
-            last_sanitized_message: None,
+            last_message_text: None,
             last_reaction_event: None,
         };
         room.users.insert(format!("user-{}", i), user);
@@ -319,7 +288,7 @@ async fn test_socket_message_rate_limiting_per_user() {
         last_typing_event: None,
         last_read_receipt_event: None,
         rate_limiter: RateLimiter::new(),
-        last_sanitized_message: None,
+        last_message_text: None,
         last_reaction_event: None,
     };
 
@@ -1089,7 +1058,7 @@ async fn test_user_data_rate_limiter_integration() {
         last_typing_event: None,
         last_read_receipt_event: None,
         rate_limiter: RateLimiter::new(),
-        last_sanitized_message: None,
+        last_message_text: None,
         last_reaction_event: None,
     };
 
@@ -1206,7 +1175,7 @@ async fn test_is_user_allowed_at_capacity() {
                 last_typing_event: None,
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
-                last_sanitized_message: None,
+                last_message_text: None,
                 last_reaction_event: None,
             },
         );
@@ -1239,7 +1208,7 @@ async fn test_is_user_allowed_new_user_under_capacity() {
                 last_typing_event: None,
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
-                last_sanitized_message: None,
+                last_message_text: None,
                 last_reaction_event: None,
             },
         );
@@ -1511,7 +1480,7 @@ async fn test_rate_limiter_existing_user_rate_limited() {
             last_typing_event: None,
             last_read_receipt_event: None,
             rate_limiter,
-            last_sanitized_message: None,
+            last_message_text: None,
             last_reaction_event: None,
         },
     );
@@ -1544,7 +1513,7 @@ async fn test_room_state_user_count_accurate() {
                 last_typing_event: None,
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
-                last_sanitized_message: None,
+                last_message_text: None,
                 last_reaction_event: None,
             },
         );
@@ -1565,7 +1534,7 @@ async fn test_room_state_user_count_accurate() {
                 last_typing_event: None,
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
-                last_sanitized_message: None,
+                last_message_text: None,
                 last_reaction_event: None,
             },
         );
@@ -1603,12 +1572,11 @@ async fn test_memory_pressure_message_pruning() {
     let count_before = room.chat_history.len();
     assert!(count_before > 0, "Should have messages");
 
-    // Trigger preservation which may trim
-    room.preserve_messages(&tracker);
+    room.trim_to_max_messages(&tracker);
 
     assert!(
         room.chat_history.len() <= MAX_MESSAGES_PER_ROOM,
-        "After preserve, should not exceed max messages"
+        "After trimming, should not exceed max messages"
     );
 }
 
@@ -2400,7 +2368,7 @@ async fn test_user_idle_past_threshold() {
         last_typing_event: None,
         last_read_receipt_event: None,
         rate_limiter: RateLimiter::new(),
-        last_sanitized_message: None,
+        last_message_text: None,
         last_reaction_event: None,
     };
 
@@ -2821,7 +2789,7 @@ async fn cleanup_reclaims_abandoned_users_and_recycles_their_name() {
                 last_typing_event: None,
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
-                last_sanitized_message: None,
+                last_message_text: None,
                 last_reaction_event: None,
             },
         );
@@ -2930,7 +2898,7 @@ async fn teardown_ignores_a_superseded_connection() {
                 last_typing_event: None,
                 last_read_receipt_event: None,
                 rate_limiter: RateLimiter::new(),
-                last_sanitized_message: None,
+                last_message_text: None,
                 last_reaction_event: None,
             },
         );

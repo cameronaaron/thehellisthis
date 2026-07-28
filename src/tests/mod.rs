@@ -14,15 +14,15 @@ use crate::limits::{ConnectionPool, MemoryTracker, RateLimiter, ResourceMonitor,
 use crate::protocol::{
     Attachment, ClientEvent, OutgoingEvent, OutgoingMessage, ReplyInfo, SystemEvent,
 };
-use crate::room::{
-    ConnectionState, HISTORY_TRIM_SLACK, RoomState, UserData, create_room, user_idle_for_too_long,
-};
+use crate::room::{ConnectionState, RoomState, UserData, create_room, user_idle_for_too_long};
 use crate::routes::{
     fnv1a, health_handler, main_room_handler, metrics_handler, robots_txt_handler, room_handler,
     root_redirect,
 };
 use crate::security::is_allowed_origin;
-use crate::session::{admit_user, apply_client_event, cleanup_user, ws_handler};
+use crate::session::{
+    admit_user, apply_client_event, apply_client_event_at, cleanup_user, ws_handler,
+};
 use crate::startup::{
     DEFAULT_PORT, build_router, generate_random_room_name, init_tracing, resolve_port, serve,
     spawn_housekeeping,
@@ -490,7 +490,7 @@ fn connected_user(
         last_typing_event: None,
         last_read_receipt_event: None,
         rate_limiter: RateLimiter::new(),
-        last_sanitized_message: None,
+        last_message_text: None,
         last_reaction_event: None,
     }
 }

@@ -28,10 +28,6 @@ use crate::protocol::{Attachment, OutgoingEvent, OutgoingMessage, Reaction, Syst
 /// off the channel rather than allowed to grow the server's memory.
 const BROADCAST_CHANNEL_CAPACITY: usize = 1000;
 
-/// History kept beyond [`MAX_MESSAGES_PER_ROOM`] before a trim is worth the
-/// lock time. Trimming on every message would be O(n) per message.
-pub(crate) const HISTORY_TRIM_SLACK: usize = 100;
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConnectionState {
     Connected {
@@ -56,7 +52,15 @@ pub struct UserData {
     pub last_read_receipt_event: Option<Instant>,
     pub last_reaction_event: Option<Instant>,
     pub rate_limiter: RateLimiter,
-    pub last_sanitized_message: Option<(String, Instant)>,
+    /// The last text this user sent, as it arrived, and when.
+    ///
+    /// Used only to recognise a double-send. It was called
+    /// `last_sanitized_message`, which it never held: the comparison is against
+    /// the raw client text, before rendering. A name that claims a string has
+    /// been through the sanitiser is the one name it must not have on a server
+    /// whose job is turning user Markdown into HTML — the next person to reach
+    /// for it would have had no reason to sanitise it again (§8).
+    pub last_message_text: Option<(String, Instant)>,
 }
 
 impl UserData {
@@ -537,16 +541,6 @@ impl RoomState {
             // counting against the room's picture budget.
             self.recompute_memory();
             memory_tracker.remove_bytes(removed_bytes);
-        }
-    }
-
-    /// Trims history once it has drifted [`HISTORY_TRIM_SLACK`] past the cap.
-    ///
-    /// The slack is what keeps this off the message path: trimming exactly at
-    /// the cap would move the whole history on every single message.
-    pub fn preserve_messages(&mut self, memory_tracker: &MemoryTracker) {
-        if self.chat_history.len() > MAX_MESSAGES_PER_ROOM + HISTORY_TRIM_SLACK {
-            self.retain_newest(MAX_MESSAGES_PER_ROOM, memory_tracker);
         }
     }
 

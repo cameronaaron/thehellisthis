@@ -71,7 +71,7 @@ concrete, executable version of "obsessive engineering quality." Concretely:
 | Constraint #12 Frontend/backend agreement | `client_attachment_ceiling_matches_the_server`, `client_reaction_roster_matches_the_server`, `the_node_types_match_the_node_ci_installs` |
 | §5.12 The log is an interface | `every_admission_says_what_became_of_the_identity`, `a_departure_is_logged_with_the_room_it_leaves`, `a_refused_connection_says_which_ceiling_refused_it`, `a_full_room_says_so_when_it_refuses`, `a_normal_session_reads_as_one_arrival_and_one_departure` |
 | Operational log is a contract | `housekeeping_reports_a_trim_only_when_it_trims`, `housekeeping_reports_the_rooms_it_deletes` |
-| §6.6 Boundaries a mutant can move | `the_script_version_is_the_fnv1a_hash_it_claims_to_be`, `a_room_name_at_either_length_boundary_is_accepted`, `an_existing_room_is_served_even_when_the_server_is_at_its_room_cap`, `housekeeping_leaves_rooms_alone_until_the_gc_interval_has_elapsed`, `the_process_memory_ceiling_trims_only_once_it_is_exceeded`, `a_quoted_reply_is_cut_at_the_limit_and_never_mid_character`, `an_attachment_exactly_at_its_ceilings_is_accepted`, `history_is_trimmed_only_once_it_has_drifted_a_full_slack_past_the_cap`, `fading_pictures_stops_as_soon_as_the_room_is_back_under_its_budget`, `a_room_is_cleaned_only_once_it_is_past_the_soft_memory_limit`, `an_entry_exactly_at_its_retention_age_is_swept` |
+| §6.6 Boundaries a mutant can move | `the_script_version_is_the_fnv1a_hash_it_claims_to_be`, `a_room_name_at_either_length_boundary_is_accepted`, `an_existing_room_is_served_even_when_the_server_is_at_its_room_cap`, `housekeeping_leaves_rooms_alone_until_the_gc_interval_has_elapsed`, `the_process_memory_ceiling_trims_only_once_it_is_exceeded`, `a_quoted_reply_is_cut_at_the_limit_and_never_mid_character`, `an_attachment_exactly_at_its_ceilings_is_accepted`, `fading_pictures_stops_as_soon_as_the_room_is_back_under_its_budget`, `a_room_is_cleaned_only_once_it_is_past_the_soft_memory_limit`, `an_entry_exactly_at_its_retention_age_is_swept` |
 | Housekeeping boundaries | `the_housekeeping_boundaries_are_exact`, `the_empty_room_grace_period_is_exact`, `deleting_a_room_returns_its_bytes_to_the_process_budget`, `deleting_an_empty_room_reclaims_nothing` |
 | Meta: coverage exemptions | `coverage_exemptions_are_justified_and_current` |
 | Meta: standards are enforced | `every_test_the_standards_name_exists`, `every_parked_decision_records_how_to_reopen_it`, `every_contract_test_is_documented` |
@@ -313,12 +313,21 @@ real number of DOM nodes) and §3.4 on the server. **A derived quantity stored
 separately is a quantity that will disagree with itself.** Keep the copy only
 where recomputation is genuinely too expensive, and say so where you keep it.
 
-### 1.5 Slack keeps linear work off the hot path
+### 1.5 Linear work belongs where it is paid once, not where it is paid per message
 
-`HISTORY_TRIM_SLACK` (100) exists so history is trimmed only once it has drifted
-well past the cap. Trimming exactly at `MAX_MESSAGES_PER_ROOM` would move the
-whole history on *every single message* once a room is busy — the cap turning
-into an O(n)-per-message cost precisely when the room is most active.
+Trimming history to `MAX_MESSAGES_PER_ROOM` moves the whole `Vec`. Doing it per
+message turns the cap into an O(n)-per-message cost precisely when a room is
+busiest, so it runs on the join path and in the housekeeping sweep instead —
+paid once by the person arriving, or once per interval by nobody.
+
+There used to be a `HISTORY_TRIM_SLACK` of 100 as well, so the join path only
+trimmed once history had drifted well past the cap. It did nothing: the line
+after it trimmed to the cap unconditionally, so whatever the slack skipped, the
+next call did anyway. Mutation testing is what said so — six mutants in that
+condition, all surviving, which is what dead code looks like from the outside
+(§6.6d). **A threshold whose two sides cannot be told apart is not protecting
+anything**, and the doctrine it was written to serve is satisfied by *where* the
+work runs, not by how often it is skipped once it is already there.
 
 ### 1.6 Prefer the const over the allocation
 
