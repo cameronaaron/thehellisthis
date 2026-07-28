@@ -432,11 +432,125 @@ async fn binding_a_port_already_in_use_is_an_error_not_a_panic() {
 }
 
 /// How the server stopped is reported, either way.
+#[tokio::test]
+async fn a_server_error_is_reported_and_a_clean_stop_is_not_an_error() {
+    // This used to call both arms and assert nothing, so replacing the whole
+    // function with `()` survived mutation testing: an operator would have had
+    // no way to tell a server that died from one that stopped. The log is the
+    // only output this function has, which makes the log the assertion (§5.12).
+    let clean = capturing_logs(|| async {
+        crate::startup::log_server_result(Ok(()));
+    })
+    .await;
+    assert!(
+        clean.is_empty(),
+        "a clean stop is not an error and must say nothing, got: {clean}"
+    );
+
+    let failed = capturing_logs(|| async {
+        crate::startup::log_server_result(Err(std::io::Error::other("connection reset")));
+    })
+    .await;
+    assert!(
+        failed.contains("server error") && failed.contains("connection reset"),
+        "a server that died must name itself and the reason, got: {failed}"
+    );
+}
+
+/// The script version is a real FNV-1a hash, not merely *some* function of the
+/// bytes.
+///
+/// Every mutation of `fnv1a` survived the suite: returning a constant, never
+/// entering the loop, replacing the xor with an or. Nothing checked the value,
+/// only that two different inputs disagreed — which a constant-free but wrong
+/// hash satisfies just as well. A stamped URL that fails to change when the
+/// script does serves a stale client for a year (`immutable`), so the function
+/// being *this* hash is the property worth pinning.
+///
+/// The vectors are the published FNV-1a 64-bit ones.
 #[test]
-fn a_server_error_is_reported_and_a_clean_stop_is_not_an_error() {
-    // Neither arm returns anything; what is asserted is that both are
-    // executable and neither panics — the error arm in particular, which
-    // otherwise needs a live server to fail mid-flight.
-    crate::startup::log_server_result(Ok(()));
-    crate::startup::log_server_result(Err(std::io::Error::other("connection reset")));
+fn the_script_version_is_the_fnv1a_hash_it_claims_to_be() {
+    assert_eq!(fnv1a(b""), 0xcbf2_9ce4_8422_2325, "the offset basis");
+    assert_eq!(fnv1a(b"a"), 0xaf63_dc4c_8601_ec8c);
+    assert_eq!(fnv1a(b"foobar"), 0x8594_4171_f739_67e8);
+
+    // Order matters: a hash that only sums or ors its bytes cannot see this.
+    assert_ne!(fnv1a(b"ab"), fnv1a(b"ba"));
+}
+
+/// A name exactly at each end of the allowed length is allowed.
+///
+/// `room.len() < MIN || room.len() > MAX` reads as inclusive bounds, and the
+/// user-facing string promises "between 3 and 50 characters". Both comparisons
+/// could be made strict without a test noticing, which would silently refuse
+/// the shortest and longest names the page says are fine.
+#[tokio::test]
+async fn a_room_name_at_either_length_boundary_is_accepted() {
+    let state = Arc::new(AppState::new());
+
+    for len in [MIN_ROOM_NAME_LEN, MAX_ROOM_NAME_LEN] {
+        let name = "a".repeat(len);
+        let response = room_handler(Path(name.clone()), State(Arc::clone(&state))).await;
+        let body = response.into_response();
+        let bytes = axum::body::to_bytes(body.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let html = String::from_utf8_lossy(&bytes);
+        assert!(
+            html.contains("<!DOCTYPE html>") || html.contains("<!doctype html>"),
+            "a {len}-character name is within the advertised range and must be served, \
+             got: {}",
+            &html[..html.len().min(120)]
+        );
+    }
+
+    for len in [MIN_ROOM_NAME_LEN - 1, MAX_ROOM_NAME_LEN + 1] {
+        let name = "a".repeat(len);
+        let response = room_handler(Path(name), State(Arc::clone(&state))).await;
+        let bytes = axum::body::to_bytes(response.into_response().into_body(), usize::MAX)
+            .await
+            .expect("body");
+        assert!(
+            String::from_utf8_lossy(&bytes).contains("between 3 and 50"),
+            "a {len}-character name is outside the advertised range and must be refused"
+        );
+    }
+}
+
+/// A room that already exists is served even when the server is at its cap.
+///
+/// The cap refuses *new* rooms; `!rooms.contains_key(&room)` is what makes it a
+/// creation limit rather than an admission limit. Deleting that `!` survived,
+/// because no test ever asked for an existing room on a full server — the case
+/// where every person already in a conversation is locked out of it.
+#[tokio::test]
+async fn an_existing_room_is_served_even_when_the_server_is_at_its_room_cap() {
+    let state = Arc::new(AppState::new());
+    {
+        let mut rooms = state.rooms.write().await;
+        for i in 0..MAX_ROOMS {
+            rooms.insert(format!("room{i:04}"), create_room());
+        }
+        assert_eq!(rooms.len(), MAX_ROOMS, "the server is exactly at its cap");
+    }
+
+    let response = room_handler(Path("room0000".to_string()), State(Arc::clone(&state))).await;
+    let bytes = axum::body::to_bytes(response.into_response().into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let html = String::from_utf8_lossy(&bytes);
+    assert!(
+        !html.contains("Maximum number of rooms reached"),
+        "an existing room must stay reachable at the cap, or a full server \
+         locks out the people already talking in it"
+    );
+
+    let response = room_handler(Path("brandnewroom".to_string()), State(state)).await;
+    let bytes = axum::body::to_bytes(response.into_response().into_body(), usize::MAX)
+        .await
+        .expect("body");
+    assert!(
+        String::from_utf8_lossy(&bytes).contains("Maximum number of rooms reached"),
+        "a room that does not exist yet must still be refused at the cap"
+    );
 }

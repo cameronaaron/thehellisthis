@@ -33,7 +33,7 @@ const CLIENT_JS: &str = include_str!("../client.js");
 /// A cryptographic hash would carry a dependency to solve a problem that does
 /// not exist here: nothing trusts this value, it only has to change whenever
 /// the script changes.
-const fn fnv1a(bytes: &[u8]) -> u64 {
+pub(crate) const fn fnv1a(bytes: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     let mut i = 0;
     while i < bytes.len() {

@@ -149,6 +149,11 @@ impl MemoryTracker {
             return false;
         }
 
+        // `>` rather than `>=` is a skipped no-op, not a correctness choice:
+        // at equality the compare-exchange would store the value already there
+        // and exit on the next read. Mutation testing reports the two spellings
+        // as indistinguishable because they are (§6.6d) — recorded here so the
+        // next sweep does not spend the analysis again.
         let mut peak = self.peak_bytes.load(Ordering::Relaxed);
         while total > peak {
             match self.peak_bytes.compare_exchange_weak(
@@ -222,9 +227,22 @@ impl ConnectionPool {
     /// Eviction is for addresses that have gone away, and an address with a
     /// live connection has not gone away.
     pub async fn cleanup_stale(&self) {
+        self.cleanup_stale_at(Instant::now()).await;
+    }
+
+    /// The sweep with its instant supplied.
+    ///
+    /// `elapsed()` reads the clock inside the comparison, so no test can stand
+    /// a counter *exactly* on the retention boundary — the reading has always
+    /// moved on by the time the comparison runs. Mutation testing found both
+    /// `<=` and `==` unkillable here for that reason, not because the boundary
+    /// does not matter. Taking the instant is the same fix `cleanup_rooms_at`
+    /// got, and it needs no injectable clock (§9.4).
+    pub async fn cleanup_stale_at(&self, now: Instant) {
         let mut counters = self.ip_counters.write().await;
         counters.retain(|_, (counter, last_seen)| {
-            counter.load(Ordering::Relaxed) > 0 || last_seen.elapsed() < IP_COUNTER_RETENTION
+            counter.load(Ordering::Relaxed) > 0
+                || now.duration_since(*last_seen) < IP_COUNTER_RETENTION
         });
     }
 
@@ -285,9 +303,15 @@ impl SecurityManager {
     }
 
     pub async fn check_ip(&self, ip: &str) -> ChatResult<()> {
+        self.check_ip_at(ip, Instant::now()).await
+    }
+
+    /// The check with its instant supplied, so a ban expiring is a moment a
+    /// test can stand on rather than one it has to wait for.
+    pub async fn check_ip_at(&self, ip: &str, now: Instant) -> ChatResult<()> {
         let banned = self.banned_ips.read().await;
         if let Some(banned_at) = banned.get(ip)
-            && banned_at.elapsed() < IP_BAN_DURATION
+            && now.duration_since(*banned_at) < IP_BAN_DURATION
         {
             return Err(ChatError::SecurityError("IP is banned".into()));
         }
@@ -336,14 +360,22 @@ impl SecurityManager {
     /// anything back. Checking expiry on read bounds what the entry *means*,
     /// not how much of it there is.
     pub async fn cleanup_stale(&self) {
+        self.cleanup_stale_at(Instant::now()).await;
+    }
+
+    /// The sweep with its instant supplied, so a ban sitting exactly on its
+    /// expiry is a case a test can construct rather than a race with the clock.
+    pub async fn cleanup_stale_at(&self, now: Instant) {
         self.banned_ips
             .write()
             .await
-            .retain(|_, banned_at| banned_at.elapsed() < IP_BAN_DURATION);
+            .retain(|_, banned_at| now.duration_since(*banned_at) < IP_BAN_DURATION);
 
         self.suspicious_activity
             .write()
             .await
-            .retain(|_, (_, window_start)| window_start.elapsed() < SUSPICIOUS_ACTIVITY_WINDOW);
+            .retain(|_, (_, window_start)| {
+                now.duration_since(*window_start) < SUSPICIOUS_ACTIVITY_WINDOW
+            });
     }
 }

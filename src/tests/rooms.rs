@@ -4136,3 +4136,214 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedLogs {
         self.clone()
     }
 }
+
+/// Housekeeping does nothing until the GC interval has elapsed.
+///
+/// `if !self.memory_tracker.should_gc() { return; }` is what keeps the room
+/// write lock — the one every user in every room contends on — from being taken
+/// on every sweep. Deleting that `!` survived the suite: nothing asserted that
+/// a *second* sweep, arriving inside the interval, leaves the rooms alone.
+/// Inverted, the guard admits exactly the sweeps it exists to turn away.
+#[tokio::test]
+async fn housekeeping_leaves_rooms_alone_until_the_gc_interval_has_elapsed() {
+    let state = AppState::new();
+    let over_budget = MAX_TOTAL_ROOMS_MEMORY + 1;
+
+    async fn fill(state: &AppState, bytes: usize) {
+        let mut rooms = state.rooms.write().await;
+        let mut room = create_room();
+        for i in 0..(MAX_MESSAGES_PER_ROOM + 20) {
+            message_in(&mut room, &state.memory_tracker, &format!("message {i}"));
+        }
+        room.total_memory_bytes.store(bytes, Ordering::Relaxed);
+        rooms.insert("heavy".to_string(), room);
+    }
+
+    // The first sweep is due, and the room is over the ceiling, so it trims.
+    fill(&state, over_budget).await;
+    state.cleanup().await;
+    assert!(
+        state.rooms.read().await["heavy"].chat_history.len() < MAX_MESSAGES_PER_ROOM + 20,
+        "a sweep that is due must trim a room over the process ceiling"
+    );
+
+    // The second arrives inside the interval. Same room, same overrun — and it
+    // must return before the write lock rather than do the work again.
+    fill(&state, over_budget).await;
+    state.cleanup().await;
+    assert_eq!(
+        state.rooms.read().await["heavy"].chat_history.len(),
+        MAX_MESSAGES_PER_ROOM + 20,
+        "a sweep inside the GC interval must take neither the write lock nor \
+         the linear pass over every room's history"
+    );
+}
+
+/// The process memory ceiling is a ceiling, not a threshold one byte lower.
+///
+/// `total_memory > MAX_TOTAL_ROOMS_MEMORY` could become `==`, `<` or `>=` and
+/// the suite still passed, because every test was either far under the ceiling
+/// or far over it. A server sitting exactly at its budget must not trim; one
+/// byte past it must.
+#[tokio::test]
+async fn the_process_memory_ceiling_trims_only_once_it_is_exceeded() {
+    for (bytes, expect_trim) in [
+        (MAX_TOTAL_ROOMS_MEMORY, false),
+        (MAX_TOTAL_ROOMS_MEMORY + 1, true),
+    ] {
+        let state = AppState::new();
+        {
+            let mut rooms = state.rooms.write().await;
+            let mut room = create_room();
+            for i in 0..(MAX_MESSAGES_PER_ROOM + 20) {
+                message_in(&mut room, &state.memory_tracker, &format!("message {i}"));
+            }
+            // Claim the whole budget for this room, so `cleanup` reads exactly
+            // the total under test rather than whatever the messages weighed.
+            room.total_memory_bytes.store(bytes, Ordering::Relaxed);
+            rooms.insert("heavy".to_string(), room);
+        }
+
+        state.cleanup().await;
+
+        let rooms = state.rooms.read().await;
+        let trimmed = rooms["heavy"].chat_history.len() < MAX_MESSAGES_PER_ROOM + 20;
+        assert_eq!(
+            trimmed, expect_trim,
+            "at {bytes} bytes against a ceiling of {MAX_TOTAL_ROOMS_MEMORY}, \
+             trimming should be {expect_trim}"
+        );
+    }
+}
+
+/// The trim slack is what keeps trimming off the message path.
+///
+/// `preserve_messages` fires at `MAX_MESSAGES_PER_ROOM + HISTORY_TRIM_SLACK`,
+/// and both halves of that expression survived mutation: `>` could become `>=`,
+/// and `+` could become `-`. The second is the expensive one — trimming a
+/// hundred messages *below* the cap means a linear move of the whole history on
+/// almost every message, which is exactly the per-message cost §1.1 forbids and
+/// nothing would have failed.
+#[test]
+fn history_is_trimmed_only_once_it_has_drifted_a_full_slack_past_the_cap() {
+    let tracker = MemoryTracker::new();
+
+    for (extra, expect_trim) in [(HISTORY_TRIM_SLACK, false), (HISTORY_TRIM_SLACK + 1, true)] {
+        let mut room = create_room();
+        for i in 0..(MAX_MESSAGES_PER_ROOM + extra) {
+            message_in(&mut room, &tracker, &format!("message {i}"));
+        }
+        let before = room.chat_history.len();
+
+        room.preserve_messages(&tracker);
+
+        if expect_trim {
+            assert_eq!(
+                room.chat_history.len(),
+                MAX_MESSAGES_PER_ROOM,
+                "one message past the slack must trim back to the cap"
+            );
+        } else {
+            assert_eq!(
+                room.chat_history.len(),
+                before,
+                "at exactly the cap plus the slack there is nothing to do — \
+                 trimming here would put a linear pass on the message path"
+            );
+        }
+    }
+}
+
+/// A room over its picture budget fades the oldest images and stops.
+///
+/// `self.attachment_bytes - freed <= MAX_ROOM_ATTACHMENT_BYTES` is the loop's
+/// only exit, and replacing that `-` with `+` survived: the running total then
+/// grows as images are freed, the condition never becomes true, and every
+/// picture in the room is faded rather than just enough of them. A room one
+/// image over its budget would lose all of them.
+#[tokio::test]
+async fn fading_pictures_stops_as_soon_as_the_room_is_back_under_its_budget() {
+    let tracker = MemoryTracker::new();
+    let mut room = create_room();
+
+    // Each image is a tenth of the budget, so going one over needs eleven and
+    // recovering needs exactly one to fade.
+    let payload = "A".repeat(MAX_ROOM_ATTACHMENT_BYTES / 10);
+    for i in 0..11 {
+        let mut msg = OutgoingMessage {
+            message_id: Uuid::new_v4(),
+            user_id: "u".to_string(),
+            animal_name: "otter".to_string(),
+            text: format!("picture {i}"),
+            timestamp: "0".to_string(),
+            reply_to: None,
+            attachment: Some(Attachment {
+                data: payload.clone(),
+                ..png_attachment()
+            }),
+        };
+        msg.timestamp = i.to_string();
+        room.add_message(msg, &tracker);
+    }
+
+    let faded: Vec<bool> = room
+        .chat_history
+        .iter()
+        .map(|m| m.attachment.as_ref().is_some_and(|a| a.faded))
+        .collect();
+    let faded_count = faded.iter().filter(|f| **f).count();
+
+    assert!(
+        faded_count > 0,
+        "a room over its picture budget must fade something"
+    );
+    assert!(
+        faded_count < faded.len(),
+        "fading must stop once the room is back under budget — it faded all \
+         {} pictures, which is the whole conversation's images for one overrun",
+        faded.len()
+    );
+    assert!(
+        faded[..faded_count].iter().all(|f| *f) && !faded[faded_count],
+        "the pictures that fade are the oldest ones, in order: {faded:?}"
+    );
+}
+
+/// Housekeeping trims a room only once it is past the *soft* memory limit.
+///
+/// `trigger_cleanup` compares against nine tenths of the process ceiling, and
+/// `>` could become `>=` unnoticed. The soft limit is where a room starts
+/// shedding its oldest messages before the hard ceiling starts dropping new
+/// ones, so which side of it a room sits on decides whether a conversation
+/// loses its past or its present.
+#[tokio::test]
+async fn a_room_is_cleaned_only_once_it_is_past_the_soft_memory_limit() {
+    let (num, den) = MEMORY_SOFT_LIMIT_RATIO;
+    let soft_limit = (MAX_TOTAL_ROOMS_MEMORY * num) / den;
+
+    for (bytes, expect_cleanup) in [(soft_limit, false), (soft_limit + 1, true)] {
+        let tracker = MemoryTracker::new();
+        let mut room = create_room();
+        message_in(&mut room, &tracker, "a message old enough to age out");
+
+        // Age the message past MAX_MESSAGE_AGE so a sweep has something to do.
+        let ancient = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+            .saturating_sub(MAX_MESSAGE_AGE.as_millis() * 2);
+        let mut msg = (*room.chat_history[0]).clone();
+        msg.timestamp = ancient.to_string();
+        room.chat_history[0] = Arc::new(msg);
+
+        room.total_memory_bytes.store(bytes, Ordering::Relaxed);
+        room.trigger_cleanup(&tracker).await;
+
+        assert_eq!(
+            room.chat_history.is_empty(),
+            expect_cleanup,
+            "at {bytes} bytes against a soft limit of {soft_limit}, cleanup \
+             should be {expect_cleanup}"
+        );
+    }
+}

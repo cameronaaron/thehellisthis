@@ -30,7 +30,7 @@ const BROADCAST_CHANNEL_CAPACITY: usize = 1000;
 
 /// History kept beyond [`MAX_MESSAGES_PER_ROOM`] before a trim is worth the
 /// lock time. Trimming on every message would be O(n) per message.
-const HISTORY_TRIM_SLACK: usize = 100;
+pub(crate) const HISTORY_TRIM_SLACK: usize = 100;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConnectionState {
@@ -553,9 +553,11 @@ impl RoomState {
     /// Trims history to exactly the cap. Used on join, where the cost is paid
     /// once by the joining user rather than by every message.
     pub fn trim_to_max_messages(&mut self, memory_tracker: &MemoryTracker) {
-        if self.chat_history.len() > MAX_MESSAGES_PER_ROOM {
-            self.retain_newest(MAX_MESSAGES_PER_ROOM, memory_tracker);
-        }
+        // No length check here: `retain_newest` makes exactly this comparison
+        // and returns immediately when there is nothing to drop. A guard whose
+        // condition can never differ from the one behind it is unkillable by
+        // mutation testing, which is the signal that it is not a guard (§6.6d).
+        self.retain_newest(MAX_MESSAGES_PER_ROOM, memory_tracker);
     }
 
     /// Keeps the newest `keep` messages, releasing the rest from both the room
@@ -579,9 +581,10 @@ impl RoomState {
         self.forget_reactions_for(&removed);
         self.recompute_memory();
 
-        if removed_bytes > 0 {
-            memory_tracker.remove_bytes(removed_bytes);
-        }
+        // Unconditional: `remove_bytes` saturates, so returning zero bytes is
+        // already a no-op. The guard could be flipped either way without any
+        // test noticing, because there was nothing to notice (§6.6d).
+        memory_tracker.remove_bytes(removed_bytes);
 
         drop_count
     }

@@ -14,9 +14,11 @@ use crate::limits::{ConnectionPool, MemoryTracker, RateLimiter, ResourceMonitor,
 use crate::protocol::{
     Attachment, ClientEvent, OutgoingEvent, OutgoingMessage, ReplyInfo, SystemEvent,
 };
-use crate::room::{ConnectionState, RoomState, UserData, create_room, user_idle_for_too_long};
+use crate::room::{
+    ConnectionState, HISTORY_TRIM_SLACK, RoomState, UserData, create_room, user_idle_for_too_long,
+};
 use crate::routes::{
-    health_handler, main_room_handler, metrics_handler, robots_txt_handler, room_handler,
+    fnv1a, health_handler, main_room_handler, metrics_handler, robots_txt_handler, room_handler,
     root_redirect,
 };
 use crate::security::is_allowed_origin;
@@ -31,7 +33,7 @@ use crate::validation::{
     validate_message,
 };
 
-use axum::extract::{ConnectInfo, FromRequestParts, State};
+use axum::extract::{ConnectInfo, FromRequestParts, Path, State};
 use axum::response::IntoResponse;
 use axum::{
     Router,

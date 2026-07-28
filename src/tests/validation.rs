@@ -994,3 +994,133 @@ fn rendered_html_is_bounded_by_the_input_cap() {
         );
     }
 }
+
+/// A quoted reply is cut to the limit exactly, and never mid-character.
+///
+/// Two mutants survived in `truncate_on_char_boundary` and one timed out:
+/// `>` for `>=` on the length check, `&&` for `||` in the walk, and `-=` for
+/// `/=` in the step. All three change *where* the cut lands, and nothing
+/// asserted where the cut lands — only that the result was "not longer than"
+/// the limit, which a function returning the empty string also satisfies.
+///
+/// The two properties worth pinning are that the cut is as late as it can be,
+/// and that it never lands inside a character. `String::truncate` panics on a
+/// non-boundary index, and every string here is attacker-supplied, so the
+/// second one is a remotely triggerable panic rather than a cosmetic bug.
+#[test]
+fn a_quoted_reply_is_cut_at_the_limit_and_never_mid_character() {
+    let id = Uuid::new_v4().to_string();
+
+    // Landing exactly on a boundary: the cut takes the whole budget.
+    let ascii = ReplyInfo {
+        message_id: id.clone(),
+        author_name: "a".repeat(500),
+        preview_text: "b".repeat(500),
+        // Every ASCII index is a boundary, so no walk-back happens and the
+        // result must be the limit itself — not one byte less.
+    };
+    let cut = sanitize_reply(ascii).expect("a valid uuid is a real reply");
+    assert_eq!(cut.preview_text.len(), MAX_REPLY_PREVIEW_LEN);
+    assert_eq!(cut.author_name.len(), MAX_REPLY_AUTHOR_LEN);
+
+    // Landing inside a character: the cut walks back to the boundary below,
+    // and no further. "é" is two bytes, so a 200-byte budget over 100 of them
+    // is exact; shifting by one byte must lose exactly one byte, not one
+    // character and not everything after the first.
+    let two_byte = ReplyInfo {
+        message_id: id.clone(),
+        author_name: String::new(),
+        preview_text: format!("x{}", "é".repeat(200)),
+    };
+    let cut = sanitize_reply(two_byte).expect("a valid uuid is a real reply");
+    assert_eq!(
+        cut.preview_text.len(),
+        MAX_REPLY_PREVIEW_LEN - 1,
+        "one leading ASCII byte makes every following boundary odd, so the \
+         cut must step back exactly one byte"
+    );
+    assert!(
+        cut.preview_text.is_char_boundary(cut.preview_text.len()),
+        "the cut must land on a character boundary or String::truncate panics"
+    );
+
+    // A four-byte character is the longest walk-back the function can face:
+    // three steps, and the `/=` mutant that timed out would take a different
+    // number of them. One prefix byte per case shifts every boundary by one.
+    for (prefix, expected_step_back) in [("xy", 2), ("x", 3)] {
+        let four_byte = ReplyInfo {
+            message_id: id.clone(),
+            author_name: String::new(),
+            preview_text: format!("{prefix}{}", "🐙".repeat(100)),
+        };
+        let cut = sanitize_reply(four_byte).expect("a valid uuid is a real reply");
+        assert_eq!(
+            cut.preview_text.len(),
+            MAX_REPLY_PREVIEW_LEN - expected_step_back,
+            "a {}-byte prefix before four-byte characters puts the limit \
+             {expected_step_back} bytes past the boundary below it",
+            prefix.len()
+        );
+        assert!(cut.preview_text.is_char_boundary(cut.preview_text.len()));
+    }
+}
+
+/// An attachment exactly at each ceiling is accepted; one past it is not.
+///
+/// Four survivors in `sanitize_attachment` were the same shape: `>` could
+/// become `>=` or `==` on the byte size and on both dimensions, because every
+/// test was either an ordinary small image or one wildly over. A ceiling the
+/// client is told about must be a ceiling — the client downscales *to* these
+/// numbers, so refusing something exactly at one refuses what the client was
+/// asked to produce (constraint #12).
+#[test]
+fn an_attachment_exactly_at_its_ceilings_is_accepted() {
+    // Only the first twelve bytes are decoded and sniffed, so padding the
+    // base64 with valid characters reaches an exact length without disturbing
+    // the magic bytes.
+    let at_the_byte_ceiling = |len: usize| {
+        let base = png_attachment();
+        let mut data = base.data.clone();
+        assert!(
+            data.len() < len,
+            "the fixture must be smaller than the limit"
+        );
+        data.push_str(&"A".repeat(len - data.len()));
+        Attachment { data, ..base }
+    };
+
+    assert!(
+        sanitize_attachment(at_the_byte_ceiling(MAX_ATTACHMENT_BYTES)).is_ok(),
+        "an attachment of exactly MAX_ATTACHMENT_BYTES is what the client aims \
+         for and must be accepted"
+    );
+    assert!(
+        sanitize_attachment(at_the_byte_ceiling(MAX_ATTACHMENT_BYTES + 1)).is_err(),
+        "one byte past the ceiling must be refused"
+    );
+
+    for (width, height, allowed) in [
+        (MAX_ATTACHMENT_DIMENSION, MAX_ATTACHMENT_DIMENSION, true),
+        (
+            MAX_ATTACHMENT_DIMENSION + 1,
+            MAX_ATTACHMENT_DIMENSION,
+            false,
+        ),
+        (
+            MAX_ATTACHMENT_DIMENSION,
+            MAX_ATTACHMENT_DIMENSION + 1,
+            false,
+        ),
+    ] {
+        let attachment = Attachment {
+            width,
+            height,
+            ..png_attachment()
+        };
+        assert_eq!(
+            sanitize_attachment(attachment).is_ok(),
+            allowed,
+            "{width}x{height} against a limit of {MAX_ATTACHMENT_DIMENSION}"
+        );
+    }
+}

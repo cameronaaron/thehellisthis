@@ -71,6 +71,7 @@ concrete, executable version of "obsessive engineering quality." Concretely:
 | Constraint #12 Frontend/backend agreement | `client_attachment_ceiling_matches_the_server`, `client_reaction_roster_matches_the_server`, `the_node_types_match_the_node_ci_installs` |
 | §5.12 The log is an interface | `every_admission_says_what_became_of_the_identity`, `a_departure_is_logged_with_the_room_it_leaves`, `a_refused_connection_says_which_ceiling_refused_it`, `a_full_room_says_so_when_it_refuses`, `a_normal_session_reads_as_one_arrival_and_one_departure` |
 | Operational log is a contract | `housekeeping_reports_a_trim_only_when_it_trims`, `housekeeping_reports_the_rooms_it_deletes` |
+| §6.6 Boundaries a mutant can move | `the_script_version_is_the_fnv1a_hash_it_claims_to_be`, `a_room_name_at_either_length_boundary_is_accepted`, `an_existing_room_is_served_even_when_the_server_is_at_its_room_cap`, `housekeeping_leaves_rooms_alone_until_the_gc_interval_has_elapsed`, `the_process_memory_ceiling_trims_only_once_it_is_exceeded`, `a_quoted_reply_is_cut_at_the_limit_and_never_mid_character`, `an_attachment_exactly_at_its_ceilings_is_accepted`, `history_is_trimmed_only_once_it_has_drifted_a_full_slack_past_the_cap`, `fading_pictures_stops_as_soon_as_the_room_is_back_under_its_budget`, `a_room_is_cleaned_only_once_it_is_past_the_soft_memory_limit`, `an_entry_exactly_at_its_retention_age_is_swept` |
 | Housekeeping boundaries | `the_housekeeping_boundaries_are_exact`, `the_empty_room_grace_period_is_exact`, `deleting_a_room_returns_its_bytes_to_the_process_budget`, `deleting_an_empty_room_reclaims_nothing` |
 | Meta: coverage exemptions | `coverage_exemptions_are_justified_and_current` |
 | Meta: standards are enforced | `every_test_the_standards_name_exists`, `every_parked_decision_records_how_to_reopen_it`, `every_contract_test_is_documented` |
@@ -985,6 +986,47 @@ a threshold the tests approached from both sides and never landed on. For
 counters that is a test; for durations it needed `cleanup_rooms_at`, which takes
 the instant as a parameter — the same edge-injection as the shutdown signal, and
 still not the injectable clock §9.4 rejects.
+
+### 6.6e A hash nothing checks is not a hash
+
+`fnv1a` mutated six ways and survived all six — including *returning a
+constant*. The only assertion on it was that two different scripts got two
+different version stamps, which a function that returns its input's length also
+satisfies. Coverage was 100%; the line ran every time.
+
+The general shape: **an assertion that a function is not degenerate is not an
+assertion that it is correct.** Anything with a defined answer — a hash, an
+encoding, a checksum, a well-known constant — should be pinned to that answer,
+because a published test vector is the only thing that distinguishes this
+function from every other function with the same shape. The stamped URL is
+served `immutable` for a year, so a hash that fails to change when the script
+does serves a stale client until the browser is reinstalled.
+
+### 6.6f An `elapsed()` inside a comparison is a boundary no test can reach
+
+Nine of the surviving mutants in `limits.rs` were the same sentence written
+three times: `last_seen.elapsed() < RETENTION` mutating to `<=` or `==` and
+surviving. Not because the boundary is unimportant — a ban expiring and a
+counter being reclaimed are both user-visible — but because the clock is read
+*inside* the comparison, so by the time the comparison runs the reading has
+already moved past whatever the test set up. There is no arrangement of the
+world in which the two spellings differ observably.
+
+Passing the instant in fixes the whole class: `cleanup_stale_at(now)`,
+`check_ip_at(ip, now)`, alongside the `cleanup_rooms_at(state, now)` that came
+first. The public method keeps its signature and calls `Instant::now()` once,
+so no caller changes and no clock is injected — §9.4 stays satisfied. What
+changes is that "exactly at the retention age" becomes a case, and the answer
+turns out to be a decision worth writing down: **a retention is how long
+something is remembered for, so the moment it is reached, it is over.**
+
+The counter-case is worth stating too, because it is where this stops being
+worth doing. `RateLimiter::roll_window` has the same shape and was left alone:
+its window boundary differs by a nanosecond in a per-user, per-message hot
+path, and the honest classification is that the two spellings are equivalent
+for any behaviour anybody could observe. Threading an instant through it would
+buy a killed mutant and nothing else — the API surface is the cost, and a
+mutant killed for its own sake is not a reason to pay it.
 
 ### 6.10 Write down what exists, so removing it is a decision
 

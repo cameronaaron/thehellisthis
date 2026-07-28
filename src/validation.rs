@@ -96,8 +96,13 @@ fn truncate_on_char_boundary(mut text: String, max_bytes: usize) -> String {
         return text;
     }
 
+    // No `end > 0` guard: index 0 is a char boundary of every string, including
+    // the empty one, so the walk always terminates there at the latest. The
+    // guard was there, and mutation testing found it unkillable — a condition
+    // no input can make false is not a safety net, it is a claim nothing checks
+    // (§6.6d). At most three steps are taken; UTF-8 characters are four bytes.
     let mut end = max_bytes;
-    while end > 0 && !text.is_char_boundary(end) {
+    while !text.is_char_boundary(end) {
         end -= 1;
     }
     text.truncate(end);

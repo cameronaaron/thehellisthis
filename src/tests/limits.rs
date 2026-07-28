@@ -3567,3 +3567,96 @@ async fn the_soft_limit_sweep_removes_aged_messages() {
 }
 
 // ========== DOCS, NAMING AND DEAD CODE ==========
+
+/// A retention boundary is a moment, and the moment is now testable.
+///
+/// Every `elapsed() < DURATION` in the two housekeeping sweeps survived
+/// mutation as both `<=` and `==`: the clock is read *inside* the comparison,
+/// so no test can put an entry exactly on the boundary — the reading has always
+/// moved past it before the comparison runs. That is not evidence the boundary
+/// does not matter, only that nothing could reach it. Passing the instant in is
+/// the same fix `cleanup_rooms_at` got, and it needs no injectable clock (§9.4).
+///
+/// An entry exactly at its retention age is expired, not kept: the retention is
+/// how long something is remembered *for*, so the moment it is reached, it is
+/// over.
+#[tokio::test]
+async fn an_entry_exactly_at_its_retention_age_is_swept() {
+    let now = Instant::now();
+
+    // A zero counter is kept only while it is inside the retention window.
+    for (age, survives) in [
+        (IP_COUNTER_RETENTION - Duration::from_nanos(1), true),
+        (IP_COUNTER_RETENTION, false),
+    ] {
+        let pool = ConnectionPool::new();
+        pool.add_connection("addr").await.expect("first connection");
+        pool.remove_connection("addr").await;
+        {
+            let mut counters = pool.ip_counters.write().await;
+            let (_, last_seen) = counters.get_mut("addr").expect("the entry");
+            *last_seen = now - age;
+        }
+
+        pool.cleanup_stale_at(now).await;
+        assert_eq!(
+            pool.ip_counters.read().await.contains_key("addr"),
+            survives,
+            "an idle counter {age:?} old against a retention of \
+             {IP_COUNTER_RETENTION:?} should survive: {survives}"
+        );
+    }
+
+    // A ban lapses exactly when its duration is up, and the sweep drops it.
+    for (age, still_banned) in [
+        (IP_BAN_DURATION - Duration::from_nanos(1), true),
+        (IP_BAN_DURATION, false),
+    ] {
+        let security = SecurityManager::new();
+        security
+            .banned_ips
+            .write()
+            .await
+            .insert("addr".to_string(), now - age);
+
+        assert_eq!(
+            security.check_ip_at("addr", now).await.is_err(),
+            still_banned,
+            "a ban {age:?} old against a duration of {IP_BAN_DURATION:?} \
+             should still refuse: {still_banned}"
+        );
+
+        security.cleanup_stale_at(now).await;
+        assert_eq!(
+            security.banned_ips.read().await.contains_key("addr"),
+            still_banned,
+            "the sweep must drop a ban the check no longer honours, or the map \
+             keeps entries nothing will ever read (§3.5)"
+        );
+    }
+
+    // The suspicious-activity window rolls on the same rule.
+    for (age, survives) in [
+        (SUSPICIOUS_ACTIVITY_WINDOW - Duration::from_nanos(1), true),
+        (SUSPICIOUS_ACTIVITY_WINDOW, false),
+    ] {
+        let security = SecurityManager::new();
+        security
+            .suspicious_activity
+            .write()
+            .await
+            .insert("addr".to_string(), (1, now - age));
+
+        security.cleanup_stale_at(now).await;
+        assert_eq!(
+            security
+                .suspicious_activity
+                .read()
+                .await
+                .contains_key("addr"),
+            survives,
+            "a window {age:?} old against {SUSPICIOUS_ACTIVITY_WINDOW:?} \
+             should survive: {survives}"
+        );
+    }
+}
