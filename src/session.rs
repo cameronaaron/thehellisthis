@@ -27,7 +27,8 @@ use uuid::Uuid;
 
 use crate::config::{
     DUPLICATE_MESSAGE_WINDOW, HEARTBEAT_INTERVAL, HEARTBEAT_TIMEOUT, IDLE_CLOSE_CODE,
-    MAX_MESSAGE_LEN, MAX_MESSAGES_PER_ROOM, MAX_PAYLOAD_SIZE, MAX_ROOM_NAME_LEN,
+    MAX_CONCURRENT_CONNECTIONS_PER_IP, MAX_CONCURRENT_USERS, MAX_MESSAGE_LEN,
+    MAX_MESSAGES_PER_ROOM, MAX_PAYLOAD_SIZE, MAX_ROOM_NAME_LEN, MAX_USERS_PER_ROOM,
     REACTION_MIN_INTERVAL, READ_RECEIPT_MIN_INTERVAL, TYPING_EVENT_MIN_INTERVAL,
     USER_IDLE_MESSAGE_TIMEOUT,
 };
@@ -84,6 +85,62 @@ pub async fn ws_handler(
     }
 }
 
+/// Every check that can refuse a connection, before anything is reserved.
+///
+/// A function rather than a preamble inside the handler for two reasons. It is
+/// the ordering §5.2 is about — nothing here mutates, so a refusal cannot leave
+/// a reservation behind — and it is reachable from a test without a live
+/// upgrade, which is what lets the *logging* be asserted. A refusal used to be
+/// entirely silent: the visitor saw an error and the server recorded nothing,
+/// so "why can nobody connect" had no answer in the log.
+pub(crate) async fn check_admission(
+    state: &Arc<AppState>,
+    ip: Option<&str>,
+    room: &str,
+) -> Result<(), ChatError> {
+    if let Some(ip) = ip {
+        state.security_manager.check_ip(ip).await?;
+
+        if !state.connection_pool.can_accept(ip).await {
+            warn!(
+                room = %room,
+                address = %ip,
+                limit = MAX_CONCURRENT_CONNECTIONS_PER_IP,
+                "refused: per-address connection limit"
+            );
+            let _ = state.security_manager.record_suspicious_activity(ip).await;
+            return Err(ChatError::RateLimitError(
+                "Too many connections from your IP".to_string(),
+            ));
+        }
+    }
+
+    if !state.resource_monitor.can_accept_connection() {
+        // Bound before the macro: `tracing` evaluates fields only when the
+        // level is enabled, so as arguments these do not run under a test with
+        // no subscriber and read as uncovered inside a branch that definitely
+        // took (§6.1d).
+        let connections = state
+            .resource_monitor
+            .total_connections
+            .load(Ordering::Relaxed);
+        warn!(
+            room = %room,
+            connections,
+            limit = MAX_CONCURRENT_USERS,
+            "refused: server at capacity"
+        );
+        return Err(ChatError::ResourceLimit(
+            "Server is at capacity".to_string(),
+        ));
+    }
+
+    validate_input(room, MAX_ROOM_NAME_LEN)
+        .map_err(|e| ChatError::InvalidMessage(e.to_string()))?;
+
+    Ok(())
+}
+
 /// Releases the two connection reservations taken during admission.
 ///
 /// Called on every path that fails *after* the counters were incremented but
@@ -107,26 +164,7 @@ pub async fn ws_handler_inner(
 ) -> Result<Response, ChatError> {
     debug!(room = %room, "websocket upgrade requested");
 
-    // ---- Checks that mutate nothing --------------------------------------
-    if let Some(ip) = &ip {
-        state.security_manager.check_ip(ip).await?;
-
-        if !state.connection_pool.can_accept(ip).await {
-            let _ = state.security_manager.record_suspicious_activity(ip).await;
-            return Err(ChatError::RateLimitError(
-                "Too many connections from your IP".to_string(),
-            ));
-        }
-    }
-
-    if !state.resource_monitor.can_accept_connection() {
-        return Err(ChatError::ResourceLimit(
-            "Server is at capacity".to_string(),
-        ));
-    }
-
-    validate_input(&room, MAX_ROOM_NAME_LEN)
-        .map_err(|e| ChatError::InvalidMessage(e.to_string()))?;
+    check_admission(&state, ip.as_deref(), &room).await?;
 
     // ---- Reservations: everything below must release on failure ----------
     if let Some(ip) = &ip {
@@ -142,19 +180,13 @@ pub async fn ws_handler_inner(
     let admitted = admit_user(&state, &room, &connection_id, cookie.as_ref()).await;
 
     let Some((final_user_id, final_animal_name)) = admitted else {
+        warn!(room = %room, limit = MAX_USERS_PER_ROOM, "refused: room full");
         release_connection_slot(&state, ip.as_deref()).await;
         return Err(ChatError::RoomFull);
     };
 
     let (user_id_cookie, animal_name_cookie) =
         create_user_cookies(&final_user_id, &final_animal_name, host);
-
-    info!(
-        user_id = %final_user_id,
-        animal_name = %final_animal_name,
-        room = %room,
-        "session admitted"
-    );
 
     let client_ip = ip.clone();
     let mut response = ws
@@ -236,10 +268,28 @@ pub(crate) async fn admit_user(
 
     let candidate_id = cookie_identity.map(|c| c.user_id.as_str());
     if !room_state.is_user_allowed(candidate_id.unwrap_or("")) {
+        let connected = room_state.connected_user_count();
+        warn!(
+            room = %room,
+            connected,
+            limit = MAX_USERS_PER_ROOM,
+            "refused: room is full, or this visitor is rejoining too fast"
+        );
         return None;
     }
 
     let now = Instant::now();
+
+    // What happened to this visitor's identity, in one word, on every
+    // admission. Without it the difference between "came back as themselves"
+    // and "was given a new name" is invisible, and the second one repeating is
+    // what a room experiences as `skink left / stinks joined` (§5.9a).
+    let outcome = match &cookie_identity {
+        Some(c) if room_state.users.contains_key(&c.user_id) => "reclaimed",
+        Some(_) => "recognised",
+        None => "fresh",
+    };
+    debug!(room = %room, outcome, "deciding identity");
 
     let identity = match cookie_identity {
         // Known user reconnecting: reclaim their slot and name.
@@ -264,6 +314,17 @@ pub(crate) async fn admit_user(
     };
 
     room_state.broadcast_user_count();
+
+    let connected = room_state.connected_user_count();
+    info!(
+        room = %room,
+        user_id = %identity.0,
+        animal_name = %identity.1,
+        outcome,
+        connected,
+        "admitted"
+    );
+
     Some(identity)
 }
 
@@ -936,10 +997,11 @@ pub async fn cleanup_user(
         return;
     }
 
+    let (uid, animal) = (user.user_id.clone(), user.animal_name.clone());
     let _ = room_state.sender.send(OutgoingEvent::System {
         event: SystemEvent::UserLeft {
-            user_id: user.user_id.clone(),
-            animal_name: user.animal_name.clone(),
+            user_id: uid.clone(),
+            animal_name: animal.clone(),
         },
     });
 
@@ -947,4 +1009,13 @@ pub async fn cleanup_user(
         since: Instant::now(),
     };
     room_state.broadcast_user_count();
+
+    let remaining = room_state.connected_user_count();
+    info!(
+        room = %room,
+        user_id = %uid,
+        animal_name = %animal,
+        remaining,
+        "departed"
+    );
 }

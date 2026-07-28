@@ -42,12 +42,20 @@ Two more that CI deliberately does **not** run, because they depend on real
 elapsed time and a loaded shared runner is where such a test becomes a flake:
 
 ```bash
+scripts/smoke.sh                # drive the real binary, then read its log
 scripts/slow-tests.sh           # the #[ignore]d time-dependent tests
 scripts/coverage-full.sh        # coverage including them (also 100%)
 ```
 
-Run both before pushing anything that touches the heartbeat, the housekeeping
-loops, or the idle eviction — they cover branches nothing else reaches.
+Run these before pushing anything that touches the heartbeat, the housekeeping
+loops, admission, identity or teardown.
+
+`smoke.sh` is the one that catches what the suite cannot: it starts the release
+binary, behaves like a handful of browsers, and then reads the log the way an
+operator would — failing on identity churn, silent refusals, panics, leaked
+slots, and arrivals without matching departures. It reported success once while
+matching nothing at all, so it now fails if its checks find no lines: a check
+that cannot fail is worse than no check (§6.4), in shell as much as in Rust.
 
 Those five are the gate, and they are exactly what `.github/workflows/ci.yml`
 runs — a green local run means a green CI run.

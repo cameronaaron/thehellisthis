@@ -67,6 +67,7 @@ concrete, executable version of "obsessive engineering quality." Concretely:
 | §6.1 The gate answers "will this deploy" | `ci_node_version_satisfies_the_toolchain`, `the_workflows_install_with_the_lockfile_that_exists`, `ci_holds_no_deploy_credential_and_does_not_deploy` |
 | Startup lifecycle | `run_returns_cleanly_when_its_shutdown_fires`, `the_process_exit_code_reports_a_clean_stop`, `the_process_exit_code_reports_a_failed_bind`, `the_shutdown_sequence_waits_for_its_signal`, `a_server_error_is_reported_and_a_clean_stop_is_not_an_error`, `binding_a_port_already_in_use_is_an_error_not_a_panic`, `run_serves_until_it_is_shut_down`, `shutting_down_announces_departures_and_clears_the_rooms` |
 | Constraint #12 Frontend/backend agreement | `client_attachment_ceiling_matches_the_server`, `client_reaction_roster_matches_the_server`, `the_node_types_match_the_node_ci_installs` |
+| §5.12 The log is an interface | `every_admission_says_what_became_of_the_identity`, `a_departure_is_logged_with_the_room_it_leaves`, `a_refused_connection_says_which_ceiling_refused_it`, `a_full_room_says_so_when_it_refuses`, `a_normal_session_reads_as_one_arrival_and_one_departure` |
 | Operational log is a contract | `housekeeping_reports_a_trim_only_when_it_trims`, `housekeeping_reports_the_rooms_it_deletes` |
 | Housekeeping boundaries | `the_housekeeping_boundaries_are_exact`, `the_empty_room_grace_period_is_exact`, `deleting_a_room_returns_its_bytes_to_the_process_budget`, `deleting_an_empty_room_reclaims_nothing` |
 | Meta: coverage exemptions | `coverage_exemptions_are_justified_and_current` |
@@ -647,6 +648,32 @@ is the only thing on offer. The wider point is that **a security attribute has a
 storage consequence**, and the two are usually reasoned about by different
 people at different times. Anything set on a cookie should be checked against
 where that cookie has to survive.
+
+### 5.12 The log is an interface, and it is the only one an operator has
+
+There is no dashboard, no tracing backend and no way to attach a debugger to a
+container serving strangers. The log is the entire diagnostic surface, and it
+is not covered by any behavioural test: the server can do exactly the right
+thing and say nothing about it, which is indistinguishable from doing the wrong
+thing quietly.
+
+That is not hypothetical. The reported "skink left / stinks joined" ran as long
+as it did because **nothing said why a visitor got a new name.** Arrivals and
+departures were both logged; the decision between them was not. And every
+refused connection was silent — a visitor saw an error, the server recorded
+nothing, so "why can nobody connect" had no answer anywhere.
+
+Two rules came out of it:
+
+- **Log the decision, not just the outcome.** `admit_user` says `reclaimed`,
+  `recognised` or `fresh`. A room repeating `fresh` for one person is the
+  flapping bug, visible at a glance rather than after an afternoon.
+- **A refusal names the ceiling and its value.** The useful question is never
+  "did the limit fire" but "is the limit right", and that needs the number.
+
+Asserted like any other behaviour, with `capturing_logs` installing a scoped
+subscriber. §6.6d already made this point about a trim that reported itself;
+this is the same rule applied to the thing an operator reads first.
 
 ### 5.10 A counter that decides admission must never wrap
 

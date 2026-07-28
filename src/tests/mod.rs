@@ -529,6 +529,7 @@ mod attachments;
 mod client_ui;
 mod contracts;
 mod limits;
+mod observability;
 mod protocol;
 mod reactions;
 mod rooms;

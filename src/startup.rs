@@ -100,9 +100,18 @@ pub(crate) fn init_tracing() {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
 
+    // Colour only when a person is watching. Redirected to a file or a
+    // container's log collector, ANSI escapes are noise that breaks every
+    // `grep` an operator writes — including this project's own smoke script,
+    // which silently matched nothing and reported success because of them.
+    let ansi = std::io::IsTerminal::is_terminal(&std::io::stdout());
+
     // `try_init` rather than `init`: a second call must not panic, which is
     // what lets tests call this.
-    let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_ansi(ansi)
+        .try_init();
 }
 
 /// Serves until `shutdown` resolves.
