@@ -13,7 +13,14 @@ use std::time::Duration;
 
 /// Hard cap on simultaneously live rooms. Bounds total memory: rooms are the
 /// only unbounded-by-user-input allocation in the server.
-pub(crate) const MAX_ROOMS: usize = 100;
+///
+/// Sized against [`MAX_TOTAL_ROOMS_MEMORY`] and the container it runs in —
+/// `the_memory_budget_still_closes` requires every room to afford at least 8
+/// images at [`MAX_ATTACHMENT_BYTES`], which on the 256 MiB `lite` Cloudflare
+/// Container instance this deploys to left no room for a higher count without
+/// pushing the memory ceiling close enough to the box's own limit to risk an
+/// OOM kill from the runtime, OS and connection overhead alone.
+pub(crate) const MAX_ROOMS: usize = 50;
 pub(crate) const MAX_ROOM_NAME_LEN: usize = 50;
 pub(crate) const MIN_ROOM_NAME_LEN: usize = 3;
 pub(crate) const ROOM_NAME_REGEX: &str = "^[a-zA-Z0-9][a-zA-Z0-9-_]*[a-zA-Z0-9]$";
@@ -268,7 +275,16 @@ pub(crate) const IP_COUNTER_RETENTION: Duration = Duration::from_secs(3_600);
 // Memory
 // ---------------------------------------------------------------------------
 
-pub(crate) const MAX_TOTAL_ROOMS_MEMORY: usize = 400_000_000;
+/// Process-wide ceiling on tracked room memory (history, attachments).
+///
+/// Sized against the container this deploys to, not chosen in isolation: the
+/// production container is Cloudflare's 256 MiB `lite` instance type
+/// (`cloudflare/wrangler.jsonc`), and this is the *tracked* bytes only — the
+/// Rust binary, its runtime, the OS, and every connection's own buffers are
+/// on top of it. 150 MB leaves comfortable headroom in that box; the
+/// straight-line 400 MB this used to be was never checked against an actual
+/// deployment target and would have left under 60 MB for everything else.
+pub(crate) const MAX_TOTAL_ROOMS_MEMORY: usize = 150_000_000;
 
 /// Fraction of the memory ceiling at which a room prunes proactively, as
 /// (numerator, denominator) — hitting the hard cap drops live messages, so the

@@ -40,7 +40,12 @@
       "class_name": "InfiniteChatContainer",
       "name": "infinite-chat-container",
       // Hobby tier: single instance to minimize memory costs (~$0.50-2/month)
-      "max_instances": 1
+      "max_instances": 1,
+      // Explicit rather than relying on the default ("dev", deprecated): 256
+      // MiB / 1/16 vCPU. src/config.rs's MAX_TOTAL_ROOMS_MEMORY is sized
+      // against exactly this instance type — raising it here means revisiting
+      // that constant too (see the memory budget invariant test).
+      "instance_type": "lite"
     }
   ],
   

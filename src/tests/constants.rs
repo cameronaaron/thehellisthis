@@ -26,7 +26,7 @@ async fn test_max_messages_constant_for_history_limit() {
 
 #[tokio::test]
 async fn test_max_rooms_constant() {
-    assert_eq!(MAX_ROOMS, 100);
+    assert_eq!(MAX_ROOMS, 50);
 }
 
 #[tokio::test]
@@ -116,7 +116,7 @@ async fn test_max_message_age_constant() {
 
 #[tokio::test]
 async fn test_max_total_rooms_memory_constant() {
-    assert_eq!(MAX_TOTAL_ROOMS_MEMORY, 400_000_000);
+    assert_eq!(MAX_TOTAL_ROOMS_MEMORY, 150_000_000);
 }
 
 #[tokio::test]

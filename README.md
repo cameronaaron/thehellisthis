@@ -38,7 +38,7 @@ Deliberate product decisions, not resource management.
 
 ### Reliability
 
-- Global memory ceiling (400 MB) with pruning that refuses rather than grows
+- Global memory ceiling (150 MB) with pruning that refuses rather than grows
 - Per-user rate limiting (30 messages/min, plus a short burst limit)
 - Per-IP connection limits and temporary bans for repeated rejected attempts
 - Graceful shutdown on SIGINT that announces departures before exiting
@@ -124,11 +124,11 @@ its value. The ones worth knowing:
 
 | Setting | Value |
 | --- | --- |
-| `MAX_ROOMS` | 100 |
+| `MAX_ROOMS` | 50 |
 | `MAX_USERS_PER_ROOM` | 100 |
 | `MAX_CONCURRENT_USERS` | 400 |
 | `MAX_MESSAGES_PER_ROOM` | 500 |
-| `MAX_TOTAL_ROOMS_MEMORY` | 400 MB |
+| `MAX_TOTAL_ROOMS_MEMORY` | 150 MB |
 | `MAX_MESSAGE_LEN` | 8 KB |
 | `MAX_CONCURRENT_CONNECTIONS_PER_IP` | 3 |
 | `HEARTBEAT_INTERVAL` | 5s |

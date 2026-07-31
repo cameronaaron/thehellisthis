@@ -985,7 +985,7 @@ fn a_memory_sweep_is_due_only_after_the_full_interval() {
 /// proactive prune before it is added, not after.
 ///
 /// Reaching this branch through real message traffic would mean accumulating
-/// close to MAX_TOTAL_ROOMS_MEMORY (400MB) of history; setting the tracker's
+/// close to MAX_TOTAL_ROOMS_MEMORY of history; setting the tracker's
 /// counter directly exercises the same branch without needing that much data.
 #[test]
 fn adding_a_message_near_the_memory_ceiling_prunes_proactively() {
