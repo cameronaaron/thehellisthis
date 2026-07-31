@@ -388,7 +388,7 @@ fn the_page_names_no_font_it_does_not_ship_with() {
 #[tokio::test]
 async fn cors_is_granted_to_health_alone() {
     let with_cors = ["/health"];
-    let without_cors = ["/main", "/metrics", "/robots.txt"];
+    let without_cors = ["/main", "/metrics", "/admin", "/robots.txt"];
 
     for path in with_cors {
         let app = build_router(Arc::new(AppState::new()));

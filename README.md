@@ -114,6 +114,7 @@ cloudflare/       Worker + Container deployment
 | `GET /:room` | dynamic room |
 | `GET /health` | liveness probe |
 | `GET /metrics` | Prometheus text exposition — requires `Authorization: Bearer $METRICS_TOKEN`, 404s if unset |
+| `GET /admin` | dashboard listing every open room as a link — requires HTTP Basic auth against `$ADMIN_TOKEN`, 401s if unset |
 | `WS /ws/:room` | WebSocket upgrade |
 
 ## Configuration

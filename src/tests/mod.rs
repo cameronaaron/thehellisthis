@@ -16,8 +16,8 @@ use crate::protocol::{
 };
 use crate::room::{ConnectionState, RoomState, UserData, create_room, user_idle_for_too_long};
 use crate::routes::{
-    fnv1a, health_handler, main_room_handler, metrics_handler, robots_txt_handler, room_handler,
-    root_redirect,
+    admin_dashboard_handler, fnv1a, health_handler, main_room_handler, metrics_handler,
+    robots_txt_handler, room_handler, root_redirect,
 };
 use crate::security::is_allowed_origin;
 use crate::session::{
@@ -483,6 +483,10 @@ static PORT_ENV: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// Serialises the tests that set `METRICS_TOKEN`, for the same reason
 /// `PORT_ENV` exists: it is process-global, and the suite runs in parallel.
 static METRICS_TOKEN_ENV: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Serialises the tests that set `ADMIN_TOKEN`, for the same reason
+/// `METRICS_TOKEN_ENV` exists.
+static ADMIN_TOKEN_ENV: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 const EMBEDDED_HTML: &str = include_str!("../../index.html");
 

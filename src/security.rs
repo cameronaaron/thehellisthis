@@ -251,3 +251,41 @@ pub fn is_authorized_for_metrics(headers: &axum::http::HeaderMap) -> bool {
         .and_then(|v| v.strip_prefix("Bearer "))
         .is_some_and(|token| constant_time_eq(token.as_bytes(), expected.as_bytes()))
 }
+
+/// Whether a request to the admin dashboard (`/admin`) may see it.
+///
+/// This is a different, larger disclosure than `/metrics`: the dashboard names
+/// every open room, which `/metrics` deliberately does not (see its own doc
+/// comment). It therefore carries its own token, `ADMIN_TOKEN`, rather than
+/// reusing `METRICS_TOKEN` — a leak of one must not compromise the other.
+///
+/// It also deliberately answers differently on failure. `/metrics` is scraped
+/// by machines, so it 404s uniformly to keep the route's existence
+/// unconfirmed. `/admin` is a page a human opens by clicking a bookmarked
+/// link, so an unauthorized request gets a real `401` with
+/// `WWW-Authenticate: Basic` — the response the browser needs to raise its
+/// native password prompt. HTTP Basic rather than a bearer header for the same
+/// reason: a header cannot be attached by clicking a link, but a browser will
+/// prompt for and remember Basic credentials against an origin.
+///
+/// Still fails closed: with no `ADMIN_TOKEN` set, every request is refused,
+/// whatever credentials it carries. The comparison is constant-time for the
+/// same reason as the metrics token above.
+pub fn is_authorized_for_admin(headers: &axum::http::HeaderMap) -> bool {
+    let Ok(expected) = std::env::var("ADMIN_TOKEN") else {
+        return false;
+    };
+
+    headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Basic "))
+        .and_then(|encoded| BASE64.decode(encoded).ok())
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .and_then(|credentials| {
+            credentials
+                .split_once(':')
+                .map(|(_, pass)| pass.to_string())
+        })
+        .is_some_and(|password| constant_time_eq(password.as_bytes(), expected.as_bytes()))
+}

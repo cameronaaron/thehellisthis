@@ -541,6 +541,7 @@ Frame order on connect is **guaranteed**: `Welcome`, then history, then
 | `GET /:room` | the client, if the room name is valid and there is capacity |
 | `GET /health` | liveness probe — the container runtime polls this |
 | `GET /metrics` | Prometheus text exposition, seven gauges — gated on `METRICS_TOKEN` (§5.13) |
+| `GET /admin` | dashboard of every open room, as a link — gated on `ADMIN_TOKEN` via HTTP Basic, 401s (not 404s) if unset (§5.14) |
 | `GET /robots.txt` | disallows `/ws/` |
 | `WS /ws/:room` | the chat itself |
 

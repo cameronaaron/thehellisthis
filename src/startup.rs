@@ -19,8 +19,8 @@ use tracing::{error, info};
 use crate::cleanup::cleanup_rooms;
 use crate::config::{RESOURCE_CLEANUP_INTERVAL, ROOM_CLEANUP_INTERVAL, VERSION};
 use crate::routes::{
-    app_js_handler, health_handler, main_room_handler, metrics_handler, robots_txt_handler,
-    room_handler, root_redirect,
+    admin_dashboard_handler, app_js_handler, health_handler, main_room_handler, metrics_handler,
+    robots_txt_handler, room_handler, root_redirect,
 };
 use crate::security::security_header_layers;
 use crate::session::ws_handler;
@@ -42,6 +42,9 @@ pub(crate) fn build_router(state: Arc<AppState>) -> Router {
     // would not have made cross-origin scraping of `/metrics` work anyway —
     // real scrapers (Prometheus, curl) are not browsers and CORS is a
     // browser-enforced restriction that does not apply to them regardless.
+    // `/admin` is the same story: an `Authorization: Basic` header a preflight
+    // would never let through, and it also names every open room, which is
+    // exactly the kind of response no other origin should be handed anyway.
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods([Method::GET])
@@ -53,6 +56,7 @@ pub(crate) fn build_router(state: Arc<AppState>) -> Router {
         .route("/app.js", get(app_js_handler))
         .route("/health", get(health_handler).layer(cors))
         .route("/metrics", get(metrics_handler))
+        .route("/admin", get(admin_dashboard_handler))
         .route("/robots.txt", get(robots_txt_handler))
         .route("/ws/{room}", get(ws_handler))
         // Last: every other single segment is a room name.

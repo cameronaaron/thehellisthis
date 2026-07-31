@@ -758,6 +758,36 @@ here because "no third-party origins" is a claim this page's CSP makes in the
 policy itself; leaving the toggle on is the zone quietly disagreeing with what
 the origin says about itself.
 
+### 5.14 A human-facing admin page is allowed to answer differently than a scraped one
+
+`/admin` (`routes::admin_dashboard_handler`) lists every room currently open,
+as a link, for the operator. That is a strictly larger disclosure than
+`/metrics` makes — §5.13 is careful to note `/metrics` names no room — so it
+does not reuse `METRICS_TOKEN`: it has its own, `ADMIN_TOKEN`
+(`security::is_authorized_for_admin`), so a leak of one credential does not
+also open the other endpoint.
+
+It also breaks, on purpose, the "unauthorized reads as 404, not 401" rule
+§5.13 draws from `is_allowed_origin`. That rule exists to keep a route's very
+existence unconfirmed to a machine that guessed wrong — the right shape for
+something a scraper hits unattended. `/admin` is opened by a human clicking a
+bookmarked link, and a `404` gives a browser nothing to act on. `WWW-Authenticate: Basic`
+on a real `401` is what makes the browser raise its own password prompt, and
+HTTP Basic rather than a bearer header for the matching reason: nothing about
+clicking a link lets you attach an `Authorization` header, but a browser will
+prompt for, and then remember, Basic credentials against an origin. The
+tradeoff is real — an unauthenticated prober now learns the route exists —
+and it is accepted deliberately for this one endpoint because what it protects
+is meant to be reached by a person, not polled by a machine. `/metrics` keeps
+the old rule because nothing about its use case changed.
+
+Room names reaching the page go through `ammonia::clean_text` before they are
+formatted into the response. Every name that can be in `state.rooms` already
+passed `matches_room_name_shape` on the way in, so this is not closing a gap
+that exists today — it is what makes the guarantee survive a future change to
+what a room name is allowed to contain, on the one page whose entire purpose
+is displaying room names to a browser.
+
 ---
 
 ## 6. The regression ratchet — how standards stay upheld

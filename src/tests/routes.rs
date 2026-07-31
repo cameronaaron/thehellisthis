@@ -211,6 +211,86 @@ async fn metrics_requires_the_configured_bearer_token() {
     unsafe { std::env::remove_var("METRICS_TOKEN") };
 }
 
+/// `/admin` names every open room, so it is gated on its own password
+/// (`ADMIN_TOKEN`), checked via HTTP Basic — see
+/// `security::is_authorized_for_admin`. Every case this handler can reach: no
+/// token configured, no credentials, the wrong password, and the one correct
+/// request, which is also where the room list itself is checked.
+#[tokio::test]
+async fn admin_dashboard_requires_the_configured_password() {
+    let _env = ADMIN_TOKEN_ENV.lock().await;
+
+    let app_state = Arc::new(AppState::new());
+    {
+        let mut rooms = app_state.rooms.write().await;
+        rooms.insert("test-room".to_string(), create_room());
+        rooms.insert("<script>".to_string(), create_room());
+    }
+
+    let app = || {
+        Router::new()
+            .route("/admin", get(admin_dashboard_handler))
+            .with_state(Arc::clone(&app_state))
+    };
+    let request = |auth: Option<&str>| {
+        let mut builder = Request::builder().uri("/admin");
+        if let Some(header) = auth {
+            builder = builder.header("authorization", header);
+        }
+        builder.body(Body::empty()).unwrap()
+    };
+    let basic = |password: &str| {
+        use base64::Engine;
+        format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(format!("admin:{password}"))
+        )
+    };
+
+    // SAFETY: serialised by ADMIN_TOKEN_ENV; cleared before the lock is
+    // released, on every path below.
+    unsafe { std::env::remove_var("ADMIN_TOKEN") };
+
+    // Not configured at all: fails closed, whatever the request carries.
+    let unconfigured = app()
+        .oneshot(request(Some(&basic("anything"))))
+        .await
+        .unwrap();
+    assert_eq!(unconfigured.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        unconfigured.headers().get("www-authenticate").unwrap(),
+        "Basic realm=\"admin\""
+    );
+
+    // SAFETY: still within the lock.
+    unsafe { std::env::set_var("ADMIN_TOKEN", "correct-horse-battery-staple") };
+
+    let no_header = app().oneshot(request(None)).await.unwrap();
+    assert_eq!(no_header.status(), StatusCode::UNAUTHORIZED);
+
+    let wrong_password = app().oneshot(request(Some(&basic("wrong")))).await.unwrap();
+    assert_eq!(wrong_password.status(), StatusCode::UNAUTHORIZED);
+
+    let authorized = app()
+        .oneshot(request(Some(&basic("correct-horse-battery-staple"))))
+        .await
+        .unwrap();
+    assert_eq!(authorized.status(), StatusCode::OK);
+
+    let body_bytes = to_bytes(authorized.into_body(), usize::MAX).await.unwrap();
+    let body = String::from_utf8(body_bytes.to_vec()).unwrap();
+    assert!(body.contains("test-room"));
+    assert!(body.contains("href=\"/test-room\""));
+    // A room name that could not exist through normal admission (rejected by
+    // `matches_room_name_shape`) is still rendered escaped, not as a tag —
+    // the defense in depth the handler's doc comment describes.
+    assert!(!body.contains("<script>"));
+    assert!(body.contains("&lt;script&gt;"));
+
+    // SAFETY: still within the lock; removed before it is released.
+    unsafe { std::env::remove_var("ADMIN_TOKEN") };
+}
+
 #[tokio::test]
 async fn test_invalid_message_error_response() {
     let error = ChatError::InvalidMessage("Test error".to_string());
@@ -364,6 +444,13 @@ async fn router_mounts_every_public_route() {
         // this row cannot tell the two apart by status code alone; it exists
         // to keep every path in this list, not to re-prove the route exists.
         ("/metrics", StatusCode::NOT_FOUND),
+        // Mounted, but requires the Basic credentials this request does not
+        // carry — see `admin_dashboard_requires_the_configured_password`,
+        // which is where its real behaviour is checked. Unlike `/metrics`
+        // this reads as `401`, not `404`: see
+        // `security::is_authorized_for_admin` for why the two disagree on
+        // purpose.
+        ("/admin", StatusCode::UNAUTHORIZED),
         ("/robots.txt", StatusCode::OK),
         ("/some-room", StatusCode::OK),
     ] {

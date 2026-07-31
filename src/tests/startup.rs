@@ -352,6 +352,7 @@ fn the_servers_public_surface_still_exists() {
         "/app.js",
         "/health",
         "/metrics",
+        "/admin",
         "/robots.txt",
         "/ws/{room}",
         "/{room}",
