@@ -1135,3 +1135,83 @@ fn identity_cookies_are_secure_everywhere_except_loopback() {
         assert!(cookie.contains("Path=/"));
     }
 }
+
+/// A merely-disconnected user still holds their room slot for
+/// `DISCONNECTED_USER_RETENTION` — `cleanup.rs` does not remove them until
+/// then, and reconnecting reclaims that exact slot. But `names_in_use`
+/// (`room.rs`) only counts *connected* users as holding their name, so the
+/// moment someone disconnects, their name is free for a brand new visitor to
+/// draw — and reclaiming used to hand the original visitor their old name
+/// back unconditionally, with no check that somebody else was now using it.
+#[tokio::test]
+async fn reclaiming_never_hands_back_a_name_someone_else_now_holds() {
+    let state = Arc::new(AppState::new());
+    let original_id = Uuid::new_v4().to_string();
+    {
+        let mut rooms = state.rooms.write().await;
+        let mut room = create_room();
+        room.users.insert(
+            original_id.clone(),
+            UserData {
+                user_id: original_id.clone(),
+                animal_name: "otter".to_string(),
+                last_active: Instant::now(),
+                last_message_time: Instant::now(),
+                connection_state: ConnectionState::Disconnected {
+                    since: Instant::now(),
+                },
+                last_read_message: None,
+                is_typing: false,
+                last_typing_event: None,
+                last_read_receipt_event: None,
+                rate_limiter: RateLimiter::new(),
+                last_message_text: None,
+                last_reaction_event: None,
+            },
+        );
+        rooms.insert("squatted-room".to_string(), room);
+    }
+
+    // A different visitor, preferring "otter" (say, their name in some other
+    // room), claims it here — free, because its holder is only disconnected,
+    // not gone. `claim_animal` is what a preference goes through, so this is
+    // the direct way to ask it "is otter free", the same question the
+    // newcomer's own admission asks.
+    let newcomer_cookie = crate::identity::UserCookie {
+        user_id: Uuid::new_v4().to_string(),
+        animal_name: "otter".to_string(),
+    };
+    let (_, newcomer_name) = admit_user(&state, "squatted-room", "c1", Some(&newcomer_cookie))
+        .await
+        .expect("a new visitor is admitted");
+    assert_eq!(
+        newcomer_name, "otter",
+        "the name must be free while disconnected"
+    );
+
+    // The original visitor reconnects.
+    let cookie = crate::identity::UserCookie {
+        user_id: original_id.clone(),
+        animal_name: "otter".to_string(),
+    };
+    let (returning_id, returning_name) = admit_user(&state, "squatted-room", "c2", Some(&cookie))
+        .await
+        .expect("the original visitor reconnects");
+    assert_eq!(returning_id, original_id, "reclaiming keeps the same id");
+
+    let rooms = state.rooms.read().await;
+    let room = rooms.get("squatted-room").unwrap();
+    let connected_names: Vec<&str> = room
+        .users
+        .values()
+        .filter(|u| u.is_connected())
+        .map(|u| u.animal_name.as_str())
+        .collect();
+    let unique: std::collections::HashSet<&&str> = connected_names.iter().collect();
+    assert_eq!(
+        connected_names.len(),
+        unique.len(),
+        "two connected users must never share a name: {connected_names:?} \
+         (returning visitor got {returning_name:?})"
+    );
+}

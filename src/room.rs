@@ -241,6 +241,20 @@ impl RoomState {
         self.assign_animal()
     }
 
+    /// Whether `name` is held by a *different*, currently connected user.
+    ///
+    /// `names_in_use` (and so `claim_animal`/`assign_animal`) only count a
+    /// name as taken while its holder is connected — a disconnected user's
+    /// entry lingers for `DISCONNECTED_USER_RETENTION` so they can reclaim
+    /// their identity, but their name is free to hand to somebody else in the
+    /// meantime. Reclaiming has to check this before reinstating a stored
+    /// name unconditionally, or two connected users end up sharing one.
+    pub fn name_taken_by_another_connected_user(&self, user_id: &str, name: &str) -> bool {
+        self.users
+            .iter()
+            .any(|(uid, u)| uid != user_id && u.is_connected() && u.animal_name == name)
+    }
+
     /// Appends a message, pruning first if it would breach the memory ceiling.
     pub fn add_message(&mut self, msg: OutgoingMessage, memory_tracker: &MemoryTracker) {
         self.last_activity = Instant::now();

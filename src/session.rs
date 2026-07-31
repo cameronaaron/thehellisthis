@@ -294,14 +294,30 @@ pub(crate) async fn admit_user(
     let identity = match cookie_identity {
         // Known user reconnecting: reclaim their slot and name.
         Some(c) if room_state.users.contains_key(&c.user_id) => {
+            let previous_name = room_state.users.get(&c.user_id)?.animal_name.clone();
+
+            // Constraint #9: a disconnected user's name is free for anyone to
+            // draw (`name_taken_by_another_connected_user`'s doc comment), so
+            // somebody else may hold it by the time this visitor reconnects.
+            // Reinstating it unconditionally would put two connected users
+            // under the same name — the exact bug the roster check exists to
+            // prevent, reintroduced through the one path that skipped it.
+            let animal_name =
+                if room_state.name_taken_by_another_connected_user(&c.user_id, &previous_name) {
+                    room_state.claim_animal(None)
+                } else {
+                    previous_name
+                };
+
             let user = room_state.users.get_mut(&c.user_id)?;
+            user.animal_name = animal_name.clone();
             user.connection_state = ConnectionState::Connected {
                 last_heartbeat: now,
                 connection_id: connection_id.to_string(),
             };
             user.last_active = now;
             user.last_message_time = now;
-            (c.user_id.clone(), user.animal_name.clone())
+            (c.user_id.clone(), animal_name)
         }
         // A valid identity cookie this room has not seen yet: the id is the
         // identity (identity.rs), and the cookie is sent with `Path=/` to

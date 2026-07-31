@@ -694,6 +694,32 @@ only branch that mints one. Pinned by
 name) and `every_admission_says_what_became_of_the_identity` (the log and the
 id agree on what "recognised" means).
 
+### 5.9c Reclaiming an identity must re-check the name it is about to restore
+
+`names_in_use` (and so `claim_animal`/`assign_animal`) only count a name as
+taken while its holder is *connected* — a disconnected user's entry lingers in
+`room.users` for `DISCONNECTED_USER_RETENTION` so they can reclaim their
+identity, but their name is free for anyone else to draw the moment they drop,
+long before that retention window ends. `reclaimed` restored the stored
+`animal_name` unconditionally, on the reasoning that it was already theirs.
+Sometimes it no longer was: a different visitor could have drawn it in the
+meantime, and the room would end up with two connected users under one name —
+constraint #9's exact invariant, broken through the one path that never asked
+`claim_animal`'s question at all.
+
+Every piece involved was individually correct: `names_in_use` correctly
+excludes a disconnected user (the whole point — someone can drop and their
+name still gets recycled while they're gone), `claim_animal` correctly refuses
+a name already in use, and `reclaimed` correctly reused the stored id. None of
+them was wrong; reclaiming just never asked whether reinstating the *name*
+was still safe, only whether the *id* was still known. Fixed with
+`RoomState::name_taken_by_another_connected_user`, checked before restoring the
+name — if someone else now holds it, the returning visitor draws a new one via
+`claim_animal(None)` instead. A changed display name on a stale reconnect is a
+minor cosmetic cost; two people wearing the same name in one room is a
+different visitor, mistaken for you. Pinned by
+`reclaiming_never_hands_back_a_name_someone_else_now_holds`.
+
 ### 5.12 The log is an interface, and it is the only one an operator has
 
 There is no dashboard, no tracing backend and no way to attach a debugger to a
