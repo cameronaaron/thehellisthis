@@ -303,11 +303,27 @@ pub(crate) async fn admit_user(
             user.last_message_time = now;
             (c.user_id.clone(), user.animal_name.clone())
         }
-        // Either a cookie from a room they were never in, or no cookie at all:
-        // a fresh slot, keeping the name they know when it is theirs to keep.
-        preferred => {
+        // A valid identity cookie this room has not seen yet: the id is the
+        // identity (identity.rs), and the cookie is sent with `Path=/` to
+        // every room, so it must carry across rooms, not just reconnects
+        // within one. Minting a new id here used to be the whole bug: a
+        // browser that was still "the same animal" by every cookie it held
+        // would get a fresh, unrelated id the moment it joined a second room
+        // or came back to one whose entry had already been pruned, so its own
+        // older messages in that room's history stopped matching
+        // `this.myUserId` client-side and rendered as somebody else's — while
+        // `claim_animal` below often handed back the same display name,
+        // making it look like an impersonator wearing your name rather than
+        // what it was: you, under a new id nothing else agreed to use.
+        Some(c) => {
+            let animal_name = room_state.claim_animal(Some(&c.animal_name));
+            insert_user(room_state, &c.user_id, &animal_name, connection_id, now);
+            (c.user_id.clone(), animal_name)
+        }
+        // No cookie at all: a genuinely new visitor gets a genuinely new id.
+        None => {
             let user_id = Uuid::new_v4().to_string();
-            let animal_name = room_state.claim_animal(preferred.map(|c| c.animal_name.as_str()));
+            let animal_name = room_state.claim_animal(None);
             insert_user(room_state, &user_id, &animal_name, connection_id, now);
             (user_id, animal_name)
         }

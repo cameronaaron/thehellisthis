@@ -37,7 +37,9 @@ async fn every_admission_says_what_became_of_the_identity() {
     );
 
     // A good cookie for a room they have not been in: recognised, and issued a
-    // slot of their own.
+    // slot of their own — under the same id the cookie carried in. That id is
+    // what the client compares its own messages against, so a visitor's own
+    // history in this room only keeps rendering as theirs if it matches.
     let carried = crate::identity::UserCookie {
         user_id: Uuid::new_v4().to_string(),
         animal_name: ANIMAL_NAMES[0].to_string(),
@@ -51,9 +53,15 @@ async fn every_admission_says_what_became_of_the_identity() {
         logged.contains("recognised"),
         "a visitor with a usable cookie must be logged as recognised: {logged}"
     );
+    assert_eq!(
+        issued.as_ref().map(|(id, _)| id.as_str()),
+        Some(carried.user_id.as_str()),
+        "recognised must keep the cookie's id, not mint a new one"
+    );
 
     // Coming back with what the server actually set, which is what a browser
-    // sends — the identity it was issued, not the one it arrived with.
+    // sends — and, since recognised now keeps the cookie's id, the same one it
+    // arrived with.
     let (issued_id, issued_name) = issued.expect("admitted");
     let returning = crate::identity::UserCookie {
         user_id: issued_id,

@@ -661,6 +661,39 @@ storage consequence**, and the two are usually reasoned about by different
 people at different times. Anything set on a cookie should be checked against
 where that cookie has to survive.
 
+### 5.9b A valid cookie's id must survive a room it has not seen before
+
+`identity.rs` calls `user_id` "the identity" and sets the cookie with `Path=/`
+— every room gets the same value. `admit_user`'s three outcomes were `reclaimed`
+(this room already knows this id), `recognised` (a good cookie, new to this
+room) and `fresh` (no usable cookie). Only `reclaimed` kept the cookie's id;
+`recognised` minted a brand new `Uuid::new_v4()` and leaned on `claim_animal` to
+hand back the same *display name* where it could, which usually succeeded,
+because the name had just been freed by the same visitor leaving.
+
+The result looked fine until you actually watched your own history. The client
+has exactly one way to know a message is its own: comparing the message's
+`user_id` to the id its own `Welcome` frame carried (constraint #2). Every
+message a visitor had sent in a room under their old id stayed in that room's
+history under that old id — so the moment `recognised` handed them a *new* one
+(moving to a room for the first time, or returning to one after their entry had
+aged out of it), their own older bubbles in that room stopped matching and
+rendered on the left, as somebody else's, while the animal name up top still
+read as theirs. Not a rendering bug — the identity really had changed, and
+nothing had told the room, or the client, that it hadn't meant to.
+
+Every individual step was correct in isolation: the cookie was read correctly,
+the id was validated as a real UUID, the name was checked against the roster,
+`reclaimed` reused ids exactly as designed. The bug lived in the one branch
+that treated "recognised" as closer to "fresh" than to "reclaimed", when the
+cookie's own scope (`Path=/`, one identity, every room) said the opposite.
+Fixed by giving `recognised` its own arm: keep `c.user_id`, run it through
+`claim_animal` for the name, `insert_user` under that id. `fresh` is now the
+only branch that mints one. Pinned by
+`a_returning_visitor_keeps_a_roster_name_that_is_free` (the id, not just the
+name) and `every_admission_says_what_became_of_the_identity` (the log and the
+id agree on what "recognised" means).
+
 ### 5.12 The log is an interface, and it is the only one an operator has
 
 There is no dashboard, no tracing backend and no way to attach a debugger to a

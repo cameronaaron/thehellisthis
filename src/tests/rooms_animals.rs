@@ -407,12 +407,24 @@ async fn assign_animal_skips_names_already_in_use() {
     );
 }
 
-/// A returning visitor keeps the name they know.
+/// A returning visitor keeps the name they know, and the id underneath it.
 ///
 /// The checks in `claim_animal` exist to refuse forged and colliding names, and
 /// it would be easy to satisfy every one of those tests by never honouring a
 /// cookie at all. This is the behaviour the checks are *for*: open the same
 /// room in a second tab, or reload, and you are still the same animal.
+///
+/// The id matters as much as the name. `admit_user` used to mint a fresh
+/// `Uuid::new_v4()` for a valid cookie the moment the room in front of it had
+/// not seen that id before — every *other* room, and the same room again once
+/// its entry aged out — while `claim_animal` quietly kept handing back the
+/// same display name. The client has no other way to tell "my message" from
+/// "somebody else's" than comparing `msg.user_id` to the id its own `Welcome`
+/// frame carried (constraint #2), so a visitor's own older messages in that
+/// room's history stopped matching and rendered on the left, as somebody
+/// else's — while the name overhead still read as their own. The identity
+/// cookie is set with `Path=/`, sent to every room alike; the id behind it has
+/// to mean the same thing everywhere that cookie is presented.
 #[tokio::test]
 async fn a_returning_visitor_keeps_a_roster_name_that_is_free() {
     let state = Arc::new(AppState::new());
@@ -425,16 +437,22 @@ async fn a_returning_visitor_keeps_a_roster_name_that_is_free() {
 
     // Same browser, a room it has not been in before, carrying that cookie.
     let cookie = crate::identity::UserCookie {
-        user_id: first_id,
+        user_id: first_id.clone(),
         animal_name: first_name.clone(),
     };
-    let (_, second_name) = admit_user(&state, "another-room", "c2", Some(&cookie))
+    let (second_id, second_name) = admit_user(&state, "another-room", "c2", Some(&cookie))
         .await
         .expect("a returning visitor is admitted");
 
     assert_eq!(
         second_name, first_name,
         "a roster name that nobody in the room is using should be honoured"
+    );
+    assert_eq!(
+        second_id, first_id,
+        "a valid identity cookie must carry the same id into a room that has \
+         not seen it before — minting a new one is what makes a visitor's own \
+         history in that room render as somebody else's"
     );
 }
 
