@@ -32,5 +32,6 @@ COPY robots.txt ./robots.txt
 ENV PORT=3000
 ENV RUST_LOG=info
 EXPOSE 3000
-
+# 🔒 Force glibc to release freed room/message bytes back to the OS immediately
+ENV MALLOC_ARENA_MAX=1
 CMD ["./infinite-chat"]
