@@ -32,6 +32,14 @@ mod tests;
 
 use std::process::ExitCode;
 
+/// Every allocation this server makes — a message, a history entry, a
+/// per-connection buffer — is small and short-lived, and there are many of
+/// them happening concurrently across rooms. mimalloc's per-thread free lists
+/// avoid the single contended lock a general-purpose allocator serialises
+/// all of that behind.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
     startup::main_inner(tokio::signal::ctrl_c()).await
