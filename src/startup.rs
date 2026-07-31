@@ -12,8 +12,9 @@ use std::sync::Arc;
 
 use axum::{Router, routing::get};
 use axum_server::Server;
-use http::{Method, header};
+use http::{HeaderValue, Method, header};
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::set_header::SetResponseHeaderLayer;
 use tracing::{error, info};
 
 use crate::cleanup::cleanup_rooms;
@@ -50,17 +51,40 @@ pub(crate) fn build_router(state: Arc<AppState>) -> Router {
         .allow_methods([Method::GET])
         .allow_headers([header::CONTENT_TYPE]);
 
+    // Cloudflare's edge cache (`cache.enabled` in wrangler.jsonc) checks for a
+    // cached response *before this binary ever runs* — a cache hit means
+    // `room_handler`'s capacity/reserved-name checks, `admin_dashboard_handler`'s
+    // auth check, and every gauge `metrics_handler` reads never execute at all.
+    // `/app.js` is the one response actually meant to be cached (constraint
+    // #13's content-addressed, `immutable` URL); every other route that isn't
+    // static markup gets an explicit `no-store` so turning the edge cache on
+    // cannot silently serve a stale room-full page, a stale gauge, or — the
+    // sharp edge — one visitor's authenticated `/admin` response to the next
+    // request that happens to land on the same cached URL with no credentials
+    // at all.
+    let no_store = || {
+        SetResponseHeaderLayer::overriding(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("no-store"),
+        )
+    };
+
     let mut router = Router::new()
         .route("/", get(root_redirect))
-        .route("/main", get(main_room_handler))
+        .route("/main", get(main_room_handler).layer(no_store()))
         .route("/app.js", get(app_js_handler))
-        .route("/health", get(health_handler).layer(cors))
-        .route("/metrics", get(metrics_handler))
-        .route("/admin", get(admin_dashboard_handler))
+        .route(
+            "/health",
+            get(health_handler)
+                .layer::<_, std::convert::Infallible>(cors)
+                .layer(no_store()),
+        )
+        .route("/metrics", get(metrics_handler).layer(no_store()))
+        .route("/admin", get(admin_dashboard_handler).layer(no_store()))
         .route("/robots.txt", get(robots_txt_handler))
         .route("/ws/{room}", get(ws_handler))
         // Last: every other single segment is a room name.
-        .route("/{room}", get(room_handler));
+        .route("/{room}", get(room_handler).layer(no_store()));
 
     for layer in security_header_layers() {
         router = router.layer(layer);

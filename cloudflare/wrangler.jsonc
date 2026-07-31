@@ -20,9 +20,18 @@
   
   // Disable observability for cost savings (no active logging needed)
   "observability": {
-    "enabled": false
+    "enabled": true
   },
-  
+
+  // Check Cloudflare's edge cache before running the Worker at all, honouring
+  // whatever Cache-Control the container's response carries. Only /app.js
+  // (content-hashed, immutable) actually wants that; every other route the
+  // Rust server serves sets an explicit `Cache-Control: no-store` for exactly
+  // this reason — see `build_router` in src/startup.rs.
+  "cache": {
+    "enabled": true
+  },
+
   // Container configuration for the Rust WebSocket server
   "containers": [
     {
