@@ -32,9 +32,6 @@ interface Env {
  */
 const CONTAINER_INSTANCE = 'main';
 
-/** Immutable, content-addressed, and identical for every visitor. */
-const CACHEABLE_PATHS = new Set(['/app.js']);
-
 /**
  * Tells the container who the client is.
  *
@@ -68,7 +65,7 @@ function unavailable(): Response {
 }
 
 export default {
-  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const container = getContainer(env.CHAT_CONTAINER, CONTAINER_INSTANCE);
 
@@ -83,32 +80,25 @@ export default {
       }
     }
 
-    // The script is immutable and content-addressed, so it can be served from
-    // the edge cache and never reach the container twice.
-    const isCacheable = CACHEABLE_PATHS.has(url.pathname);
-    if (isCacheable) {
-      const cached = await caches.default.match(request);
-      if (cached) return cached;
-    }
-
+    // Caching is handled one layer up now (`cache.enabled` in
+    // wrangler.jsonc): the edge checks for a cached response before this
+    // handler runs at all, honouring whatever Cache-Control the container's
+    // response actually carries — `/app.js`'s `public, max-age=31536000,
+    // immutable`, and an explicit `no-store` on every other route
+    // (`src/startup.rs::build_router`). A hand-rolled `caches.default`
+    // keyed on path used to do this blind to that header; now there is one
+    // cache policy, set once, in the one place that knows what each
+    // response actually is.
     const proxied = new Request(`http://localhost:3000${url.pathname}${url.search}`, {
       method: request.method,
       headers: withClientAddress(request),
       body: request.body,
     });
 
-    let response: Response;
     try {
-      response = await container.fetch(proxied);
+      return await container.fetch(proxied);
     } catch {
       return unavailable();
     }
-
-    if (isCacheable && response.ok) {
-      // Cache without blocking the response the visitor is waiting for.
-      ctx.waitUntil(caches.default.put(request, response.clone()));
-    }
-
-    return response;
   },
 };
