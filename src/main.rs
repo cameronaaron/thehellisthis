@@ -32,7 +32,7 @@ mod tests;
 
 use std::process::ExitCode;
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
     startup::main_inner(tokio::signal::ctrl_c()).await
 }
