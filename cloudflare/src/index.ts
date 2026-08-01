@@ -19,6 +19,13 @@ export class InfiniteChatContainer extends Container {
   // Polled by the runtime to decide whether this instance is healthy. The
   // handler never takes the room write lock, so a busy server cannot look dead.
   pingEndpoint = '/health';
+
+  // Stop the instance after this long with no in-flight request — an open
+  // WebSocket keeps its proxying `fetch()` in-flight for as long as the
+  // socket is open, so a live conversation resets this rather than tripping
+  // it. This is the library's own default; stated explicitly so it reads as
+  // a decision rather than an accident of an unset field.
+  sleepAfter = '10m';
 }
 
 interface Env {
