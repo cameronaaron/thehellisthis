@@ -1098,3 +1098,18 @@ fn nav_back_is_debounced_against_repeated_clicks() {
          double-click still fires two page loads"
     );
 }
+
+/// The explore-a-random-room link is the same class of bug as `.nav-back`,
+/// one level worse: it navigates via JS rather than a plain href, and a
+/// second click before the first navigation lands does not just repeat the
+/// same page load, it picks a *different* random room and races the two
+/// navigations against each other.
+#[test]
+fn explore_link_is_guarded_against_repeated_clicks() {
+    assert!(
+        EMBEDDED_JS.contains("if (this.exploringRoom) return;")
+            && EMBEDDED_JS.contains("this.exploringRoom = true;"),
+        "the explore-room click handler must ignore a second click before \
+         the first navigation actually leaves the page"
+    );
+}

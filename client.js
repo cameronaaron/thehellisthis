@@ -313,9 +313,16 @@ class ChatApp {
             this.sendMessage();
         });
         
-        // Explore room link
+        // Explore room link. Same class of bug as .nav-back (see
+        // debounceNavigation): this navigates via JS rather than a plain
+        // href, so a second click before the first navigation lands does not
+        // just repeat the same page load — it picks a *different* random
+        // room and races that navigation against the first. One click is all
+        // this needs; the rest are ignored until the page actually leaves.
         document.getElementById('exploreLink').addEventListener('click', (e) => {
             e.preventDefault();
+            if (this.exploringRoom) return;
+            this.exploringRoom = true;
             const rooms = ['mellow-forest', 'midnight-owl', 'coffee-talks', 'tech-minds', 'random-thoughts', 'chill-zone', 'late-night', 'creative-corner'];
             const room = rooms[Math.floor(Math.random() * rooms.length)];
             window.location.href = `/${room}`;
