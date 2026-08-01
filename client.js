@@ -2102,11 +2102,37 @@ class ChatApp {
     }
 }
 
+/// Lets a plain `<a href>` navigation fire once per click, not once per click
+/// that lands before the browser actually leaves the page.
+///
+/// `.nav-back` is a normal link, not a client-side route: each click is a full
+/// page load that tears down the current WebSocket and opens a new one on
+/// arrival. Clicking it several times in the moment before the browser
+/// navigates away fires that many overlapping loads — indistinguishable, from
+/// the room's side, from a rapid-reconnect flood, and exactly what the
+/// server's per-user room-join rate limit exists to catch. The fix belongs
+/// here, not in that limit: a normal navigation only ever needs the first
+/// click, so the rest are debounced rather than sent.
+function debounceNavigation(selector) {
+    const link = document.querySelector(selector);
+    if (!link) return;
+    let navigating = false;
+    link.addEventListener('click', (event) => {
+        if (navigating) {
+            event.preventDefault();
+            return;
+        }
+        navigating = true;
+    });
+}
+
 // Initialize app when DOM is ready
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => {
         new ChatApp();
+        debounceNavigation('.nav-back');
     });
 } else {
     new ChatApp();
+    debounceNavigation('.nav-back');
 }

@@ -1077,3 +1077,24 @@ fn stylesheet_ids_do_not_carry_layout() {
         );
     }
 }
+
+/// `.nav-back` is a plain `<a href>`, not a client-side route: each click is a
+/// full page load that tears down the current WebSocket and opens a new one.
+/// Clicking it several times in the moment before the browser navigates away
+/// fires that many overlapping loads — indistinguishable, from the room's
+/// side, from a rapid-reconnect flood, and exactly what the room-join
+/// throttle (`MAX_ROOM_JOIN_ATTEMPTS`) exists to catch. The fix belongs on the
+/// link, not in that throttle, so the shipped script must actually debounce
+/// it rather than pass it straight through.
+#[test]
+fn nav_back_is_debounced_against_repeated_clicks() {
+    assert!(
+        EMBEDDED_JS.contains("function debounceNavigation"),
+        "the shipped script must define a navigation debounce guard"
+    );
+    assert!(
+        EMBEDDED_JS.contains("debounceNavigation('.nav-back')"),
+        "and must apply it to the back-to-main link specifically, or a fast \
+         double-click still fires two page loads"
+    );
+}
