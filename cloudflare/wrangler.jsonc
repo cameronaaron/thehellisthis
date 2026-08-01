@@ -18,9 +18,25 @@
     }
   ],
   
-  // Disable observability for cost savings (no active logging needed)
+  // Disable observability for cost savings (no active logging needed): the
+  // Worker itself does no per-request console.log-ing (see 1e91e242, which
+  // removed the last of it), so Workers Logs would ingest invocation records
+  // nobody reads. The app's own logs go through the container's RUST_LOG /
+  // stdout pipeline instead, which this setting has no effect on.
   "observability": {
-    "enabled": true
+    "enabled": false
+  },
+
+  // Runs the Worker itself close to the one pinned container/Durable Object
+  // instance (`max_instances: 1` below) rather than close to whichever
+  // visitor is asking. With a single global backend, every visitor pays the
+  // Worker-to-container hop regardless of where the Worker runs; "smart"
+  // lets Cloudflare learn where that backend actually is and place the
+  // Worker there instead of at the visitor's nearest edge, which is the
+  // configuration Smart Placement is for — a fixed backend and a globally
+  // distributed caller.
+  "placement": {
+    "mode": "smart"
   },
 
   // Check Cloudflare's edge cache before running the Worker at all, honouring
