@@ -6,7 +6,7 @@
 //! (ENGINEERING-STANDARDS.md §7); the memory they free is a side effect.
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tracing::{debug, info};
 
@@ -14,6 +14,7 @@ use crate::config::{
     DISCONNECTED_USER_RETENTION, EMPTY_ROOM_CLEANUP_DELAY, MAIN_ROOM, MAIN_ROOM_FADE_IDLE,
     MAIN_ROOM_FADE_KEEP, MAX_MESSAGES_PER_ROOM,
 };
+use crate::room::{ConnectionState, RoomState, UserData};
 use crate::state::AppState;
 
 /// One housekeeping pass over every room.
@@ -43,30 +44,7 @@ pub async fn cleanup_rooms_at(state: &Arc<AppState>, now: Instant) {
     let mut rooms = state.rooms.write().await;
 
     for (room_name, room) in rooms.iter_mut() {
-        // Reclaim users who disconnected long enough ago that they are not
-        // coming back, returning their animal name to the pool.
-        let stale: Vec<String> = room
-            .users
-            .iter()
-            .filter(|(_, user)| match &user.connection_state {
-                crate::room::ConnectionState::Disconnected { since } => {
-                    now.duration_since(*since) > DISCONNECTED_USER_RETENTION
-                }
-                crate::room::ConnectionState::Connected { .. } => false,
-            })
-            .map(|(uid, _)| uid.clone())
-            .collect();
-
-        for uid in stale {
-            // Nothing to hand back to the name pool: the pool is a rotation
-            // over the roster, and whether a name is free is derived from
-            // `users` — which this removal has just updated. Putting names back
-            // by hand is what used to make the pool grow and fill with
-            // non-roster names (see `RoomState::assign_animal`).
-            if room.users.remove(&uid).is_some() {
-                debug!(user_id = %uid, room = %room_name, "reclaimed abandoned user");
-            }
-        }
+        reclaim_stale_users(room_name, room, now);
 
         // History is bounded here for *every* room, not only on the join path.
         // Trimming used to happen when somebody joined, plus the `main` fade
@@ -74,16 +52,9 @@ pub async fn cleanup_rooms_at(state: &Arc<AppState>, now: Instant) {
         // without limit, and since the byte ceiling is process-wide, one such
         // room could fill it and make every room on the server start dropping
         // messages (ENGINEERING-STANDARDS.md §3).
-        //
-        // `main` is permanent, so instead of being deleted it fades: once idle
-        // it trims harder than everyone else.
         let is_main = room_name == MAIN_ROOM;
         let idle_for = now.duration_since(room.last_activity);
-        let target = if is_main && idle_for >= MAIN_ROOM_FADE_IDLE {
-            MAIN_ROOM_FADE_KEEP
-        } else {
-            MAX_MESSAGES_PER_ROOM
-        };
+        let target = history_trim_target(is_main, idle_for);
 
         // No `len > target` guard: `retain_newest` already makes that comparison
         // and returns 0 when there is nothing to do, so a second one here was
@@ -101,14 +72,8 @@ pub async fn cleanup_rooms_at(state: &Arc<AppState>, now: Instant) {
             info!(room = %room_name, from, to = target, idle_s, "trimming room history");
         }
 
-        if is_main {
-            continue;
-        }
-
-        let has_connected_users = room.users.values().any(crate::room::UserData::is_connected);
-        if !has_connected_users
-            && now.duration_since(room.last_activity) >= EMPTY_ROOM_CLEANUP_DELAY
-        {
+        let has_connected_users = room.users.values().any(UserData::is_connected);
+        if is_abandoned(is_main, has_connected_users, idle_for) {
             rooms_to_remove.push(room_name.clone());
         }
     }
@@ -128,4 +93,49 @@ pub async fn cleanup_rooms_at(state: &Arc<AppState>, now: Instant) {
         let freed: usize = room.chat_history.iter().map(|m| m.estimate_size()).sum();
         state.memory_tracker.remove_bytes(freed);
     }
+}
+
+/// Removes users who disconnected long enough ago that they are not coming
+/// back — nothing is handed back to the name pool by hand: the pool is a
+/// rotation over the roster, and whether a name is free is derived from
+/// `users`, which this removal has just updated (see `RoomState::assign_animal`).
+fn reclaim_stale_users(room_name: &str, room: &mut RoomState, now: Instant) {
+    let stale: Vec<String> = room
+        .users
+        .iter()
+        .filter(|(_, user)| match &user.connection_state {
+            ConnectionState::Disconnected { since } => {
+                now.duration_since(*since) > DISCONNECTED_USER_RETENTION
+            }
+            ConnectionState::Connected { .. } => false,
+        })
+        .map(|(uid, _)| uid.clone())
+        .collect();
+
+    for uid in stale {
+        if room.users.remove(&uid).is_some() {
+            debug!(user_id = %uid, room = %room_name, "reclaimed abandoned user");
+        }
+    }
+}
+
+/// How many messages a room should be trimmed to keep, right now.
+///
+/// `main` is permanent, so instead of being deleted it fades: once idle for
+/// `MAIN_ROOM_FADE_IDLE` it trims harder than every other room. A pure
+/// function of two primitives rather than a room and an instant, so a test
+/// can ask it directly — "is main's fade threshold really `MAIN_ROOM_FADE_IDLE`,
+/// not one interval off" — without constructing a room old enough to answer.
+pub(crate) fn history_trim_target(is_main: bool, idle_for: Duration) -> usize {
+    if is_main && idle_for >= MAIN_ROOM_FADE_IDLE {
+        MAIN_ROOM_FADE_KEEP
+    } else {
+        MAX_MESSAGES_PER_ROOM
+    }
+}
+
+/// Whether a room has earned deletion: not `main`, which fades instead of
+/// dying; nobody connected; idle for at least `EMPTY_ROOM_CLEANUP_DELAY`.
+pub(crate) fn is_abandoned(is_main: bool, has_connected_users: bool, idle_for: Duration) -> bool {
+    !is_main && !has_connected_users && idle_for >= EMPTY_ROOM_CLEANUP_DELAY
 }

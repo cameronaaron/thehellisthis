@@ -362,6 +362,38 @@ The `chat_history.clone()` is a deliberate allocation bought to shorten a
 critical section. That is the correct trade and the reason it is not "optimised"
 away.
 
+### 2.1a A synchronous call is a lock the scheduler cannot see
+
+`main.rs` runs Tokio's `current_thread` runtime: every room, every connection,
+both housekeeping loops, and every heartbeat and ping share one OS thread,
+cooperatively scheduled. That scheduler only gets a turn at an `.await` point —
+a synchronous function call that never yields holds the thread until it
+returns, and nothing else in the process runs meanwhile. `apply_client_event_at`
+called `render_message_html` (comrak, then ammonia over up to
+`MAX_RENDERED_MESSAGE_LEN` chars) inline, so a slow render could delay every
+other connection's heartbeat and ping, not just the sender's own message —
+the same failure shape as §2.1, produced by CPU time instead of a slow client.
+
+`render_off_thread` moves that work to Tokio's blocking pool, which exists
+independent of runtime flavour and is scheduled preemptively by the OS, so the
+single async thread stays free while it runs. What this does **not** fix: the
+room write lock is still held across the wait, because `current_thread` was
+chosen for a container provisioned at 1/16 vCPU (`cloudflare/wrangler.jsonc`),
+where a `multi_thread` runtime's worker pool would mostly fight itself over a
+sliver of CPU it does not have to spare. `state.rooms` is one lock for every
+room, so other rooms' events were already serialised behind whichever one was
+being processed, rendering or not — this change buys back the connections
+that do not need that lock (a ping, a receive loop elsewhere), not the ones
+that do.
+
+Made generic over the closure rather than tied to the render call — the same
+reason the four connection tasks are generic over their sink (§6.1c) — so the
+failure path (the task panicking, or the runtime shutting down mid-render) is
+a value `render_off_thread_turns_a_panic_into_none` produces directly, and
+`resolve_render` folds that outcome into the same rejection an invalid message
+already takes, so the call site itself needed no arm a real panic alone could
+reach.
+
 ### 2.2 Take the lock once, decide everything, release
 
 `cleanup_rooms` takes the write lock once and does its whole pass inside it.
@@ -964,6 +996,26 @@ brace-wrapped arm to the body alone; written as a single expression, like the
 `Pong` arm directly beside it, it reports honestly. §0.5 says to validate the
 instrument before trusting the number, and that applies to a coverage tool
 exactly as much as to a stopwatch.
+
+A second, distinct instance of the same instrument-disagreeing-with-the-code
+shape turned up adding verbose `trace!`/`debug!`/`warn!` logging throughout
+`room/`, `limits/`, `session/` and `state.rs`: several multi-line macro calls
+(three or more fields, each on its own line) were flagged as one specific
+uncovered *interior* line even though a test exercised the branch, the
+subscriber was capturing at that level, and every field was already a
+pre-bound local — the "bind before the macro" fix for the *lazy-evaluation*
+gotcha above does nothing here, because evaluation was never the problem.
+llvm-cov's coverage regions for a macro invocation are anchored to the token
+span of its arguments; spread across several lines, one interior line's region
+does not connect to the "hit" span the rest of the call maps to. The fix,
+confirmed by making it 100% again: rewrite the call as a single physical line.
+Every one of these fit once fields that repeated a `config.rs` constant already
+visible to the reader (a `limit` field naming a value the message's own
+constant already implies) were dropped rather than kept and wrapped. The
+takeaway is the same as the `Message::Binary` case, one level more specific:
+**a multi-line macro invocation, not the branch it sits in, is what to suspect
+next** — check whether a single-line rewrite makes the number honest before
+reaching for `scripts/coverage-exemptions.toml`.
 
 ### 6.2 A fix and its test are one commit
 

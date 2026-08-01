@@ -816,4 +816,29 @@ async fn test_room_handler_hyphen_underscore() {
     }
 }
 
+/// `room_name_rejection` in isolation: the ordering constraint #4 depends on
+/// — reserved, then length, then shape — checked directly against strings
+/// instead of read out of an HTML response body.
+#[test]
+fn room_name_rejection_checks_reserved_before_length_before_shape() {
+    // A reserved name that is also too short: reserved must win.
+    assert_eq!(room_name_rejection("ws"), Some(RoomNameRejection::Reserved));
+
+    // Too short, but not reserved and not shape-invalid either.
+    assert_eq!(
+        room_name_rejection("ab"),
+        Some(RoomNameRejection::BadLength)
+    );
+
+    // The right length, not reserved, but starts with a character the shape
+    // regex forbids.
+    assert_eq!(
+        room_name_rejection("-bad-shape"),
+        Some(RoomNameRejection::BadShape)
+    );
+
+    // Nothing wrong with it at all.
+    assert_eq!(room_name_rejection("a-fine-room"), None);
+}
+
 // ========== ROSTER INTEGRITY ==========

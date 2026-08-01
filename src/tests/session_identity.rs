@@ -1215,3 +1215,35 @@ async fn reclaiming_never_hands_back_a_name_someone_else_now_holds() {
          (returning visitor got {returning_name:?})"
     );
 }
+
+/// `parse_identity_cookies` in isolation: every shape the raw header can take,
+/// without building a request to exercise the extractor around it.
+#[test]
+fn parse_identity_cookies_reads_both_fields() {
+    assert_eq!(
+        parse_identity_cookies(Some("user_id=abc; animal_name=otter")),
+        (Some("abc".to_string()), Some("otter".to_string()))
+    );
+}
+
+#[test]
+fn parse_identity_cookies_handles_a_missing_header() {
+    assert_eq!(parse_identity_cookies(None), (None, None));
+}
+
+#[test]
+fn parse_identity_cookies_ignores_unrelated_cookies() {
+    assert_eq!(
+        parse_identity_cookies(Some("session=xyz; theme=dark")),
+        (None, None)
+    );
+}
+
+#[test]
+fn parse_identity_cookies_skips_a_malformed_pair() {
+    // No `=`, and the well-formed cookie after it must still be read.
+    assert_eq!(
+        parse_identity_cookies(Some("garbage; user_id=abc")),
+        (Some("abc".to_string()), None)
+    );
+}

@@ -1072,3 +1072,50 @@ async fn a_room_is_cleaned_only_once_it_is_past_the_soft_memory_limit() {
         );
     }
 }
+
+/// `history_trim_target` in isolation: every combination of "is this main"
+/// and "how long has it been idle", checked directly against two primitives
+/// rather than a constructed room.
+#[test]
+fn history_trim_target_only_fades_main_once_it_is_idle_long_enough() {
+    assert_eq!(
+        history_trim_target(false, MAIN_ROOM_FADE_IDLE + Duration::from_secs(1)),
+        MAX_MESSAGES_PER_ROOM,
+        "a non-main room never gets main's harder fade, however idle"
+    );
+    assert_eq!(
+        history_trim_target(true, Duration::from_secs(0)),
+        MAX_MESSAGES_PER_ROOM,
+        "main does not fade until it has actually been idle that long"
+    );
+    assert_eq!(
+        history_trim_target(true, MAIN_ROOM_FADE_IDLE),
+        MAIN_ROOM_FADE_KEEP,
+        "exactly at the threshold must already count as idle enough"
+    );
+}
+
+/// `is_abandoned` in isolation: the three conditions have to hold together —
+/// not main, nobody connected, idle long enough — and any one of them being
+/// false must keep a room alive.
+#[test]
+fn is_abandoned_requires_every_condition_at_once() {
+    let idle_enough = EMPTY_ROOM_CLEANUP_DELAY;
+
+    assert!(
+        is_abandoned(false, false, idle_enough),
+        "not main, nobody connected, idle long enough: this is the abandoned case"
+    );
+    assert!(
+        !is_abandoned(true, false, idle_enough),
+        "main fades, it is never deleted, however idle or empty"
+    );
+    assert!(
+        !is_abandoned(false, true, idle_enough),
+        "a room with a connected user is not abandoned, however idle it looks"
+    );
+    assert!(
+        !is_abandoned(false, false, Duration::from_secs(0)),
+        "not idle long enough yet, even with nobody connected"
+    );
+}

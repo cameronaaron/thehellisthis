@@ -1016,3 +1016,29 @@ async fn a_repeated_message_is_refused_only_inside_the_duplicate_window() {
         );
     }
 }
+
+/// `within_throttle` in isolation: the shared shape behind typing, read
+/// receipt, reaction and roster-request throttling, checked directly against
+/// three primitives rather than through each of the four events it backs.
+#[test]
+fn within_throttle_checks_elapsed_time_against_the_interval() {
+    let now = Instant::now();
+    let interval = Duration::from_millis(100);
+
+    assert!(
+        !within_throttle(None, now, interval),
+        "no prior event, never throttled"
+    );
+
+    let just_now = now;
+    assert!(
+        within_throttle(Some(just_now), now, interval),
+        "the same instant is well within the interval"
+    );
+
+    let long_ago = now - interval - Duration::from_millis(1);
+    assert!(
+        !within_throttle(Some(long_ago), now, interval),
+        "past the interval, the throttle must release"
+    );
+}

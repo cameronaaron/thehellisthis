@@ -291,6 +291,64 @@ async fn admin_dashboard_requires_the_configured_password() {
     unsafe { std::env::remove_var("ADMIN_TOKEN") };
 }
 
+/// The dashboard with nothing to list: `state.rooms` is checked as empty
+/// somewhere between server start and the first room being visited, and that
+/// branch is a distinct message rather than an empty `<ul>`.
+#[tokio::test]
+async fn admin_dashboard_says_so_when_no_rooms_are_open() {
+    let _env = ADMIN_TOKEN_ENV.lock().await;
+
+    let app_state = Arc::new(AppState::new());
+    let app = Router::new()
+        .route("/admin", get(admin_dashboard_handler))
+        .with_state(app_state);
+
+    // SAFETY: serialised by ADMIN_TOKEN_ENV; cleared before the lock is
+    // released.
+    unsafe { std::env::set_var("ADMIN_TOKEN", "correct-horse-battery-staple") };
+
+    use base64::Engine;
+    let auth = format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode("admin:correct-horse-battery-staple")
+    );
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/admin")
+                .header("authorization", auth)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = String::from_utf8(body_bytes.to_vec()).unwrap();
+    assert!(body.contains("No open rooms."));
+
+    // SAFETY: still within the lock; removed before it is released.
+    unsafe { std::env::remove_var("ADMIN_TOKEN") };
+}
+
+/// `render_admin_dashboard` in isolation: the empty state, the escaping, and
+/// the link, checked directly against a `Vec` rather than through an
+/// authenticated HTTP round trip (that path is `admin_dashboard_requires_the_
+/// configured_password`'s job — this one is for the markup alone).
+#[test]
+fn render_admin_dashboard_escapes_names_and_reports_when_empty() {
+    assert!(render_admin_dashboard(&[]).contains("No open rooms."));
+
+    let rendered = render_admin_dashboard(&[("<script>".to_string(), 2)]);
+    assert!(!rendered.contains("<script>"));
+    assert!(rendered.contains("&lt;script&gt;"));
+
+    let rendered = render_admin_dashboard(&[("test-room".to_string(), 3)]);
+    assert!(rendered.contains("href=\"/test-room\""));
+    assert!(rendered.contains("3 connected"));
+}
+
 #[tokio::test]
 async fn test_invalid_message_error_response() {
     let error = ChatError::InvalidMessage("Test error".to_string());

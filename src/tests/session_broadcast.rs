@@ -744,3 +744,50 @@ async fn a_quiet_user_is_evicted_with_the_close_frame() {
         "without the code the client reconnects and the room never empties"
     );
 }
+
+/// `render_off_thread` moves message rendering to Tokio's blocking pool so a
+/// slow render cannot stall every other connection's heartbeat and ping on
+/// this server's single-threaded runtime (`main.rs`). Generic over the work
+/// itself, the same reason the tasks above are generic over their sink: it
+/// turns "the task panicked" from an untestable line into a value a test can
+/// produce directly.
+#[tokio::test]
+async fn render_off_thread_runs_the_closure_on_the_blocking_pool() {
+    let doubled = render_off_thread(|| 21 * 2).await;
+    assert_eq!(
+        doubled,
+        Some(42),
+        "the closure's return value must come back"
+    );
+}
+
+/// A closure that panics is Tokio's own defined failure mode for
+/// `spawn_blocking` — the runtime shutting down mid-render looks the same to
+/// the caller. Either way, this must not propagate the panic into the
+/// connection's own task; it reads as `None` and the caller drops the message.
+#[tokio::test]
+async fn render_off_thread_turns_a_panic_into_none() {
+    let result = render_off_thread(|| -> i32 { panic!("boom") }).await;
+    assert_eq!(
+        result, None,
+        "a panicking render must not take the connection's task down with it"
+    );
+}
+
+/// `resolve_render` is what keeps the message-handling call site down to one
+/// failure arm: `render_off_thread` returning `None` (the render task did not
+/// complete) folds into the same rejection an invalid message already takes,
+/// rather than needing its own arm that only a real panic mid-render could
+/// reach.
+#[tokio::test]
+async fn resolve_render_folds_a_missing_render_into_a_rejection() {
+    assert!(
+        resolve_render(None).is_err(),
+        "no render at all must be treated as a rejected message, not a crash"
+    );
+    assert_eq!(
+        resolve_render(Some(Ok("<p>hi</p>".to_string()))).unwrap(),
+        "<p>hi</p>"
+    );
+    assert!(resolve_render(Some(Err(ChatError::InvalidMessage("x".to_string())))).is_err());
+}

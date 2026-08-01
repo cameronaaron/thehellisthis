@@ -383,10 +383,9 @@ async fn events_for_unknown_rooms_and_users_are_dropped() {
 /// behavioural test while losing the entire point.
 #[test]
 fn the_upgrade_path_hashes_the_address_at_the_boundary() {
-    // `../session.rs` — the server module. Since the suite became a directory,
-    // a bare "session.rs" resolves to this suite's *own* session tests, and the
-    // assertion would silently be about the wrong file.
-    const SESSION_SRC: &str = include_str!("../session.rs");
+    // `ws_handler` and the hash it must apply both live in `admission.rs` now
+    // that `session.rs` is a directory split by phase of a connection's life.
+    const SESSION_SRC: &str = include_str!("../session/admission.rs");
 
     assert!(
         SESSION_SRC.contains(".map(hash_client_address)"),
@@ -487,4 +486,57 @@ async fn test_claim_no_disk_persistence() {
     // Drop app - no persistence
     drop(app_state);
     // No file was written (if it were, test would need a file cleanup)
+}
+
+/// `announce_departures` in isolation: only connected users are told they
+/// left, built and checked without going through a full `AppState::shutdown`.
+#[tokio::test]
+async fn announce_departures_tells_only_connected_users() {
+    let mut room = create_room();
+    room.users.insert(
+        "connected-user".to_string(),
+        connected_user("connected-user", "otter", "c1", Instant::now()),
+    );
+    room.users.insert(
+        "gone-user".to_string(),
+        UserData {
+            user_id: "gone-user".to_string(),
+            animal_name: "heron".to_string(),
+            last_active: Instant::now(),
+            last_message_time: Instant::now(),
+            connection_state: ConnectionState::Disconnected {
+                since: Instant::now(),
+            },
+            last_read_message: None,
+            is_typing: false,
+            last_typing_event: None,
+            last_read_receipt_event: None,
+            rate_limiter: RateLimiter::new(),
+            last_message_text: None,
+            last_reaction_event: None,
+        },
+    );
+
+    let mut receiver = room.sender.subscribe();
+    announce_departures(&room);
+
+    let event = timeout(Duration::from_millis(100), receiver.recv())
+        .await
+        .expect("a departure must be announced")
+        .unwrap();
+    let OutgoingEvent::System {
+        event: SystemEvent::UserLeft { user_id, .. },
+    } = event
+    else {
+        panic!("expected a UserLeft system event, got {event:?}");
+    };
+    assert_eq!(user_id, "connected-user");
+
+    // Only one: the disconnected user must not get a second announcement.
+    assert!(
+        timeout(Duration::from_millis(50), receiver.recv())
+            .await
+            .is_err(),
+        "a user who was already disconnected must not be announced again"
+    );
 }

@@ -9,6 +9,31 @@
 
 use super::*;
 
+/// Every `.rs` file under `src/`, found recursively, skipping `src/tests/`.
+///
+/// A module split into a directory (`src/security/`, and others as they
+/// follow) has to stay exactly as visible to these contracts as one that is
+/// still a single file — a dead export or a missing header comment does not
+/// stop being a problem because the module it lives in grew a `mod.rs`.
+/// `src/tests/` is excluded the same way it always was when it was one
+/// unwalked directory entry: this suite's own code is not the production
+/// surface these contracts are about.
+fn rust_source_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(dir).expect("directory should be readable") {
+        let path = entry.expect("a readable entry").path();
+        if path.is_dir() {
+            if path.file_name().is_some_and(|n| n == "tests") {
+                continue;
+            }
+            files.extend(rust_source_files(&path));
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            files.push(path);
+        }
+    }
+    files
+}
+
 /// Every test named in the standards actually exists.
 ///
 /// `ENGINEERING-STANDARDS.md` opens by asserting "every rule here is enforced
@@ -490,13 +515,14 @@ fn every_section_reference_resolves() {
         ),
         ("CLAUDE.md".to_string(), CLAUDE_MD.to_string()),
     ];
-    let source_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
-    for entry in std::fs::read_dir(source_dir).expect("src/ should be readable") {
-        let path = entry.expect("a readable entry").path();
-        if path.extension().is_some_and(|e| e == "rs") {
-            let name = path.file_name().unwrap().to_string_lossy().to_string();
-            corpus.push((name, std::fs::read_to_string(&path).expect("readable")));
-        }
+    let source_dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
+    for path in rust_source_files(source_dir) {
+        let name = path
+            .strip_prefix(source_dir)
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        corpus.push((name, std::fs::read_to_string(&path).expect("readable")));
     }
 
     let mut broken: Vec<String> = Vec::new();
@@ -549,14 +575,10 @@ fn every_module_is_named_for_its_job_and_says_what_it_is() {
         "utils", "helpers", "common", "misc", "shared", "core", "lib2",
     ];
 
-    let source_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
+    let source_dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
     let mut checked = 0;
 
-    for entry in std::fs::read_dir(source_dir).expect("src/ should be readable") {
-        let path = entry.expect("a readable entry").path();
-        if path.extension().is_none_or(|e| e != "rs") {
-            continue;
-        }
+    for path in rust_source_files(source_dir) {
         let name = path.file_stem().unwrap().to_string_lossy().to_string();
         checked += 1;
 
@@ -595,22 +617,19 @@ fn every_module_is_named_for_its_job_and_says_what_it_is() {
 /// Ported from the dead-logic-export contract on `cameronaaron.com`.
 #[test]
 fn nothing_is_public_only_for_its_own_test() {
-    let source_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
+    let source_dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
 
     let mut production = String::new();
     let mut declarations: Vec<(String, String)> = Vec::new();
 
-    for entry in std::fs::read_dir(source_dir).expect("src/ should be readable") {
-        let path = entry.expect("a readable entry").path();
-        if path.extension().is_none_or(|e| e != "rs") {
-            continue;
-        }
-        let name = path.file_name().unwrap().to_string_lossy().to_string();
+    for path in rust_source_files(source_dir) {
+        let name = path
+            .strip_prefix(source_dir)
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
         let body = std::fs::read_to_string(&path).expect("a readable module");
 
-        if name == "tests.rs" {
-            continue;
-        }
         production.push_str(&body);
         production.push('\n');
 

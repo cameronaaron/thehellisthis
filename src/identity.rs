@@ -30,21 +30,8 @@ where
     type Rejection = std::convert::Infallible;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        let mut user_id = None;
-        let mut animal_name = None;
-
-        if let Some(cookie_str) = parts.headers.get("cookie").and_then(|v| v.to_str().ok()) {
-            for raw in cookie_str.split(';') {
-                let Ok(cookie) = Cookie::parse(raw.trim().to_string()) else {
-                    continue;
-                };
-                match cookie.name() {
-                    "user_id" => user_id = Some(cookie.value().to_string()),
-                    "animal_name" => animal_name = Some(cookie.value().to_string()),
-                    _ => {}
-                }
-            }
-        }
+        let cookie_header = parts.headers.get("cookie").and_then(|v| v.to_str().ok());
+        let (user_id, animal_name) = parse_identity_cookies(cookie_header);
 
         if let (Some(u), Some(a)) = (user_id, animal_name)
             && !u.is_empty()
@@ -60,6 +47,34 @@ where
         debug!("no usable identity cookies; treating as a new visitor");
         Ok(OptionalUserCookie(None))
     }
+}
+
+/// Picks the two identity fields out of a raw `Cookie` header.
+///
+/// Pure and synchronous, unlike the extractor above, so a test can hand it a
+/// plain string instead of building a request — malformed cookies, a missing
+/// field, duplicate names, all directly constructible inputs rather than
+/// header values assembled through `axum`'s request machinery.
+pub(crate) fn parse_identity_cookies(
+    cookie_header: Option<&str>,
+) -> (Option<String>, Option<String>) {
+    let mut user_id = None;
+    let mut animal_name = None;
+
+    if let Some(cookie_str) = cookie_header {
+        for raw in cookie_str.split(';') {
+            let Ok(cookie) = Cookie::parse(raw.trim().to_string()) else {
+                continue;
+            };
+            match cookie.name() {
+                "user_id" => user_id = Some(cookie.value().to_string()),
+                "animal_name" => animal_name = Some(cookie.value().to_string()),
+                _ => {}
+            }
+        }
+    }
+
+    (user_id, animal_name)
 }
 
 /// Builds the `Set-Cookie` values for a user's identity.

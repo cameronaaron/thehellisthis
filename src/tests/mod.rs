@@ -5,29 +5,31 @@
 // to, and third-party types are named here rather than inherited from whatever
 // `main.rs` happened to import.
 use crate::animals::ANIMAL_NAMES;
-use crate::cleanup::{cleanup_rooms, cleanup_rooms_at};
+use crate::cleanup::{cleanup_rooms, cleanup_rooms_at, history_trim_target, is_abandoned};
 use crate::config::*;
 use crate::emoji::{REACTION_EMOJI, is_reaction_emoji};
 use crate::error::ChatError;
-use crate::identity::{OptionalUserCookie, create_user_cookies};
+use crate::identity::{OptionalUserCookie, create_user_cookies, parse_identity_cookies};
 use crate::limits::{ConnectionPool, MemoryTracker, RateLimiter, ResourceMonitor, SecurityManager};
 use crate::protocol::{
     Attachment, ClientEvent, OutgoingEvent, OutgoingMessage, ReplyInfo, SystemEvent,
 };
 use crate::room::{ConnectionState, RoomState, UserData, create_room, user_idle_for_too_long};
 use crate::routes::{
-    admin_dashboard_handler, fnv1a, health_handler, main_room_handler, metrics_handler,
-    robots_txt_handler, room_handler, root_redirect,
+    RoomNameRejection, admin_dashboard_handler, fnv1a, health_handler, main_room_handler,
+    metrics_handler, render_admin_dashboard, robots_txt_handler, room_handler, room_name_rejection,
+    root_redirect,
 };
 use crate::security::is_allowed_origin;
 use crate::session::{
-    admit_user, apply_client_event, apply_client_event_at, cleanup_user, ws_handler,
+    admit_user, apply_client_event, apply_client_event_at, cleanup_user, render_off_thread,
+    resolve_render, within_throttle, ws_handler,
 };
 use crate::startup::{
     DEFAULT_PORT, build_router, generate_random_room_name, init_tracing, resolve_port, serve,
     spawn_housekeeping,
 };
-use crate::state::AppState;
+use crate::state::{AppState, announce_departures};
 use crate::validation::{
     extract_client_ip, hash_client_address, sanitize_attachment, sanitize_reply, validate_input,
     validate_message,
@@ -567,11 +569,26 @@ where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = ()>,
 {
+    capturing_logs_at(tracing::Level::INFO, body).await
+}
+
+/// Same as [`capturing_logs`], but at a caller-chosen level.
+///
+/// `trace!`/`debug!` field expressions are only evaluated when a subscriber
+/// has that level enabled (§6.1d) — a test that wants to assert on a `trace!`
+/// or `debug!` line needs this, not the `INFO`-capped default, or the event
+/// never fires at all and the line it comes from reads as dead code to
+/// coverage tooling even though the branch around it genuinely ran.
+async fn capturing_logs_at<F, Fut>(level: tracing::Level, body: F) -> String
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
     let logs = CapturedLogs::default();
     let subscriber = tracing_subscriber::fmt()
         .with_writer(logs.clone())
         .with_ansi(false)
-        .with_max_level(tracing::Level::INFO)
+        .with_max_level(level)
         .finish();
 
     // `with_default` is scoped to this task rather than global, so it does not

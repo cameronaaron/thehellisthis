@@ -221,9 +221,7 @@ pub(crate) async fn bind_listener(port: u16) -> std::io::Result<tokio::net::TcpL
     Ok(listener)
 }
 
-/// Everything `main` does, minus the process.
-///
-/// `main` cannot be called from a test — `/// Everything the process does, minus the runtime and the signal source.
+/// Everything the process does, minus the runtime and the signal source.
 ///
 /// Takes the shutdown future rather than reaching for `ctrl_c()`, so a test can
 /// drive the whole lifecycle — bind, serve, shut down, return — without needing
