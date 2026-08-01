@@ -75,16 +75,6 @@ ammonia = "4.1.4"
 sha2 = "0.10.9"
 base64 = "0.22.1"
 
-# Global allocator. Every room's memory ceiling (§3) is enforced by counting
-# bytes this server itself tracks, not by trusting the allocator — but a
-# server whose entire job is many small, short-lived allocations (a message,
-# a history entry, a per-connection buffer) under real concurrency is exactly
-# mimalloc's case: per-thread free lists instead of one lock every allocator
-# call contends on, which is the same shape of win as not holding the room
-# lock across a socket send (constraint #5) — less time serialised behind one
-# resource many connections share.
-mimalloc = "0.1.52"
-
 [dev-dependencies]
 # `test-util` gives tests simulated time, so the housekeeping loops can be
 # asserted to actually run on their 60-second intervals without a test that
