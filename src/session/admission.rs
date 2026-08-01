@@ -158,8 +158,12 @@ pub async fn ws_handler_inner(
 
     let admitted = admit_user(&state, &room, &connection_id, cookie.as_ref()).await;
 
+    // admit_user already logged the actual reason — capacity or the rejoin
+    // throttle, which it is careful to distinguish — so this layer does not
+    // restate it. It used to log its own "room full" here regardless of which
+    // one actually happened, which read as a capacity problem even when the
+    // room had one user in it and a fast rejoin was the real cause.
     let Some((final_user_id, final_animal_name)) = admitted else {
-        warn!(room = %room, limit = MAX_USERS_PER_ROOM, "refused: room full");
         release_connection_slot(&state, ip.as_deref()).await;
         return Err(ChatError::RoomFull);
     };
