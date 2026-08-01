@@ -17,7 +17,19 @@
       "zone_name": "thehellisthis.com"
     }
   ],
-  
+
+  // Wrangler already infers this as false once `routes` is set — stated so
+  // that inference is a documented decision rather than an implicit side
+  // effect somebody has to rediscover. The site has exactly one intended
+  // entry point; a live *.workers.dev URL would be a second, unbranded one
+  // answering the same rooms.
+  "workers_dev": false,
+
+  // No Logpush destination is configured, so this is already the default;
+  // stated for the same reason as `workers_dev` above — a deliberate "no"
+  // reads differently from an unset field nobody has looked at yet.
+  "logpush": false,
+
   // Disable observability for cost savings (no active logging needed): the
   // Worker itself does no per-request console.log-ing (see 1e91e242, which
   // removed the last of it), so Workers Logs would ingest invocation records
