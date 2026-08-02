@@ -313,6 +313,39 @@ real number of DOM nodes) and §3.4 on the server. **A derived quantity stored
 separately is a quantity that will disagree with itself.** Keep the copy only
 where recomputation is genuinely too expensive, and say so where you keep it.
 
+### 1.4c Encode a broadcast once; every receiver shares the bytes
+
+§1.4a fixed this exact shape once already, on the join path. It was still
+present on the *broadcast* path, found by asking whether the per-message O(1)
+claim actually held everywhere rather than trusting that it did (§0.5).
+
+`RoomState::sender` used to carry `OutgoingEvent` — the un-encoded value —
+over a `tokio::sync::broadcast` channel. `Receiver::recv` clones its value out
+of the shared slot **for every receiver independently**, and the one place
+that value was turned into wire bytes was `forward_broadcasts`, run once per
+connection. So one `send()` meant every connected user's forward task
+re-cloned the event's owned fields — a message's rendered text, an
+attachment's base64 payload — and independently ran `serde_json::to_string`
+on output that was byte-identical every time. In a full room
+(`MAX_USERS_PER_ROOM` = 100) sending an image message
+(`MAX_ATTACHMENT_BYTES` = 128 KiB), that was up to a hundred redundant clones
+and a hundred redundant serialisations of the same ~128 KiB payload — real
+O(room size) cost on a path this codebase's own §1 says must be O(1), done
+sequentially on the one OS thread this server runs everything on
+(`main.rs`'s `current_thread` runtime).
+
+Fixed by moving the boundary between "shared" and "per-receiver" to where it
+actually belongs: `sender` now carries `Arc<str>` — the already-encoded frame,
+built once by `encode_broadcast` at the point of `send()`. Every receiver's
+`recv()` clones an `Arc` — a refcount bump — instead of the struct and its
+payload, and `forward_broadcasts` writes the shared bytes directly instead of
+re-encoding them. Verified live: three real WebSocket connections, one
+message sent, all three receive the identical frame.
+
+Same instinct as §1.4a, one hop further down the pipeline: **the expensive
+part of "the same data, sent to everyone" should happen once, and what varies
+per recipient (here: nothing) is the only thing that should ever repeat.**
+
 ### 1.5 Linear work belongs where it is paid once, not where it is paid per message
 
 Trimming history to `MAX_MESSAGES_PER_ROOM` moves the whole `Vec`. Doing it per

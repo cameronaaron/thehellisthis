@@ -708,7 +708,8 @@ async fn typing_and_read_receipts_are_debounced_and_validated() {
     .await;
 
     let mut typing_events = 0;
-    while let Ok(event) = events.try_recv() {
+    while let Ok(frame) = events.try_recv() {
+        let event = decode_broadcast(&frame);
         if matches!(
             event,
             OutgoingEvent::System {
@@ -858,7 +859,8 @@ async fn requesting_the_roster_answers_with_the_current_names() {
 
     apply_client_event(&state, "who", "u1", "otter", ClientEvent::RequestRoster).await;
 
-    match receiver.try_recv().expect("a roster should be sent") {
+    let frame = receiver.try_recv().expect("a roster should be sent");
+    match decode_broadcast(&frame) {
         OutgoingEvent::Roster { users } => {
             assert_eq!(users, vec!["badger".to_string(), "otter".to_string()]);
         }

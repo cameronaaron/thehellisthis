@@ -858,9 +858,10 @@ async fn shutting_down_announces_departures_and_clears_the_rooms() {
 
     crate::startup::announce_shutdown(&state).await;
 
-    let event = receiver
+    let frame = receiver
         .try_recv()
         .expect("a departure should be announced");
+    let event = decode_broadcast(&frame);
     assert!(
         matches!(
             event,

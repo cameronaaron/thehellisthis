@@ -53,10 +53,11 @@ async fn test_broadcast_user_count_sends_event() {
     let mut rx = room.sender.subscribe();
     room.broadcast_user_count();
 
-    let event = timeout(Duration::from_millis(100), rx.recv())
+    let frame = timeout(Duration::from_millis(100), rx.recv())
         .await
         .expect("no broadcast received")
         .expect("broadcast recv failed");
+    let event = decode_broadcast(&frame);
 
     match event {
         OutgoingEvent::UserCount { count } => assert_eq!(count, 1),
@@ -454,7 +455,7 @@ async fn test_graceful_shutdown_broadcasts_shutdown() {
     if let Some(mut rx) = rx {
         // Note: The receiver might have received the event or the channel might be closed
         // Either way, the shutdown was processed
-        let result = rx.try_recv();
+        let result = rx.try_recv().map(|frame| decode_broadcast(&frame));
         // Result could be Ok(ServerShutdown) or Err(Lagged/Closed)
         match result {
             Ok(OutgoingEvent::System {
@@ -591,7 +592,7 @@ async fn test_room_broadcast_to_multiple_receivers() {
             animal_name: "Lion".to_string(),
         },
     };
-    let _ = room_state.sender.send(event.clone());
+    let _ = room_state.sender.send(encode_broadcast(&event));
 
     // All receivers should get the message
     for receiver in &mut receivers {
@@ -611,12 +612,12 @@ async fn test_broadcast_handles_receiver_lag() {
 
     // Send many messages quickly to potentially cause lag
     for i in 0..100 {
-        let _ = room.sender.send(OutgoingEvent::System {
+        let _ = room.sender.send(encode_broadcast(&OutgoingEvent::System {
             event: SystemEvent::UserJoined {
                 user_id: format!("user{}", i),
                 animal_name: format!("Animal{}", i),
             },
-        });
+        }));
     }
 
     // Try to receive - may have missed some due to lag
@@ -661,7 +662,9 @@ async fn test_room_state_broadcast_user_count() {
     room.broadcast_user_count();
 
     // Should receive user count event
-    if let Ok(OutgoingEvent::UserCount { count }) = rx.try_recv() {
+    if let Ok(frame) = rx.try_recv()
+        && let OutgoingEvent::UserCount { count } = decode_broadcast(&frame)
+    {
         assert_eq!(count, 1);
     } else {
         panic!("Should have received user count event");
@@ -677,7 +680,9 @@ async fn forwarding_delivers_every_broadcast_in_order() {
     let receiver = room.sender.subscribe();
 
     for count in [1usize, 2, 3] {
-        let _ = room.sender.send(OutgoingEvent::UserCount { count });
+        let _ = room
+            .sender
+            .send(encode_broadcast(&OutgoingEvent::UserCount { count }));
     }
     drop(room);
 

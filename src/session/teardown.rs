@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use tracing::{debug, info};
 
-use crate::protocol::{OutgoingEvent, SystemEvent};
+use crate::protocol::{OutgoingEvent, SystemEvent, encode_broadcast};
 use crate::room::ConnectionState;
 use crate::state::AppState;
 
@@ -53,12 +53,14 @@ pub async fn cleanup_user(
     }
 
     let (uid, animal) = (user.user_id.clone(), user.animal_name.clone());
-    let _ = room_state.sender.send(OutgoingEvent::System {
-        event: SystemEvent::UserLeft {
-            user_id: uid.clone(),
-            animal_name: animal.clone(),
-        },
-    });
+    let _ = room_state
+        .sender
+        .send(encode_broadcast(&OutgoingEvent::System {
+            event: SystemEvent::UserLeft {
+                user_id: uid.clone(),
+                animal_name: animal.clone(),
+            },
+        }));
 
     user.connection_state = ConnectionState::Disconnected {
         since: Instant::now(),

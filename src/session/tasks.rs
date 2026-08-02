@@ -9,33 +9,18 @@ use axum::extract::ws::{CloseFrame, WebSocket};
 use bytes::Bytes;
 use futures::SinkExt;
 use tokio::sync::Mutex;
-use tracing::{debug, error, info};
+use tracing::{debug, info};
 
 use crate::config::{
     HEARTBEAT_INTERVAL, IDLE_CLOSE_CODE, SUPERSEDED_CLOSE_CODE, USER_IDLE_MESSAGE_TIMEOUT,
 };
-use crate::protocol::{HistoryEvent, HistoryMessage, OutgoingEvent, OutgoingMessage, Reaction};
+use crate::protocol::{
+    HistoryEvent, HistoryMessage, OutgoingEvent, OutgoingMessage, Reaction, encode_event,
+};
 use crate::room::{ConnectionState, user_idle_for_too_long};
 use crate::state::AppState;
 
 use super::Message;
-
-/// Serialises a frame the server is about to send.
-///
-/// Every outgoing type is a plain struct or enum of owned strings, numbers and
-/// UUIDs — no map with non-string keys, no float that could be NaN — so this
-/// cannot fail. Saying that in one place, once, is better than an unreachable
-/// error arm at each of the four call sites, each of which a reader has to
-/// work out is unreachable for themselves.
-pub(crate) fn encode_event<T: serde::Serialize>(value: &T) -> String {
-    serde_json::to_string(value).unwrap_or_else(|e| {
-        // Reached only if an outgoing type gains a field that cannot be
-        // represented. An empty frame is dropped by the client; a panic here
-        // would take the whole connection task with it (§5.1).
-        error!(error = %e, "failed to serialise an outgoing frame");
-        String::new()
-    })
-}
 
 /// A sink this session can write frames to.
 ///
@@ -57,15 +42,21 @@ impl FrameSink for futures::stream::SplitSink<WebSocket, Message> {
 }
 
 /// Room broadcasts → this client, until the socket stops accepting them.
+///
+/// `recv` clones the channel's `Arc<str>` out — a refcount bump, not a copy of
+/// the frame's bytes — so the encoding work `encode_broadcast` did at send
+/// time is genuinely shared across every connection reading it, not repeated.
 pub(crate) async fn forward_broadcasts<S: FrameSink>(
-    mut receiver: tokio::sync::broadcast::Receiver<OutgoingEvent>,
+    mut receiver: tokio::sync::broadcast::Receiver<Arc<str>>,
     sink: Arc<Mutex<S>>,
 ) {
-    while let Ok(event) = receiver.recv().await {
-        let json = encode_event(&event);
-
+    while let Ok(frame) = receiver.recv().await {
         let mut tx = sink.lock().await;
-        if tx.send_frame(Message::Text(json.into())).await.is_err() {
+        if tx
+            .send_frame(Message::Text(frame.as_ref().into()))
+            .await
+            .is_err()
+        {
             break;
         }
     }

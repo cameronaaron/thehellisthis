@@ -13,7 +13,7 @@ use crate::config::{
 };
 use crate::emoji::is_reaction_emoji;
 use crate::error::ChatError;
-use crate::protocol::{ClientEvent, OutgoingEvent, OutgoingMessage, SystemEvent};
+use crate::protocol::{ClientEvent, OutgoingEvent, OutgoingMessage, SystemEvent, encode_broadcast};
 use crate::room::ConnectionState;
 use crate::state::AppState;
 use crate::validation::{
@@ -241,10 +241,12 @@ pub async fn apply_client_event_at(
 
             user.last_message_time = now;
             let message_id = outgoing.message_id;
-            room_state.add_message(outgoing.clone(), &state.memory_tracker);
-            let _ = room_state
-                .sender
-                .send(OutgoingEvent::Message { message: outgoing });
+            // Encoded once here, not once per receiver: see `encode_broadcast`.
+            let frame = encode_broadcast(&OutgoingEvent::Message {
+                message: outgoing.clone(),
+            });
+            room_state.add_message(outgoing, &state.memory_tracker);
+            let _ = room_state.sender.send(frame);
             trace!(%message_id, user_id = %user_id, room = %room, "message broadcast");
         }
 
@@ -302,7 +304,7 @@ pub async fn apply_client_event_at(
             debug!(room = %room, user_id = %user_id, size = roster.len(), "roster requested");
             let _ = room_state
                 .sender
-                .send(OutgoingEvent::Roster { users: roster });
+                .send(encode_broadcast(&OutgoingEvent::Roster { users: roster }));
         }
 
         ClientEvent::React { message_id, emoji } => {

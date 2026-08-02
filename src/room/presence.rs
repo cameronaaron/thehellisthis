@@ -10,7 +10,7 @@ use crate::config::{
     HEARTBEAT_TIMEOUT, MAX_TOTAL_ROOMS_MEMORY, MAX_USERS_PER_ROOM, MEMORY_SOFT_LIMIT_RATIO,
 };
 use crate::limits::MemoryTracker;
-use crate::protocol::{OutgoingEvent, SystemEvent};
+use crate::protocol::{OutgoingEvent, SystemEvent, encode_broadcast};
 
 use super::{ConnectionState, RoomState};
 
@@ -50,12 +50,16 @@ impl RoomState {
 
         trace!(count, "broadcasting user count");
         // A send error means nobody is subscribed, which is not an error.
-        let _ = self.sender.send(OutgoingEvent::UserCount { count });
+        let _ = self
+            .sender
+            .send(encode_broadcast(&OutgoingEvent::UserCount { count }));
     }
 
     pub fn broadcast_system_event(&self, event: SystemEvent) {
         trace!(?event, "broadcasting system event");
-        let _ = self.sender.send(OutgoingEvent::System { event });
+        let _ = self
+            .sender
+            .send(encode_broadcast(&OutgoingEvent::System { event }));
     }
 
     /// Admission check for a user about to join.

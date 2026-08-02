@@ -30,10 +30,11 @@ async fn test_broadcast_system_event_sends_event() {
         animal_name: "Lion".to_string(),
     });
 
-    let event = timeout(Duration::from_millis(100), rx.recv())
+    let frame = timeout(Duration::from_millis(100), rx.recv())
         .await
         .expect("no broadcast received")
         .expect("broadcast recv failed");
+    let event = decode_broadcast(&frame);
 
     match event {
         OutgoingEvent::System { event } => match event {
@@ -587,7 +588,9 @@ async fn test_room_state_broadcast_system_event() {
     });
 
     // Should receive the event
-    if let Ok(OutgoingEvent::System { event }) = rx.try_recv() {
+    if let Ok(frame) = rx.try_recv()
+        && let OutgoingEvent::System { event } = decode_broadcast(&frame)
+    {
         match event {
             SystemEvent::UserJoined {
                 user_id,

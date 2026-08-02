@@ -12,7 +12,7 @@ use tracing::{debug, info};
 
 use crate::config::{MAX_ROOMS, MAX_TOTAL_ROOMS_MEMORY};
 use crate::limits::{ConnectionPool, MemoryTracker, ResourceMonitor, SecurityManager};
-use crate::protocol::{OutgoingEvent, SystemEvent};
+use crate::protocol::{OutgoingEvent, SystemEvent, encode_broadcast};
 use crate::room::RoomState;
 
 pub struct AppState {
@@ -101,12 +101,14 @@ pub(crate) fn announce_departures(room_state: &RoomState) {
     let mut announced = 0usize;
     for user in room_state.users.values() {
         if user.is_connected() {
-            let _ = room_state.sender.send(OutgoingEvent::System {
-                event: SystemEvent::UserLeft {
-                    user_id: user.user_id.clone(),
-                    animal_name: user.animal_name.clone(),
-                },
-            });
+            let _ = room_state
+                .sender
+                .send(encode_broadcast(&OutgoingEvent::System {
+                    event: SystemEvent::UserLeft {
+                        user_id: user.user_id.clone(),
+                        animal_name: user.animal_name.clone(),
+                    },
+                }));
             announced += 1;
         }
     }

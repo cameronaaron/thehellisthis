@@ -24,8 +24,9 @@ pub use admission::ws_handler;
 #[cfg(test)]
 pub(crate) use admission::{admit_user, attach_cookies, check_admission};
 
+pub(crate) use crate::protocol::encode_event;
 pub(crate) use tasks::{
-    FrameSink, beat_and_evict_idle, encode_event, forward_broadcasts, send_history, send_pings,
+    FrameSink, beat_and_evict_idle, forward_broadcasts, send_history, send_pings,
 };
 #[cfg(test)]
 pub(crate) use tasks::{

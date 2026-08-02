@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::animals::ANIMAL_NAMES;
 use crate::config::USER_IDLE_MESSAGE_TIMEOUT;
 use crate::limits::RateLimiter;
-use crate::protocol::{OutgoingEvent, OutgoingMessage};
+use crate::protocol::OutgoingMessage;
 
 /// Broadcast channel depth. A slow client that falls this far behind is lagged
 /// off the channel rather than allowed to grow the server's memory.
@@ -65,7 +65,14 @@ pub struct RoomState {
     pub total_memory_bytes: AtomicUsize,
     pub users: HashMap<String, UserData>,
     pub available_animals: VecDeque<String>,
-    pub sender: broadcast::Sender<OutgoingEvent>,
+    /// Carries the encoded frame, not the event: `broadcast::Receiver::recv`
+    /// clones its value out once per receiver, so a channel of `OutgoingEvent`
+    /// meant every connected user's forward task re-serialised the identical
+    /// JSON independently — up to `MAX_USERS_PER_ROOM` redundant encodes of
+    /// the same frame per message, each re-cloning the event's owned fields
+    /// too. `Arc<str>` makes a receiver's share of that cost a refcount bump;
+    /// see `encode_broadcast`, the one place a frame is actually encoded.
+    pub sender: broadcast::Sender<Arc<str>>,
     /// Messages are immutable once stored, so history holds `Arc`s and the
     /// join path copies refcounts rather than payloads.
     ///
@@ -125,7 +132,7 @@ pub fn create_room() -> RoomState {
     let mut animals: Vec<&'static str> = ANIMAL_NAMES.to_vec();
     animals.shuffle(&mut rand::rng());
 
-    let (sender, _) = broadcast::channel::<OutgoingEvent>(BROADCAST_CHANNEL_CAPACITY);
+    let (sender, _) = broadcast::channel::<Arc<str>>(BROADCAST_CHANNEL_CAPACITY);
 
     RoomState {
         last_activity: Instant::now(),

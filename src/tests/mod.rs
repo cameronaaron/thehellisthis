@@ -13,6 +13,7 @@ use crate::identity::{OptionalUserCookie, create_user_cookies, parse_identity_co
 use crate::limits::{ConnectionPool, MemoryTracker, RateLimiter, ResourceMonitor, SecurityManager};
 use crate::protocol::{
     Attachment, ClientEvent, OutgoingEvent, OutgoingMessage, ReplyInfo, SystemEvent,
+    encode_broadcast,
 };
 use crate::room::{ConnectionState, RoomState, UserData, create_room, user_idle_for_too_long};
 use crate::routes::{
@@ -664,6 +665,18 @@ async fn reqwest_health(addr: SocketAddr) -> String {
     let mut response = Vec::new();
     stream.read_to_end(&mut response).await.unwrap();
     String::from_utf8_lossy(&response).to_string()
+}
+
+/// Decodes a broadcast frame back into the event it encodes.
+///
+/// `RoomState::sender` carries the already-encoded frame (`Arc<str>`, from
+/// `encode_broadcast`), not the event itself — every connection's
+/// `forward_broadcasts` task shares that one encoding rather than redoing it,
+/// which is the whole point (§1). Tests that used to receive an `OutgoingEvent`
+/// straight off the channel and match on it now receive the frame and decode
+/// it back, the same round trip a real client's `JSON.parse` makes.
+fn decode_broadcast(frame: &str) -> OutgoingEvent {
+    serde_json::from_str(frame).expect("a broadcast frame must decode as an OutgoingEvent")
 }
 
 fn connected_user(

@@ -39,7 +39,7 @@ pub(crate) async fn join_room(
     animal_name: &str,
     connection_id: &str,
 ) -> Option<(
-    tokio::sync::broadcast::Receiver<OutgoingEvent>,
+    tokio::sync::broadcast::Receiver<Arc<str>>,
     Vec<(Arc<OutgoingMessage>, Vec<Reaction>)>,
 )> {
     let mut rooms = state.rooms.write().await;

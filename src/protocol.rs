@@ -4,10 +4,50 @@
 //! browser codes against is readable in a single file. Changing anything here
 //! is a protocol change: `index.html` must change with it, in the same commit.
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
+use tracing::error;
 use uuid::Uuid;
 
 use crate::config::ESTIMATED_MESSAGE_SIZE;
+
+/// Serialises a frame the server is about to send.
+///
+/// Every outgoing type is a plain struct or enum of owned strings, numbers and
+/// UUIDs — no map with non-string keys, no float that could be NaN — so this
+/// cannot fail. Saying that in one place, once, is better than an unreachable
+/// error arm at each call site, each of which a reader has to work out is
+/// unreachable for themselves.
+pub(crate) fn encode_event<T: Serialize>(value: &T) -> String {
+    serde_json::to_string(value).unwrap_or_else(|e| {
+        // Reached only if an outgoing type gains a field that cannot be
+        // represented. An empty frame is dropped by the client; a panic here
+        // would take the whole connection task with it (§5.1).
+        error!(error = %e, "failed to serialise an outgoing frame");
+        String::new()
+    })
+}
+
+/// Serialises a broadcast frame once, for every connection in the room to
+/// share.
+///
+/// A room's broadcast channel carries the encoded frame itself, not the
+/// event — `tokio::sync::broadcast::Receiver::recv` clones its value out for
+/// every receiver independently, so a channel of an unencoded event meant
+/// every connected user's forward task re-ran `serde_json::to_string` on
+/// byte-identical output, and re-cloned the event's owned fields — a
+/// message's text, an attachment's base64 payload — doing it. In a full room
+/// (`MAX_USERS_PER_ROOM`) sending an image message
+/// (`MAX_ATTACHMENT_BYTES`), that was up to a hundred redundant clones and a
+/// hundred redundant serialisations of the same ~128 KiB payload, on the
+/// single OS thread this server runs everything on (`main.rs`'s
+/// `current_thread` runtime) — squarely the O(room size) per-message cost
+/// §1 says a message must never have. `Arc<str>` makes every receiver's
+/// share of that cost a refcount bump instead.
+pub(crate) fn encode_broadcast<T: Serialize>(value: &T) -> Arc<str> {
+    Arc::from(encode_event(value))
+}
 
 /// The message a reply points at, denormalised so the client can render the
 /// quoted preview without holding full history.

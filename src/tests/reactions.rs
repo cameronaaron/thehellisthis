@@ -329,7 +329,8 @@ async fn the_reaction_event_broadcasts_throttles_and_refuses() {
     )
     .await;
 
-    let event = receiver.try_recv().expect("a reaction should be broadcast");
+    let frame = receiver.try_recv().expect("a reaction should be broadcast");
+    let event = decode_broadcast(&frame);
     match event {
         OutgoingEvent::System {
             event:

@@ -368,7 +368,9 @@ async fn forwarding_stops_when_the_client_is_gone() {
     let receiver = room.sender.subscribe();
 
     for i in 0..3 {
-        let _ = room.sender.send(OutgoingEvent::UserCount { count: i });
+        let _ = room
+            .sender
+            .send(encode_broadcast(&OutgoingEvent::UserCount { count: i }));
     }
     drop(room);
 

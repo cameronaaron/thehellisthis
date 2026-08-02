@@ -520,10 +520,11 @@ async fn announce_departures_tells_only_connected_users() {
     let mut receiver = room.sender.subscribe();
     announce_departures(&room);
 
-    let event = timeout(Duration::from_millis(100), receiver.recv())
+    let frame = timeout(Duration::from_millis(100), receiver.recv())
         .await
         .expect("a departure must be announced")
         .unwrap();
+    let event = decode_broadcast(&frame);
     let OutgoingEvent::System {
         event: SystemEvent::UserLeft { user_id, .. },
     } = event
