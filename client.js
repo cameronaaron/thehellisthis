@@ -1955,16 +1955,22 @@ class ChatApp {
         this.renderParticipants();
     }
     
-    /// The chip exists in the DOM only while there is something to report:
-    /// hidden while connected, because that is the state nobody needs telling
-    /// about.
+    /// Always visible: green/connected, amber/connecting, grey/idle,
+    /// red/disconnected — the standard traffic-light meaning for each
+    /// colour, so the one state that's actually good news is the one state
+    /// that used to say nothing at all. It used to hide the chip entirely
+    /// while connected, on the reasoning that a healthy connection is not
+    /// news — true for a *transition* into it, but it left no way to answer
+    /// "is this thing actually connected right now" by looking, only by its
+    /// absence.
     updateConnectionStatus(status) {
-        this.statusChip.hidden = status === 'connected';
-        if (this.statusChip.hidden) return;
-
+        this.statusChip.hidden = false;
         this.statusChip.className = `status-chip ${status}`;
 
         switch (status) {
+            case 'connected':
+                this.statusText.textContent = 'Connected';
+                break;
             case 'disconnected':
                 this.statusText.textContent = 'Disconnected';
                 break;

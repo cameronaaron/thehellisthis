@@ -1276,3 +1276,35 @@ fn idle_status_sets_its_own_label() {
          leave whatever text a previous status left behind"
     );
 }
+
+/// The chip used to hide entirely while connected, on the reasoning that a
+/// healthy connection is not news. That left no way to answer "is this
+/// actually connected right now" by looking at anything — only by the
+/// absence of a warning. Standard traffic-light meaning: connected is green,
+/// not invisible.
+#[test]
+fn connected_status_is_green_and_the_chip_is_never_hidden() {
+    let connected = css_rule_body(EMBEDDED_HTML, ".app-bar-actions .status-chip.connected")
+        .expect(".status-chip.connected rule must exist");
+    assert!(
+        connected.contains("--success"),
+        "connected must use the success colour token, distinct from \
+         connecting's warning colour and idle's neutral one: {connected:?}"
+    );
+
+    assert!(
+        EMBEDDED_JS.contains("this.statusChip.hidden = false;"),
+        "the chip must always be visible — a conditional hide keyed to one \
+         status is exactly how it silently went back to never showing a \
+         healthy connection"
+    );
+    assert!(
+        !EMBEDDED_JS.contains("status === 'connected'"),
+        "no code path may single out 'connected' to hide the chip again"
+    );
+    assert!(
+        EMBEDDED_JS.contains("case 'connected':"),
+        "updateConnectionStatus must set a label for the connected state \
+         too, now that it is shown rather than hidden"
+    );
+}

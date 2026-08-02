@@ -2191,21 +2191,13 @@ body {
     background: color-mix(in srgb, var(--on-surface) 8%, transparent);
 }
 
-/* Connection state is a dot and a word, and it only exists in the DOM while
-   there is something to say — `hidden`, not a width collapsed to zero. The
-   collapse-to-invisible version was real, working CSS, but it left an element
-   permanently in the tree with a title, a dot and a text node inside it that
-   never rendered anything a connected visitor would ever see: exactly the
-   shape of dead weight the rest of this codebase treats as a bug (§6.10),
-   just for a *reason* to render rather than a rule to match. `[hidden]` is
-   the same idiom `.emoji-panel`/`.reaction-bar`/`.lightbox` already use. */
-/* The base rule's colour is `connecting`'s — a state genuinely in progress,
-   which is what amber/warning means. `idle` is not that: nobody is waiting on
-   anything, the room simply let a quiet visitor go, so it gets its own
-   neutral rule below rather than inheriting a warning colour that was never
-   describing it. Only `disconnected` and `idle` need overrides; `connected`
-   never reaches this far because the chip is hidden for that state
-   (`updateConnectionStatus`). */
+/* Connection state is a dot and a word, always visible
+   (`updateConnectionStatus`): every state gets its own colour on the
+   standard traffic-light meaning — green for connected, amber for connecting
+   (genuinely in progress), grey for idle (nobody is
+   waiting on anything — the room let a quiet visitor go, which is not a
+   warning), red for disconnected/error. The base rule is `connecting`'s
+   colour; every other state overrides it below. */
 .app-bar-actions .status-chip {
     display: inline-flex;
     align-items: center;
@@ -2215,6 +2207,11 @@ body {
     border-radius: var(--radius-full);
     background: var(--warning-container);
     color: var(--warning);
+}
+
+.app-bar-actions .status-chip.connected {
+    background: var(--success-container);
+    color: var(--success);
 }
 
 .app-bar-actions .status-chip.disconnected {
