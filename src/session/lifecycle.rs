@@ -200,7 +200,20 @@ pub(crate) async fn run_session<S, R>(
                             continue;
                         };
 
-                        apply_client_event(&state, &room, &user_id, &animal_name, event).await;
+                        // A reply owed to this connection alone — currently
+                        // only `RequestRoster` has one — is sent here, on the
+                        // one sink that is actually this connection's own.
+                        // Nothing else can reach it: `room_state.sender` is
+                        // shared by every connection in the room.
+                        if let Some(reply) =
+                            apply_client_event(&state, &room, &user_id, &animal_name, event).await
+                        {
+                            let json = encode_event(&reply);
+                            let mut tx = ws_tx.lock().await;
+                            if tx.send_frame(Message::Text(json.into())).await.is_err() {
+                                break;
+                            }
+                        }
                     }
                     Message::Ping(payload) => {
                         let mut tx = ws_tx.lock().await;

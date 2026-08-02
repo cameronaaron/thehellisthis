@@ -422,6 +422,12 @@ struct RecordingSink {
     /// race, so "the third frame" is whichever task happened to win — refusing
     /// a *pong* is the only way to test the pong path deterministically.
     fail_on_pong: bool,
+    /// Same reasoning as `fail_on_pong`, for the roster-reply write in
+    /// `receive_task`: `send_pings`' and `beat_and_evict_idle`'s own sends
+    /// race it too, so `failing_after(n)` counting *any* frame is not
+    /// deterministic here — a Ping that wins the race consumes a slot of the
+    /// budget a Welcome or the reply itself was expected to occupy.
+    fail_on_roster_reply: bool,
 }
 
 impl RecordingSink {
@@ -430,6 +436,7 @@ impl RecordingSink {
             sent: Vec::new(),
             fail_after: Some(0),
             fail_on_pong: false,
+            fail_on_roster_reply: false,
         }
     }
 
@@ -438,6 +445,7 @@ impl RecordingSink {
             sent: Vec::new(),
             fail_after: Some(n),
             fail_on_pong: false,
+            fail_on_roster_reply: false,
         }
     }
 
@@ -446,6 +454,16 @@ impl RecordingSink {
             sent: Vec::new(),
             fail_after: None,
             fail_on_pong: true,
+            fail_on_roster_reply: false,
+        }
+    }
+
+    fn refusing_roster_replies() -> Self {
+        Self {
+            sent: Vec::new(),
+            fail_after: None,
+            fail_on_pong: false,
+            fail_on_roster_reply: true,
         }
     }
 }
@@ -463,6 +481,12 @@ impl crate::session::FrameSink for SharedSink {
 impl crate::session::FrameSink for RecordingSink {
     async fn send_frame(&mut self, message: crate::session::Message) -> Result<(), ()> {
         if self.fail_on_pong && matches!(message, crate::session::Message::Pong(_)) {
+            return Err(());
+        }
+        if self.fail_on_roster_reply
+            && let crate::session::Message::Text(text) = &message
+            && text.contains("\"Roster\"")
+        {
             return Err(());
         }
         if self.fail_after.is_some_and(|n| self.sent.len() >= n) {

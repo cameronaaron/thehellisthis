@@ -95,8 +95,8 @@ pub async fn apply_client_event(
     user_id: &str,
     animal_name: &str,
     event: ClientEvent,
-) {
-    apply_client_event_at(state, room, user_id, animal_name, event, Instant::now()).await;
+) -> Option<OutgoingEvent> {
+    apply_client_event_at(state, room, user_id, animal_name, event, Instant::now()).await
 }
 
 /// The same, with the instant supplied.
@@ -108,6 +108,12 @@ pub async fn apply_client_event(
 /// unimportant, it was unreachable. Taking the instant is the same edge
 /// injection `cleanup_rooms_at` and `cleanup_stale_at` use, and it needs no
 /// injectable clock (§9.4, §6.6f).
+///
+/// Returns a reply owed to the caller alone, not the room — only
+/// `RequestRoster` has one. Everything else this function does is broadcast
+/// from inside the match arm that does it; this return value exists
+/// specifically so a reply meant for one connection is never reachable
+/// through `room_state.sender`, which every connection shares.
 pub async fn apply_client_event_at(
     state: &Arc<AppState>,
     room: &str,
@@ -115,16 +121,16 @@ pub async fn apply_client_event_at(
     animal_name: &str,
     event: ClientEvent,
     now: Instant,
-) {
+) -> Option<OutgoingEvent> {
     let mut rooms = state.rooms.write().await;
 
     let Some(room_state) = rooms.get_mut(room) else {
         warn!(room = %room, "event for unknown room");
-        return;
+        return None;
     };
     let Some(user) = room_state.users.get_mut(user_id) else {
         warn!(user_id = %user_id, room = %room, "event for unknown user");
-        return;
+        return None;
     };
 
     user.last_active = now;
@@ -138,7 +144,7 @@ pub async fn apply_client_event_at(
     {
         if now.duration_since(*last_heartbeat) > HEARTBEAT_TIMEOUT {
             warn!(user_id = %user_id, "heartbeat lapsed; ignoring event");
-            return;
+            return None;
         }
         *last_heartbeat = now;
     }
@@ -159,14 +165,14 @@ pub async fn apply_client_event_at(
             // bound them.
             if !user.rate_limiter.can_send_message() {
                 debug!(user_id = %user_id, "rate limited");
-                return;
+                return None;
             }
 
             let attachment = match attachment.map(sanitize_attachment) {
                 Some(Ok(attachment)) => Some(attachment),
                 Some(Err(e)) => {
                     debug!(user_id = %user_id, error = %e, "attachment rejected");
-                    return;
+                    return None;
                 }
                 None => None,
             };
@@ -181,7 +187,7 @@ pub async fn apply_client_event_at(
                 && now.duration_since(*last_time) < DUPLICATE_MESSAGE_WINDOW
             {
                 debug!(user_id = %user_id, "dropping duplicate message");
-                return;
+                return None;
             }
 
             // An image on its own is a message. Text is required only when
@@ -210,7 +216,7 @@ pub async fn apply_client_event_at(
                 Ok(html) => html,
                 Err(e) => {
                     debug!(user_id = %user_id, error = %e, "message rejected");
-                    return;
+                    return None;
                 }
             };
 
@@ -218,7 +224,7 @@ pub async fn apply_client_event_at(
 
             if text.len() > MAX_MESSAGE_LEN {
                 warn!(user_id = %user_id, len = text.len(), "message too long");
-                return;
+                return None;
             }
 
             let timestamp = SystemTime::now()
@@ -248,12 +254,13 @@ pub async fn apply_client_event_at(
             room_state.add_message(outgoing, &state.memory_tracker);
             let _ = room_state.sender.send(frame);
             trace!(%message_id, user_id = %user_id, room = %room, "message broadcast");
+            None
         }
 
         ClientEvent::Typing { is_typing } => {
             if within_throttle(user.last_typing_event, now, TYPING_EVENT_MIN_INTERVAL) {
                 trace!(user_id = %user_id, "typing event throttled");
-                return;
+                return None;
             }
             user.last_typing_event = Some(now);
             user.is_typing = is_typing;
@@ -265,18 +272,19 @@ pub async fn apply_client_event_at(
                 animal_name: animal,
                 is_typing,
             });
+            None
         }
 
         ClientEvent::ReadReceipt { message_id } => {
             if within_throttle(user.last_read_receipt_event, now, READ_RECEIPT_MIN_INTERVAL) {
                 trace!(user_id = %user_id, "read receipt throttled");
-                return;
+                return None;
             }
             user.last_read_receipt_event = Some(now);
 
             let Ok(msg_id) = Uuid::parse_str(&message_id) else {
                 debug!(user_id = %user_id, "invalid message id in read receipt");
-                return;
+                return None;
             };
 
             user.last_read_message = Some(msg_id);
@@ -287,24 +295,31 @@ pub async fn apply_client_event_at(
                 animal_name: animal,
                 message_id: msg_id,
             });
+            None
         }
 
         ClientEvent::RequestRoster => {
-            // Answered to the asker alone: the room's broadcast channel would
-            // send it to everybody, and this is a panel one person opened.
+            // Answered to the asker alone. This used to go through
+            // `room_state.sender` — the room's broadcast channel, shared by
+            // every connection — which contradicted this comment rather than
+            // implementing it: opening the panel sent every connected user's
+            // client a Roster frame it never asked for and quietly applied,
+            // O(users) data fanned out to O(users) recipients for one panel
+            // one person opened. Returned instead, for the caller — the one
+            // connection that actually asked, which is the only place a
+            // direct, per-connection sink exists — to send.
+            //
             // Throttled with the reaction clock, which is the same "a person
             // clicked something" cadence.
             if within_throttle(user.last_reaction_event, now, REACTION_MIN_INTERVAL) {
                 trace!(user_id = %user_id, "roster request throttled");
-                return;
+                return None;
             }
             user.last_reaction_event = Some(now);
 
             let roster = room_state.roster();
             debug!(room = %room, user_id = %user_id, size = roster.len(), "roster requested");
-            let _ = room_state
-                .sender
-                .send(encode_broadcast(&OutgoingEvent::Roster { users: roster }));
+            Some(OutgoingEvent::Roster { users: roster })
         }
 
         ClientEvent::React { message_id, emoji } => {
@@ -325,24 +340,22 @@ pub async fn apply_client_event_at(
             // the same defect as an arbitrary animal name (§5.9).
             if !is_reaction_emoji(&emoji) {
                 debug!(user_id = %user_id, "reaction is not on the roster");
-                return;
+                return None;
             }
 
             let Ok(msg_id) = Uuid::parse_str(&message_id) else {
                 debug!(user_id = %user_id, "invalid message id in reaction");
-                return;
+                return None;
             };
 
             if within_throttle(user.last_reaction_event, now, REACTION_MIN_INTERVAL) {
                 trace!(user_id = %user_id, "reaction throttled");
-                return;
+                return None;
             }
             user.last_reaction_event = Some(now);
 
             let uid = user.user_id.clone();
-            let Some((active, count)) = room_state.toggle_reaction(msg_id, &emoji, &uid) else {
-                return;
-            };
+            let (active, count) = room_state.toggle_reaction(msg_id, &emoji, &uid)?;
 
             room_state.broadcast_system_event(SystemEvent::Reaction {
                 message_id: msg_id,
@@ -351,6 +364,7 @@ pub async fn apply_client_event_at(
                 active,
                 count,
             });
+            None
         }
     }
 }

@@ -945,6 +945,42 @@ that exists today — it is what makes the guarantee survive a future change to
 what a room name is allowed to contain, on the one page whose entire purpose
 is displaying room names to a browser.
 
+### 5.15 A reply owed to one connection must not be reachable through a channel every connection shares
+
+`apply_client_event_at`'s `RequestRoster` arm already carried the comment
+"answered to the asker alone: the room's broadcast channel would send it to
+everybody" — and then sent the reply through `room_state.sender`, the room's
+broadcast channel, contradicting its own stated reasoning. Every connected
+user's client silently received and applied a `Roster` frame for a panel it
+never opened, and the request-response *shape* of "one person clicked
+something, one person gets an answer" quietly became "one click, broadcast
+to everyone" — the exact quadratic §1.1 already names as the reason `Roster`
+is request-based rather than pushed on every join in the first place, just
+arrived at through a different door.
+
+The reason it looked correct: `RequestRoster` is the only client event with a
+reply that belongs to one connection rather than the room, and every other
+`room_state.sender.send(...)` call site in this file is correctly a
+broadcast. Nothing about the code at that call site looked out of place next
+to its neighbours — it *matched the pattern*, which was exactly the problem,
+since this was the one place the pattern did not apply (§0.5's instrument
+question, aimed at a line of code instead of a measurement: does this
+line's behaviour actually match what a reader would assume from the lines
+around it?).
+
+Fixed by giving `apply_client_event_at` a return value,
+`Option<OutgoingEvent>` — `None` for every event whose effects are fully
+described by what it already did to room state, `Some` for the one case
+where the caller owes a reply the room's shared channel cannot deliver
+correctly. `receive_task` (`session/lifecycle.rs`), which is the only place
+holding a sink that is actually *this* connection's own, sends it. Verified
+two ways: three tests exercising the throttle table, the broadcast-channel
+negative (subscribed and confirmed nothing arrives there), and — because
+`run_session` is generic over its sink (§6.1c) — the write failing, ending
+the session the same way an unanswerable ping does; and a live server with
+two real connections, one asking and one not, confirming only the asker's
+socket receives the frame.
+
 ---
 
 ## 6. The regression ratchet — how standards stay upheld

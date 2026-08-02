@@ -848,6 +848,10 @@ async fn requesting_the_roster_answers_with_the_current_names() {
         rooms.insert("who".to_string(), room);
     }
 
+    // Subscribed to prove the negative below: the room's broadcast channel is
+    // shared by every connection, and a roster reply answered there — as it
+    // used to be — would arrive here too, for a request this connection
+    // never made.
     let mut receiver = state
         .rooms
         .read()
@@ -857,15 +861,124 @@ async fn requesting_the_roster_answers_with_the_current_names() {
         .sender
         .subscribe();
 
-    apply_client_event(&state, "who", "u1", "otter", ClientEvent::RequestRoster).await;
+    let reply = apply_client_event(&state, "who", "u1", "otter", ClientEvent::RequestRoster).await;
 
-    let frame = receiver.try_recv().expect("a roster should be sent");
-    match decode_broadcast(&frame) {
-        OutgoingEvent::Roster { users } => {
+    match reply {
+        Some(OutgoingEvent::Roster { users }) => {
             assert_eq!(users, vec!["badger".to_string(), "otter".to_string()]);
         }
-        other => panic!("expected a Roster, got {other:?}"),
+        other => panic!("expected a Roster reply, got {other:?}"),
     }
+    assert!(
+        receiver.try_recv().is_err(),
+        "a roster answered to the asker alone must not also reach the room's \
+         broadcast channel, which every connection shares"
+    );
+}
+
+/// The same, through a real socket rather than calling `apply_client_event`
+/// directly — so the one place that actually delivers the reply
+/// (`receive_task` in `session/lifecycle.rs`) is exercised too, not just the
+/// event-application logic it calls.
+#[tokio::test]
+async fn roster_request_over_a_real_socket_answers_only_the_asker() {
+    let (addr, _state) = start_ws_server().await;
+    let url = format!("ws://{}/ws/roster-live-room", addr);
+
+    let (mut asker, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("asker connect failed");
+    let (mut bystander, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("bystander connect failed");
+
+    // Drain each connection's own history/identity frames and the
+    // UserJoined/UserCount traffic the other connection's arrival generated,
+    // by reading until nothing more is available for a short window rather
+    // than assuming an exact count.
+    for ws in [&mut asker, &mut bystander] {
+        while timeout(Duration::from_millis(150), ws.next()).await.is_ok() {}
+    }
+
+    asker
+        .send(text_frame(r#"{"type":"RequestRoster"}"#.to_string()))
+        .await
+        .expect("send failed");
+
+    let reply = recv_json_event(&mut asker).await;
+    assert_eq!(reply["type"], "Roster", "the asker must get the roster");
+    assert!(
+        reply["users"].is_array(),
+        "a Roster frame must carry the names"
+    );
+
+    // The bystander made no request; nothing more should arrive for it.
+    assert!(
+        timeout(Duration::from_millis(300), bystander.next())
+            .await
+            .is_err(),
+        "a roster answered to the asker alone must not reach any other \
+         connection in the room"
+    );
+
+    asker.close(None).await.ok();
+    bystander.close(None).await.ok();
+}
+
+/// A client gone by the time its roster reply would be written ends the
+/// session the same way a ping that cannot be answered does — the reply send
+/// fails and `receive_task` stops, rather than looping on a dead socket.
+///
+/// Driven through `run_session` directly with a sink that refuses the roster
+/// reply specifically (`refusing_roster_replies`), the same reasoning
+/// `refusing_pongs` documents: `send_pings` and `beat_and_evict_idle` write
+/// to the same sink concurrently, so a plain `failing_after(n)` counting any
+/// frame is a race — whichever of their writes happens to land first
+/// consumes a slot of the budget the roster reply was expected to occupy,
+/// and the session can end via a different task's failure before
+/// `receive_task` ever attempts its own write.
+#[tokio::test]
+async fn a_roster_reply_that_cannot_be_written_ends_the_session() {
+    let state = Arc::new(AppState::new());
+    {
+        let mut rooms = state.rooms.write().await;
+        rooms.insert("roster-gone".to_string(), create_room());
+    }
+
+    let sink = Arc::new(tokio::sync::Mutex::new(
+        RecordingSink::refusing_roster_replies(),
+    ));
+    let incoming = futures::stream::iter(vec![Ok(crate::session::Message::Text(
+        r#"{"type":"RequestRoster"}"#.into(),
+    ))]);
+
+    timeout(
+        Duration::from_secs(5),
+        crate::session::run_session(
+            "roster-gone".to_string(),
+            state.clone(),
+            "u1".to_string(),
+            "otter".to_string(),
+            SharedSink(sink.clone()),
+            incoming,
+            "c1".to_string(),
+        ),
+    )
+    .await
+    .expect("a roster reply that cannot be written ends the session");
+
+    let sent = &sink.lock().await.sent;
+    assert!(
+        !sent
+            .iter()
+            .any(|m| matches!(m, crate::session::Message::Text(t) if t.contains("\"Roster\""))),
+        "the roster reply was refused, so it never appears in what was sent"
+    );
+    assert!(
+        sent.iter()
+            .any(|m| matches!(m, crate::session::Message::Text(t) if t.contains("\"Welcome\""))),
+        "the Welcome still got through before the roster request arrived"
+    );
 }
 
 /// Roster requests are throttled like any other thing a person clicks.
@@ -882,22 +995,14 @@ async fn roster_requests_are_throttled() {
         rooms.insert("spam".to_string(), room);
     }
 
-    let mut receiver = state
-        .rooms
-        .read()
-        .await
-        .get("spam")
-        .unwrap()
-        .sender
-        .subscribe();
-
-    for _ in 0..5 {
-        apply_client_event(&state, "spam", "u1", "otter", ClientEvent::RequestRoster).await;
-    }
-
     let mut answered = 0;
-    while receiver.try_recv().is_ok() {
-        answered += 1;
+    for _ in 0..5 {
+        if apply_client_event(&state, "spam", "u1", "otter", ClientEvent::RequestRoster)
+            .await
+            .is_some()
+        {
+            answered += 1;
+        }
     }
     assert_eq!(
         answered, 1,
@@ -959,11 +1064,20 @@ async fn a_throttled_event_exactly_on_its_interval_is_admitted() {
             }
 
             let mut rx = state.rooms.read().await["r"].sender.subscribe();
-            apply_client_event_at(&state, "r", "u1", "otter", event(), now).await;
+            let reply = apply_client_event_at(&state, "r", "u1", "otter", event(), now).await;
+
+            // Roster answers the caller directly rather than the room's
+            // broadcast channel — see requesting_the_roster_answers_with_the_current_names
+            // — so admission reads from whichever channel this event's reply
+            // actually travels on.
+            let was_admitted = if label == "roster" {
+                reply.is_some()
+            } else {
+                rx.try_recv().is_ok()
+            };
 
             assert_eq!(
-                rx.try_recv().is_ok(),
-                admitted,
+                was_admitted, admitted,
                 "a {label} event {gap:?} after the last one, against an interval \
                  of {interval:?}, should be admitted: {admitted}"
             );
