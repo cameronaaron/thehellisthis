@@ -138,10 +138,20 @@ pub(crate) fn room_name_rejection(room: &str) -> Option<RoomNameRejection> {
 }
 
 /// Serves the client for any valid room name.
+///
+/// Returns `Response` rather than `impl IntoResponse` so the happy path can
+/// serve `CLIENT_PAGE` by reference. `impl Trait` in return position must
+/// resolve to one concrete type for the whole function, and the rejection
+/// branches return owned strings built per request — unifying against them
+/// forced the common case, a page load for a room in good standing, to
+/// `.clone()` the ~70 KiB client page on every request rather than share the
+/// one already sitting in `CLIENT_PAGE`. `main_room_handler` never had this
+/// problem: it has only one branch, so it was never forced to match a type
+/// that required an allocation.
 pub async fn room_handler(
     Path(room): Path<String>,
     State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+) -> Response {
     if let Some(reason) = room_name_rejection(&room) {
         match reason {
             RoomNameRejection::Reserved => {
@@ -152,14 +162,14 @@ pub async fn room_handler(
             }
             RoomNameRejection::BadShape => debug!(room = %room, "room name shape rejected"),
         }
-        return Html(reason.message().to_string());
+        return Html(reason.message()).into_response();
     }
 
     let rooms = state.rooms.read().await;
     if !rooms.contains_key(&room) && rooms.len() >= MAX_ROOMS {
         warn!(room = %room, limit = MAX_ROOMS, "room cap reached");
-        return Html("Maximum number of rooms reached".to_string());
+        return Html("Maximum number of rooms reached").into_response();
     }
 
-    Html(CLIENT_PAGE.clone())
+    Html(CLIENT_PAGE.as_str()).into_response()
 }

@@ -399,6 +399,21 @@ work runs, not by how often it is skipped once it is already there.
 `Vec<String>` rebuilt per room. The roster is immutable and shared; only the
 per-room shuffled *order* is state.
 
+The same shape showed up in `routes::page::room_handler`: it returned
+`impl IntoResponse`, and `impl Trait` in return position has to resolve to one
+concrete type for the whole function. Two of its three branches build a
+rejection message per request and so return `Html<String>`; the happy path —
+serving the client page for a room in good standing — was made to match them,
+`.clone()`-ing the ~70 KiB `CLIENT_PAGE` constant on every request instead of
+serving the one copy already sitting in static storage. `main_room_handler`
+never had this problem: with a single branch, nothing ever forced it to
+allocate. Declaring the function's return type as `Response` and converting
+each branch with `.into_response()` let the common case serve `CLIENT_PAGE`
+by reference again. Bounded per request rather than scaling with room size —
+smaller than the message-path findings elsewhere in this section — but the
+same mistake in miniature: a type constraint, not a data dependency, forcing
+an allocation that had nothing to do with the value being served.
+
 ---
 
 ## 2. The lock-discipline law
