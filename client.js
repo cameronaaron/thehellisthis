@@ -151,6 +151,20 @@ const MAIN_ROOM_FADE_SECONDS = 1800;
 /// value.
 const IDLE_EVICTION_SECONDS = 600;
 
+/// Whether the primary pointer is a touchscreen rather than a mouse.
+///
+/// Used to skip auto-focusing the composer on page load and on an automatic
+/// reconnect: on a touchscreen, focusing an input pops the virtual keyboard
+/// immediately, before anyone has asked to type anything, and on a short
+/// viewport also forces the browser to scroll the focused field into view —
+/// which pushed the fixed header off-screen behind it. A native chat app
+/// opens the keyboard on your tap, not for you; explicit user actions (reply,
+/// send, attach) still focus the composer unconditionally, since the keyboard
+/// being up at that point is expected.
+function isTouchDevice() {
+    return window.matchMedia('(pointer: coarse)').matches;
+}
+
 /// Search keywords, so typing "fire" finds 🔥 without shipping a full
 /// annotation database. Only the emoji people actually search for by name.
 const EMOJI_KEYWORDS = {
@@ -377,8 +391,8 @@ class ChatApp {
         // Reply preview close
         this.replyPreviewClose.addEventListener('click', () => this.cancelReply());
         
-        // Focus input on page load
-        this.input.focus();
+        // Focus input on page load — desktop only; see isTouchDevice.
+        if (!isTouchDevice()) this.input.focus();
     }
     
     toggleMute() {
@@ -529,9 +543,11 @@ class ChatApp {
         this.updateConnectionStatus('connected');
         this.sendButton.disabled = false;
         this.input.disabled = false;
-        this.input.focus();
+        // Fires on the initial connect and on every automatic reconnect, not
+        // just a user-initiated one — desktop only; see isTouchDevice.
+        if (!isTouchDevice()) this.input.focus();
     }
-    
+
     /// Handles the socket closing.
     ///
     /// The close *code* decides whether to come back. Reconnecting is right for

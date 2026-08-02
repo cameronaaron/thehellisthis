@@ -1121,3 +1121,119 @@ fn explore_link_is_guarded_against_repeated_clicks_across_reloads() {
          navigation cooldown, not a page-load-scoped flag"
     );
 }
+
+/// The declaration block of a top-level (column-0) CSS rule, keyed by its
+/// exact selector (e.g. `"#chat"` matches a line that is exactly `#chat {`).
+/// `None` if no such rule exists.
+///
+/// Matches the line's full trimmed text, not a substring: a substring match
+/// would also hit `#chat:empty`, and this stylesheet's convention of
+/// 4-space-indenting a selector's override inside a `@media` block (e.g.
+/// `.welcome-banner`'s narrow-screen padding, above its base rule) means the
+/// *first* textual occurrence of `"{selector} {{"` is often the media-query
+/// override, not the rule callers actually mean.
+fn css_rule_body<'a>(css: &'a str, selector: &str) -> Option<&'a str> {
+    let marker = format!("{selector} {{");
+    // Exact, un-trimmed equality against each line's own byte offset — not
+    // `css.find(line's text)`, which re-searches the substring from the start
+    // of the whole document and would find a `@media`-nested override first
+    // (this stylesheet's convention is to 4-space-indent those): the text
+    // "selector {" is *contained in* the indented line too, just offset by
+    // four bytes, so a fresh substring search cannot tell them apart even
+    // after `.lines()` has already picked out the right one.
+    let mut offset = 0;
+    for line in css.lines() {
+        if line == marker {
+            let start = offset + marker.len();
+            let end = css[start..].find('}')?;
+            return Some(&css[start..start + end]);
+        }
+        offset += line.len() + 1; // +1 for the '\n' `.lines()` strips
+    }
+    None
+}
+
+/// A flex item's default `min-height` is `auto`, which for a scrollable
+/// container resolves to its content's height — so without an override,
+/// `#chat` refused to shrink below the height of whatever was inside it
+/// (history, or the welcome banner before it moved out — see
+/// `welcome_banner_cannot_push_the_composer_off_a_short_viewport`), and on a
+/// short viewport that pushed the composer off the bottom of the screen
+/// entirely, unreachable. Reproduced directly against an iPhone SE-sized
+/// viewport (Playwright): the send button's top edge rendered below
+/// `window.innerHeight`.
+#[test]
+fn chat_can_shrink_below_its_content_so_the_composer_never_leaves_the_viewport() {
+    let body = css_rule_body(EMBEDDED_HTML, "#chat").expect("#chat rule must exist");
+    assert!(
+        body.contains("min-height: 0"),
+        "#chat must set min-height: 0 or it cannot shrink below its content \
+         height, however little room the header and composer leave it: {body}"
+    );
+}
+
+/// The banner is a sibling of `#chat`, not a child of it — moving it inside
+/// would make `#chat:empty` never match while it's shown, breaking the
+/// separate "start chatting" empty-state overlay. That means its height is
+/// not part of the flex space `#chat` gives up when it shrinks: on a short
+/// viewport its own content (title, paragraph, three buttons) was taller
+/// than the whole screen, and unlike `#chat` it had no `min-height: 0` floor
+/// to shrink past, so the overflow pushed the composer off the bottom of the
+/// viewport just the same. Capped and made independently scrollable instead.
+#[test]
+fn welcome_banner_cannot_push_the_composer_off_a_short_viewport() {
+    let body =
+        css_rule_body(EMBEDDED_HTML, ".welcome-banner").expect(".welcome-banner rule must exist");
+    assert!(
+        body.contains("max-height") && body.contains("overflow-y: auto"),
+        "the banner must cap its own height and scroll internally past that \
+         cap, or a long enough welcome message on a short enough viewport \
+         pushes the composer below the visible screen again: {body}"
+    );
+}
+
+/// A sticky date separator pins to the scroll container's top the moment
+/// anything earlier has scrolled past it — including the instant a short
+/// conversation loads auto-scrolled to the bottom, where the stuck render
+/// position and the newest message's flow position are the same pixels. No
+/// margin between them prevents that, because the stuck position is
+/// independent of the next sibling's normal-flow position. Reproduced
+/// directly (Playwright, a two-message room on an iPhone-sized viewport):
+/// the separator rendered on top of the second message's first line.
+#[test]
+fn date_separator_does_not_stick_over_the_message_that_follows_it() {
+    let body =
+        css_rule_body(EMBEDDED_HTML, ".date-separator").expect(".date-separator rule must exist");
+    assert!(
+        !body.contains("position: sticky"),
+        "a sticky date separator can overlap the very message it introduces \
+         on first render, not just content scrolled long past: {body}"
+    );
+}
+
+/// Focusing an input on a touchscreen pops the virtual keyboard immediately —
+/// before anyone has asked to type anything — and forces the browser to
+/// scroll the focused field into view, which on a short viewport pushed the
+/// fixed header off-screen behind it. Reproduced directly (Playwright,
+/// iPhone SE-sized viewport): `document.body.scrollTop` was nonzero on a
+/// fresh page load with nobody having scrolled anything. Explicit user
+/// actions (reply, send, attach) still focus the composer unconditionally —
+/// only the two automatic paths (initial page load, and every automatic
+/// reconnect in `handleWebSocketOpen`) are gated.
+#[test]
+fn composer_is_not_auto_focused_on_a_touchscreen() {
+    assert!(
+        EMBEDDED_JS.contains("function isTouchDevice"),
+        "the shipped script must define a touch-device check"
+    );
+    assert_eq!(
+        EMBEDDED_JS
+            .matches("if (!isTouchDevice()) this.input.focus();")
+            .count(),
+        2,
+        "both automatic focus paths (page load and every automatic \
+         reconnect) must be gated — a bare this.input.focus() left in either \
+         one pops the keyboard on a touchscreen with nobody having tapped \
+         anything"
+    );
+}

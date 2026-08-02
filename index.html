@@ -424,6 +424,12 @@ body {
 
 #chat {
     flex: 1;
+    /* Without this, a flex item's default `min-height: auto` refuses to
+       shrink below its own content's height — so on a short viewport, a
+       welcome banner tall enough to need scrolling instead pushed the
+       composer off the bottom of the screen entirely, unreachable, rather
+       than #chat becoming the one thing that scrolls. */
+    min-height: 0;
     /* The conversation is a centred column, not the whole window. It used to be
        full width with bubbles capped at 600px, so on a wide monitor one message
        sat against the left edge and the next against the right with a metre of
@@ -784,6 +790,17 @@ body {
     background: color-mix(in srgb, var(--imessage-blue) 10%, var(--surface-container-high));
     border: 1px solid color-mix(in srgb, var(--imessage-blue) 20%, transparent);
     animation: slideDown 0.4s var(--transition-medium);
+    /* A sibling of #chat, not a child of it (§10.1 — the emptiness overlay
+       depends on #chat holding only messages), so its height is not part of
+       the flex space #chat gives up when it shrinks. On a short viewport its
+       own content — title, paragraph, three buttons — was taller than the
+       whole screen, and unlike #chat it had no `min-height: 0` floor to
+       shrink past, so the overflow had nowhere to go but through the footer:
+       the composer landed below the visible viewport, unreachable. Capped and
+       made independently scrollable so it can never do that regardless of
+       viewport height or how long the welcome text gets. */
+    max-height: 45vh;
+    overflow-y: auto;
 }
 
 @keyframes slideDown {
@@ -1413,6 +1430,16 @@ body {
 
 /* ---- Date separators --------------------------------------------- */
 
+/* Not `position: sticky`: a sticky separator pins to the scroll
+   container's top the moment anything earlier has scrolled past it —
+   including the instant a two-message room loads auto-scrolled to the
+   bottom, where the separator's stuck position and the newest message's
+   flow position are the same pixels. No margin between them prevents
+   that, because the stuck render position is independent of the next
+   sibling's normal-flow position (§10.2's own "the client owns the scroll
+   position" reasoning, one layer further down). `main` caps at 75
+   messages and a spawned room fades fast, so multi-day scrollback rare
+   enough that the affordance sticky exists for was not worth the bug. */
 .date-separator {
     display: flex;
     align-items: center;
@@ -1421,12 +1448,7 @@ body {
     color: var(--on-surface-variant);
     font-size: 11px;
     font-weight: 600;
-    position: sticky;
-    top: 0;
-    z-index: 5;
-    /* Its own backdrop, so text scrolling underneath does not show through. */
     padding: 2px 0;
-    background: linear-gradient(var(--surface) 60%, transparent);
     justify-content: center;
     letter-spacing: 0.02em;
     text-transform: uppercase;
@@ -1990,16 +2012,6 @@ body {
 .send-button:not(:disabled):active {
     transform: scale(0.94);
 }
-
-/* ---- Date separator, centred and quiet ------------------------------- */
-
-
-.date-separator::before,
-
-/* ---- Typing indicator as a bubble ------------------------------------ */
-
-
-
 
 /* ---- Restored: the reply preview is hidden until you reply ----------
    The base rule carrying `display: none` was removed by a bulk sweep over the
