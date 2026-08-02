@@ -1895,6 +1895,47 @@ between `pointerdown` and `pointerup` and the click lands on nothing.
 **Anything that appears on hover and must then be clicked has a gap to cross.**
 Either bridge it or forgive it.
 
+### 10.12 The client's own §1: per-message work is O(1) there too
+
+`renderMessage` ran three DOM queries scoped to the whole chat on **every**
+message: `querySelector('[data-message-id=...]')` to dedupe, `querySelector(
+'.message:last-of-type')` to find the previous run's last bubble, and
+`pruneRenderedMessages`'s two `querySelectorAll` calls, run unconditionally on
+every render, to decide whether the cap had been exceeded. Each one is
+O(messages currently on screen), and `renderMessage` calls all of them once
+per message — so replaying a full room's history on connect, up to
+`MAX_MESSAGES_PER_ROOM` (500) messages arriving in a tight loop, cost O(n²)
+DOM traversal instead of O(n). This is exactly the doctrine §1 states for the
+server, just never checked against the file it never applied to: this
+repository has one message pipeline with a server half and a client half, and
+"per-message work is O(1)" does not stop being true at the WebSocket.
+
+Fixed the same way the server-side history did in §1.4a: stop deriving an
+answer from a linear scan when the object already at hand can answer in O(1).
+`renderedMessages`, a `Map<message_id, element>`, replaces the dedup query
+(`.has`), and — because a `Map` iterates in insertion order, the same order
+messages are appended in — replaces the prune scan too: its `.size` is the
+count without walking the DOM, and popping its oldest entries finds what to
+remove in O(excess) instead of O(everything on screen). `lastMessageEl`, kept
+in step alongside it, replaces the `:last-of-type` query outright.
+
+The date-separator sweep inside `pruneRenderedMessages` was a second version
+of the same mistake at a smaller scale: it ran its own `querySelectorAll`
+every render regardless of whether anything had actually been pruned, when a
+stale separator can only exist *after* a prune removed the messages under it.
+Gating it on `excess > 0` — the same guard the prune loop itself already needs
+— was free once the count was already known in O(1).
+
+The counter this replaces was tried once before and reverted (see the comment
+inline): a running total incremented for every message including system
+notices, which remove themselves after 8 seconds without ever decrementing
+it, so the count drifted above the true DOM size and began deleting live chat
+messages nowhere near the limit — the worst failure a chat client can have,
+and invisible because the counter was wrong, not the page. `renderedMessages`
+does not repeat that mistake because nothing outside `renderMessage` and
+`pruneRenderedMessages` ever touches it — `addSystemMessage` builds a
+`.system-message` node directly and was never routed through either function.
+
 ## Appendix: what changed, and why it is written down
 
 This document was rewritten wholesale in July 2026. The file it replaced

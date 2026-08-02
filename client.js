@@ -259,7 +259,13 @@ class ChatApp {
         this.dragDepth = 0;
         this.lightboxReturnFocus = null;
         this.lastRenderedDay = null;
-        
+        // Message id -> its row element, in render order. Replaces three
+        // per-message DOM scans (dedup check, previous-run lookup, prune
+        // count) that each cost O(current chat size), which made a full
+        // history replay O(n^2) in room size instead of O(n).
+        this.renderedMessages = new Map();
+        this.lastMessageEl = null;
+
         // DOM elements
         this.chat = document.getElementById('chat');
         this.input = document.getElementById('messageInput');
@@ -796,7 +802,7 @@ class ChatApp {
     ///       .receipt    the time, under the last of a run
     renderMessage(msg, isSent, continuesRun = false) {
         // Prevent duplicate message renders
-        if (this.chat.querySelector(`[data-message-id="${msg.message_id}"]`)) {
+        if (this.renderedMessages.has(msg.message_id)) {
             return;
         }
 
@@ -806,7 +812,7 @@ class ChatApp {
 
         // Only the last bubble of a run carries a tail and an avatar. Adding
         // this one may end the previous one's run, or extend it.
-        const previous = this.chat.querySelector('.message:last-of-type');
+        const previous = this.lastMessageEl;
         if (previous) {
             previous.classList.toggle('run-end', !continuesRun);
         }
@@ -895,6 +901,8 @@ class ChatApp {
         row.appendChild(replyBtn);
 
         this.chat.appendChild(row);
+        this.renderedMessages.set(msg.message_id, row);
+        this.lastMessageEl = row;
         this.pruneRenderedMessages();
     }
 
@@ -1583,24 +1591,36 @@ class ChatApp {
 
     /// Trims the oldest rendered messages once there are more than maxMessages.
     ///
-    /// Counts the DOM directly rather than maintaining a running total. The
-    /// counter this replaces was incremented for system messages too, but those
-    /// remove themselves after 8 seconds without ever decrementing it — so on a
-    /// busy room the count drifted well above the number of nodes actually
-    /// present and began deleting live chat messages that were nowhere near the
-    /// limit. Messages vanishing from a conversation is about the worst failure
-    /// a chat client has, and it was invisible because the counter, not the
-    /// page, was wrong.
+    /// Counts `renderedMessages` directly rather than a separately-maintained
+    /// total. The counter this replaces was incremented for system messages
+    /// too, but those remove themselves after 8 seconds without ever
+    /// decrementing it — so on a busy room the count drifted well above the
+    /// number of nodes actually present and began deleting live chat messages
+    /// that were nowhere near the limit. Messages vanishing from a
+    /// conversation is about the worst failure a chat client has, and it was
+    /// invisible because the counter, not the page, was wrong.
+    ///
+    /// `renderedMessages` only grows and shrinks here and in `renderMessage`
+    /// — never for a system message — so its size is that same count without
+    /// re-walking the DOM for it, and popping its oldest entries (a `Map`
+    /// iterates in insertion order) finds what to remove in O(excess) instead
+    /// of O(messages currently on screen). Run once per rendered message, the
+    /// old `querySelectorAll` scan made a full history replay O(n^2) in room
+    /// size; this keeps it O(n).
     pruneRenderedMessages() {
-        const messages = this.chat.querySelectorAll('.message');
-        const excess = messages.length - this.maxMessages;
+        const excess = this.renderedMessages.size - this.maxMessages;
+        if (excess <= 0) return;
 
+        const oldest = this.renderedMessages.entries();
         for (let i = 0; i < excess; i++) {
-            messages[i].remove();
+            const [id, el] = oldest.next().value;
+            el.remove();
+            this.renderedMessages.delete(id);
         }
 
         // A separator whose messages have all been pruned is a date heading for
-        // nothing. Drop any that now sit at the very top or back-to-back.
+        // nothing. Drop any that now sit at the very top or back-to-back. Only
+        // reachable when something was actually pruned above.
         for (const rule of this.chat.querySelectorAll('.date-separator')) {
             const next = rule.nextElementSibling;
             if (!next || next.classList.contains('date-separator')) {
