@@ -1237,3 +1237,42 @@ fn composer_is_not_auto_focused_on_a_touchscreen() {
          anything"
     );
 }
+
+/// The status chip's base rule (no state modifier) is `connecting`'s
+/// colour — amber, for a state genuinely in progress. `idle` is not that:
+/// nobody is waiting on anything, the room let a quiet visitor go. Without
+/// its own rule it silently inherited that amber "in progress" colour, so
+/// disconnected (red) was the only state that ever looked different from
+/// connecting — idle read as "still trying to connect" when it meant the
+/// opposite.
+#[test]
+fn idle_status_does_not_share_connectings_warning_colour() {
+    let base =
+        css_rule_body(EMBEDDED_HTML, ".app-bar-actions .status-chip").expect("base rule exists");
+    let idle = css_rule_body(EMBEDDED_HTML, ".app-bar-actions .status-chip.idle")
+        .expect(".status-chip.idle rule must exist");
+
+    assert_ne!(
+        idle.trim(),
+        "",
+        "the idle state must actually override something"
+    );
+    assert!(
+        !base.contains("--on-surface-variant") && idle.contains("--on-surface-variant"),
+        "idle must use a neutral colour token distinct from the base \
+         (warning/amber) rule: base={base:?} idle={idle:?}"
+    );
+}
+
+/// `updateConnectionStatus`'s `switch` had no `case 'idle'`, so the chip's
+/// label kept whatever text a previous state had left in it — connecting,
+/// disconnected, or nothing at all on a first render — while the chip itself
+/// switched to the idle state's styling.
+#[test]
+fn idle_status_sets_its_own_label() {
+    assert!(
+        EMBEDDED_JS.contains("case 'idle':"),
+        "updateConnectionStatus must set a label for the idle state, not \
+         leave whatever text a previous status left behind"
+    );
+}

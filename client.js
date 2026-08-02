@@ -1971,6 +1971,9 @@ class ChatApp {
             case 'connecting':
                 this.statusText.textContent = 'Connecting...';
                 break;
+            case 'idle':
+                this.statusText.textContent = 'Idle';
+                break;
         }
 
         this.statusChip.title = this.statusText.textContent;

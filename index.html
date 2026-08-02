@@ -2199,6 +2199,13 @@ body {
    shape of dead weight the rest of this codebase treats as a bug (§6.10),
    just for a *reason* to render rather than a rule to match. `[hidden]` is
    the same idiom `.emoji-panel`/`.reaction-bar`/`.lightbox` already use. */
+/* The base rule's colour is `connecting`'s — a state genuinely in progress,
+   which is what amber/warning means. `idle` is not that: nobody is waiting on
+   anything, the room simply let a quiet visitor go, so it gets its own
+   neutral rule below rather than inheriting a warning colour that was never
+   describing it. Only `disconnected` and `idle` need overrides; `connected`
+   never reaches this far because the chip is hidden for that state
+   (`updateConnectionStatus`). */
 .app-bar-actions .status-chip {
     display: inline-flex;
     align-items: center;
@@ -2213,6 +2220,11 @@ body {
 .app-bar-actions .status-chip.disconnected {
     background: var(--error-container);
     color: var(--error);
+}
+
+.app-bar-actions .status-chip.idle {
+    background: var(--surface-container-high);
+    color: var(--on-surface-variant);
 }
 
 /* ---- The roster ------------------------------------------------------ */
