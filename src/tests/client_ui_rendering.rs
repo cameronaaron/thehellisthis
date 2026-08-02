@@ -1078,38 +1078,46 @@ fn stylesheet_ids_do_not_carry_layout() {
     }
 }
 
-/// `.nav-back` is a plain `<a href>`, not a client-side route: each click is a
-/// full page load that tears down the current WebSocket and opens a new one.
-/// Clicking it several times in the moment before the browser navigates away
-/// fires that many overlapping loads — indistinguishable, from the room's
-/// side, from a rapid-reconnect flood, and exactly what the room-join
-/// throttle (`MAX_ROOM_JOIN_ATTEMPTS`) exists to catch. The fix belongs on the
-/// link, not in that throttle, so the shipped script must actually debounce
-/// it rather than pass it straight through.
+/// `.nav-back` is a plain `<a href>`, not a client-side route: each click that
+/// actually navigates hands off to a brand-new page running a brand-new copy
+/// of the script — so an in-memory "already navigating" flag cannot protect
+/// against a second click, because the second click lands on a freshly loaded
+/// page that has never seen the first one. This was a real bug in an earlier
+/// version of this guard, found by scripting repeated clicks against a real
+/// browser: it stopped a double-click landing before the first navigation
+/// started, but did nothing against a human mashing the link, which is what
+/// flooded the room-join rate limit in practice. The cooldown has to be kept
+/// in `sessionStorage`, which survives the reload the in-memory flag cannot.
 #[test]
-fn nav_back_is_debounced_against_repeated_clicks() {
+fn nav_back_is_debounced_against_repeated_clicks_across_reloads() {
+    assert!(
+        EMBEDDED_JS.contains("sessionStorage.getItem(NAV_COOLDOWN_KEY)")
+            && EMBEDDED_JS.contains("sessionStorage.setItem(NAV_COOLDOWN_KEY"),
+        "the navigation cooldown must be kept in sessionStorage, not an \
+         in-memory flag reset by the very page load it needs to survive"
+    );
     assert!(
         EMBEDDED_JS.contains("function debounceNavigation"),
         "the shipped script must define a navigation debounce guard"
     );
     assert!(
         EMBEDDED_JS.contains("debounceNavigation('.nav-back')"),
-        "and must apply it to the back-to-main link specifically, or a fast \
-         double-click still fires two page loads"
+        "and must apply it to the back-to-main link specifically"
     );
 }
 
 /// The explore-a-random-room link is the same class of bug as `.nav-back`,
-/// one level worse: it navigates via JS rather than a plain href, and a
-/// second click before the first navigation lands does not just repeat the
-/// same page load, it picks a *different* random room and races the two
-/// navigations against each other.
+/// one level worse: it navigates via JS rather than a plain href, so spamming
+/// it does not just repeat the same page load, it picks a *different* random
+/// room on every click and races each navigation against the last. It must
+/// share the same cross-reload cooldown, for the same reason `.nav-back`
+/// needs one instead of a page-load-scoped flag.
 #[test]
-fn explore_link_is_guarded_against_repeated_clicks() {
+fn explore_link_is_guarded_against_repeated_clicks_across_reloads() {
     assert!(
-        EMBEDDED_JS.contains("if (this.exploringRoom) return;")
-            && EMBEDDED_JS.contains("this.exploringRoom = true;"),
-        "the explore-room click handler must ignore a second click before \
-         the first navigation actually leaves the page"
+        EMBEDDED_JS.contains("if (withinNavigationCooldown()) return;")
+            && EMBEDDED_JS.contains("startNavigationCooldown();"),
+        "the explore-room click handler must share the cross-reload \
+         navigation cooldown, not a page-load-scoped flag"
     );
 }

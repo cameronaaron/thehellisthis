@@ -313,16 +313,16 @@ class ChatApp {
             this.sendMessage();
         });
         
-        // Explore room link. Same class of bug as .nav-back (see
-        // debounceNavigation): this navigates via JS rather than a plain
-        // href, so a second click before the first navigation lands does not
-        // just repeat the same page load — it picks a *different* random
-        // room and races that navigation against the first. One click is all
-        // this needs; the rest are ignored until the page actually leaves.
+        // Explore room link. Same class of bug as .nav-back — see
+        // withinNavigationCooldown for why this has to survive a page
+        // reload, not just guard within one: this also navigates via JS
+        // rather than a plain href, so spamming it does not just repeat the
+        // same page load, it picks a *different* random room on every click
+        // and races each navigation against the last.
         document.getElementById('exploreLink').addEventListener('click', (e) => {
             e.preventDefault();
-            if (this.exploringRoom) return;
-            this.exploringRoom = true;
+            if (withinNavigationCooldown()) return;
+            startNavigationCooldown();
             const rooms = ['mellow-forest', 'midnight-owl', 'coffee-talks', 'tech-minds', 'random-thoughts', 'chill-zone', 'late-night', 'creative-corner'];
             const room = rooms[Math.floor(Math.random() * rooms.length)];
             window.location.href = `/${room}`;
@@ -2109,27 +2109,51 @@ class ChatApp {
     }
 }
 
-/// Lets a plain `<a href>` navigation fire once per click, not once per click
-/// that lands before the browser actually leaves the page.
+/// How long a navigation click silences the next one, across page loads.
+const NAV_COOLDOWN_MS = 800;
+
+/// The sessionStorage key holding when the cooldown started by the last
+/// navigating click expires.
 ///
-/// `.nav-back` is a normal link, not a client-side route: each click is a full
-/// page load that tears down the current WebSocket and opens a new one on
-/// arrival. Clicking it several times in the moment before the browser
-/// navigates away fires that many overlapping loads — indistinguishable, from
-/// the room's side, from a rapid-reconnect flood, and exactly what the
-/// server's per-user room-join rate limit exists to catch. The fix belongs
-/// here, not in that limit: a normal navigation only ever needs the first
-/// click, so the rest are debounced rather than sent.
+/// `sessionStorage`, not an in-memory flag: an in-memory flag cannot survive
+/// the very reload it exists to guard against. `.nav-back` and `exploreLink`
+/// are normal navigations, not client-side routes — each click that actually
+/// navigates hands off to a brand-new page running a brand-new copy of this
+/// script, with its own fresh state. A flag reset at every page load has
+/// already forgotten the previous click by the time the click it needs to
+/// suppress happens: a human mashing the link is clicking a freshly loaded
+/// page's link each time, and every one of those loads sees a "first" click.
+/// `sessionStorage` persists across reloads in the same tab and clears when
+/// the tab closes, which is the lifetime this actually needs.
+///
+/// Found by reproducing in a real browser (Playwright, 15 scripted clicks on
+/// the rendered link): an earlier, in-memory-flag version of this guard
+/// blocked a double-click landing before the first navigation started, but
+/// did nothing against repeated clicks each landing on its own freshly
+/// reloaded page — which is what "spamming the button" actually is, and
+/// which still flooded the room-join rate limit exactly as before.
+const NAV_COOLDOWN_KEY = 'navCooldownUntil';
+
+function withinNavigationCooldown() {
+    const until = Number(sessionStorage.getItem(NAV_COOLDOWN_KEY) || 0);
+    return Date.now() < until;
+}
+
+function startNavigationCooldown() {
+    sessionStorage.setItem(NAV_COOLDOWN_KEY, String(Date.now() + NAV_COOLDOWN_MS));
+}
+
+/// Lets a plain `<a href>` navigation fire once per cooldown window, not once
+/// per click.
 function debounceNavigation(selector) {
     const link = document.querySelector(selector);
     if (!link) return;
-    let navigating = false;
     link.addEventListener('click', (event) => {
-        if (navigating) {
+        if (withinNavigationCooldown()) {
             event.preventDefault();
             return;
         }
-        navigating = true;
+        startNavigationCooldown();
     });
 }
 
