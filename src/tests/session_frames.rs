@@ -346,6 +346,7 @@ async fn a_quiet_user_is_evicted_with_the_close_frame() {
             state,
             "quiet".to_string(),
             "u1".to_string(),
+            "c1".to_string(),
             sink.clone(),
         ),
     )

@@ -240,6 +240,32 @@ pub(crate) const USER_IDLE_MESSAGE_TIMEOUT: Duration = Duration::from_secs(600);
 /// `client_and_server_agree_on_the_idle_close_code`.
 pub(crate) const IDLE_CLOSE_CODE: u16 = 4001;
 
+/// WebSocket close code for "a newer connection under your identity took your
+/// place".
+///
+/// A second connection with the same identity cookie — typically a second tab
+/// — does not get refused: `admit_user` treats it as `reclaimed` and the room
+/// moves the identity's `ConnectionState` onto the new `connection_id`. Found
+/// by reproducing two simultaneous connections under one identity directly:
+/// without this code, the *first* tab's socket was never told, so it sat open
+/// on the wire indefinitely — still subscribed to the room's broadcast and
+/// still refreshing its own idle timer every heartbeat, while
+/// `connected_user_count` had already stopped counting it. A silent, ownerless
+/// connection the server itself had forgotten it was still holding open.
+///
+/// Distinct from [`IDLE_CLOSE_CODE`] on purpose: reusing it would tell the
+/// superseded tab it was evicted for being quiet, which is not what happened
+/// and is not the message a client should show. Same reasoning as that
+/// code's own doc comment — the number is the whole mechanism, and the client
+/// must not treat this as an ordinary dropped connection either, or the
+/// superseded tab immediately reconnects and steals the identity straight
+/// back, which is the same flapping this exists to stop.
+///
+/// `index.html`/`client.js` must use the same number; pinned by its entry in
+/// `frontend_parity.rs`'s `PARITY` table, checked by
+/// `every_mirrored_constant_matches_its_source_of_truth`.
+pub(crate) const SUPERSEDED_CLOSE_CODE: u16 = 4002;
+
 /// `main` is never deleted, so it fades instead: once idle this long its
 /// history is trimmed to [`MAIN_ROOM_FADE_KEEP`].
 ///

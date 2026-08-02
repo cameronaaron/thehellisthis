@@ -442,6 +442,7 @@ async fn the_heartbeat_stops_when_the_client_is_gone() {
             state,
             "gone-room".to_string(),
             "u1".to_string(),
+            "c1".to_string(),
             sink.clone(),
         ),
     )

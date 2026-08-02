@@ -752,6 +752,39 @@ minor cosmetic cost; two people wearing the same name in one room is a
 different visitor, mistaken for you. Pinned by
 `reclaiming_never_hands_back_a_name_someone_else_now_holds`.
 
+### 5.9d Reclaiming an identity must also close the connection it reclaims from
+
+`admit_user` moves `ConnectionState::Connected`'s `connection_id` onto a new
+connection the moment a second one arrives under the same identity — right,
+because a second tab sharing the same cookie should be able to take its
+identity back. What it did not do is tell the *first* connection anything.
+Its four tasks kept running exactly as before: `forward_broadcasts` kept
+delivering room events to it, `send_pings` kept it alive at the protocol
+level, and `touch_and_check_idle` kept refreshing its own `last_heartbeat`
+every beat — because that check reads and writes by `user_id`, not
+`connection_id`, so it had no way to notice it was updating a field a *newer*
+connection now owns. A live socket the room itself had already stopped
+counting in `connected_user_count`, open on the wire for as long as the
+browser tab stayed open, silently receiving everything.
+
+Found by reproducing it directly rather than by inference: two real
+connections opened under one identity, one left alone, and its state watched.
+It just sat there, `OPEN`, forever — no error, no close, nothing in the log
+that would tell an operator it existed. §0.5 again: the bug was invisible
+precisely because every individual piece was doing its documented job.
+
+Fixed the same way idle eviction is: a dedicated close code
+(`SUPERSEDED_CLOSE_CODE`, distinct from `IDLE_CLOSE_CODE` for the same reason
+that one is distinct from a bare close — the client must not treat this as an
+ordinary dropped connection, or its own reconnect logic immediately steals
+the identity back from the tab that just reclaimed it, flapping the two
+against each other forever) and a check, `is_superseded`, run at the top of
+every heartbeat tick before the heartbeat itself is sent — there is nothing
+left for a superseded connection to be idle *about*, so there is no reason to
+delay noticing by touching its timer first. Pinned by
+`a_superseded_connection_is_closed_with_the_close_frame` and its `PARITY`
+table entry alongside `IDLE_CLOSE_CODE`'s.
+
 ### 5.12 The log is an interface, and it is the only one an operator has
 
 There is no dashboard, no tracing backend and no way to attach a debugger to a

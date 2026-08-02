@@ -11,7 +11,9 @@ use futures::SinkExt;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info};
 
-use crate::config::{HEARTBEAT_INTERVAL, IDLE_CLOSE_CODE, USER_IDLE_MESSAGE_TIMEOUT};
+use crate::config::{
+    HEARTBEAT_INTERVAL, IDLE_CLOSE_CODE, SUPERSEDED_CLOSE_CODE, USER_IDLE_MESSAGE_TIMEOUT,
+};
 use crate::protocol::{HistoryEvent, HistoryMessage, OutgoingEvent, OutgoingMessage, Reaction};
 use crate::room::{ConnectionState, user_idle_for_too_long};
 use crate::state::AppState;
@@ -126,15 +128,19 @@ pub(crate) async fn send_history<S: FrameSink>(
     true
 }
 
-/// The application heartbeat, and the eviction that lets a room empty.
+/// The application heartbeat, the eviction that lets a room empty, and the
+/// close that stops a superseded connection sitting open forever.
 ///
-/// Sink-generic like the others, so both ways this ends — the client stopping
-/// accepting frames, and the user going quiet long enough to be removed — are
-/// reachable without a real socket dying at an exact instant.
+/// Sink-generic like the others, so all three ways this ends — the client
+/// stopping accepting frames, the user going quiet long enough to be removed,
+/// and a second connection under the same identity taking over — are
+/// reachable without a real socket dying, going idle, or racing another
+/// connection at an exact instant.
 pub(crate) async fn beat_and_evict_idle<S: FrameSink>(
     state: Arc<AppState>,
     room: String,
     user_id: String,
+    connection_id: String,
     sink: Arc<Mutex<S>>,
 ) {
     let mut interval = tokio::time::interval(HEARTBEAT_INTERVAL);
@@ -142,6 +148,20 @@ pub(crate) async fn beat_and_evict_idle<S: FrameSink>(
 
     while running {
         interval.tick().await;
+
+        // Checked first, before spending a heartbeat on a connection that is
+        // no longer the one the room considers current: a superseded socket
+        // has nothing left to be idle *about*, and updating its heartbeat
+        // would only delay noticing (§5.9 — the same "a claim is not a fact"
+        // reasoning as an identity cookie, here about which connection_id
+        // actually still speaks for this user).
+        if is_superseded(&state, &room, &user_id, &connection_id).await {
+            info!(user_id = %user_id, room = %room, "disconnecting: superseded by a newer connection");
+            let mut tx = sink.lock().await;
+            let _ = tx.send_frame(superseded_close_frame()).await;
+            running = false;
+            continue;
+        }
 
         let delivered = {
             let mut tx = sink.lock().await;
@@ -192,4 +212,52 @@ pub(crate) async fn touch_and_check_idle(state: &Arc<AppState>, room: &str, user
     }
 
     user_idle_for_too_long(user, now)
+}
+
+/// True when a newer connection under this identity has taken this user's
+/// slot — a second tab sharing the same cookie is the common case.
+///
+/// `admit_user` treats that second connection as `reclaimed`: it moves
+/// `ConnectionState::Connected`'s `connection_id` onto the new one rather than
+/// refusing it, which is right — a returning tab should reclaim its identity.
+/// What it does not do on its own is tell the *old* connection it has been
+/// replaced. Without this check, that first connection's four tasks keep
+/// running: still forwarding broadcasts, still answering pings, still
+/// refreshing its own idle timer every heartbeat — a live socket the room
+/// itself has already stopped counting in `connected_user_count`.
+///
+/// A `Disconnected` user is not superseded by this connection's own presence;
+/// that is a different session ending for a different reason, and this check
+/// only means to catch the one case where somebody *else* is now current.
+pub(crate) async fn is_superseded(
+    state: &Arc<AppState>,
+    room: &str,
+    user_id: &str,
+    connection_id: &str,
+) -> bool {
+    let rooms = state.rooms.read().await;
+    let Some(user) = rooms
+        .get(room)
+        .and_then(|room_state| room_state.users.get(user_id))
+    else {
+        return false;
+    };
+
+    matches!(
+        &user.connection_state,
+        ConnectionState::Connected { connection_id: current, .. } if current != connection_id
+    )
+}
+
+/// The frame that closes a superseded connection, sent with the code the
+/// client reads.
+///
+/// A function for the same reason [`idle_close_frame`] is one: what matters
+/// is that it carries [`SUPERSEDED_CLOSE_CODE`], assertable without racing two
+/// real connections onto the same identity at once.
+pub(crate) fn superseded_close_frame() -> Message {
+    Message::Close(Some(CloseFrame {
+        code: SUPERSEDED_CLOSE_CODE,
+        reason: "superseded".into(),
+    }))
 }

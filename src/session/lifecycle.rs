@@ -220,8 +220,13 @@ pub(crate) async fn run_session<S, R>(
     let ping_task = send_pings(ws_tx.clone());
 
     // ---- Task 4: application heartbeat + idle eviction --------------------
-    let heartbeat_task =
-        beat_and_evict_idle(state.clone(), room.clone(), user_id.clone(), ws_tx.clone());
+    let heartbeat_task = beat_and_evict_idle(
+        state.clone(),
+        room.clone(),
+        user_id.clone(),
+        connection_id.clone(),
+        ws_tx.clone(),
+    );
 
     tokio::select! {
         _ = forward_task => trace!(user_id = %user_id, "forward task ended"),

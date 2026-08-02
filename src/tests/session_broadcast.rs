@@ -727,6 +727,7 @@ async fn a_quiet_user_is_evicted_with_the_close_frame() {
             state,
             "quiet".to_string(),
             "u1".to_string(),
+            "c1".to_string(),
             sink.clone(),
         ),
     )
@@ -742,6 +743,64 @@ async fn a_quiet_user_is_evicted_with_the_close_frame() {
     assert_eq!(
         frame.code, IDLE_CLOSE_CODE,
         "without the code the client reconnects and the room never empties"
+    );
+}
+
+/// A connection whose `connection_id` a newer one has already replaced is
+/// closed with the supersession frame on the very first tick — before even a
+/// heartbeat, since there is nothing left for this connection to be idle
+/// about.
+///
+/// This is the fix for a real, reproduced bug: without it, a second
+/// connection under the same identity (a second tab, sharing the same
+/// cookie) silently took over the room's bookkeeping while the first
+/// connection's socket stayed open on the wire forever, still receiving
+/// broadcasts and uncounted by `connected_user_count`.
+#[tokio::test]
+async fn a_superseded_connection_is_closed_with_the_close_frame() {
+    let state = Arc::new(AppState::new());
+    {
+        let mut rooms = state.rooms.write().await;
+        let mut room = create_room();
+        // The room's current connection_id is "c-new"; this task believes
+        // it is "c-old", exactly the state a second tab's admission leaves
+        // the first tab's session task in.
+        room.users.insert(
+            "u1".to_string(),
+            connected_user("u1", "otter", "c-new", Instant::now()),
+        );
+        rooms.insert("shared".to_string(), room);
+    }
+
+    let sink = Arc::new(tokio::sync::Mutex::new(RecordingSink::default()));
+    timeout(
+        HEARTBEAT_INTERVAL * 2,
+        crate::session::beat_and_evict_idle(
+            state,
+            "shared".to_string(),
+            "u1".to_string(),
+            "c-old".to_string(),
+            sink.clone(),
+        ),
+    )
+    .await
+    .expect("a superseded connection must close itself, ending the loop");
+
+    let sent = &sink.lock().await.sent;
+    assert_eq!(
+        sent.len(),
+        1,
+        "superseded is checked before the heartbeat send, so the close is \
+         the only frame — sending a heartbeat first would delay noticing: {sent:?}"
+    );
+
+    let crate::session::Message::Close(Some(frame)) = &sent[0] else {
+        panic!("the sole frame must be the supersession close, got {sent:?}");
+    };
+    assert_eq!(
+        frame.code, SUPERSEDED_CLOSE_CODE,
+        "without the code the client reconnects and steals the identity \
+         straight back from the tab that just reclaimed it"
     );
 }
 

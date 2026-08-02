@@ -93,6 +93,16 @@ const MAX_ATTACHMENT_BYTES = 131072;
 /// the room it was just removed from, which is what stopped rooms fading.
 const IDLE_CLOSE_CODE = 4001;
 
+/// The close code the server uses when a newer connection under the same
+/// identity — typically a second tab — has taken this one's place.
+///
+/// Must equal `SUPERSEDED_CLOSE_CODE` in `src/config.rs`. Distinct from
+/// `IDLE_CLOSE_CODE` for the same reason that one exists at all: a bare close
+/// is indistinguishable from a dropped connection, and this tab's own
+/// reconnect logic would otherwise steal the identity straight back from the
+/// tab that just reclaimed it, flapping the two against each other forever.
+const SUPERSEDED_CLOSE_CODE = 4002;
+
 /// How long the reaction bar survives the pointer leaving the message.
 ///
 /// The bar is `position: fixed`, so travelling to it means leaving the message
@@ -224,7 +234,12 @@ class ChatApp {
         this.reactionTarget = null;
         this.reactionBarFor = null;
         this.reactionBarHideId = null;
-        this.evictedForIdle = false;
+        // True after either idle eviction or being superseded by another tab
+        // under the same identity — both leave the socket closed on purpose,
+        // and both are undone only by a deliberate action from the person
+        // looking at this tab, never automatically. See handleIdleEviction
+        // and handleSuperseded for why each one gets here.
+        this.awaitingManualRejoin = false;
         this.roster = [];
         this.unreadCount = 0;
         this.dragDepth = 0;
@@ -540,6 +555,11 @@ class ChatApp {
             return;
         }
 
+        if (event && event.code === SUPERSEDED_CLOSE_CODE) {
+            this.handleSuperseded();
+            return;
+        }
+
         this.tryReconnect();
     }
 
@@ -550,7 +570,7 @@ class ChatApp {
     /// on its own, which is the whole difference between a room that can empty
     /// and one that cannot.
     handleIdleEviction() {
-        this.evictedForIdle = true;
+        this.awaitingManualRejoin = true;
         this.reconnectAttempts = 0;
         this.updateConnectionStatus('idle');
         this.addSystemMessage('You went quiet, so the room let you go. Say something to rejoin.', 'info');
@@ -560,10 +580,29 @@ class ChatApp {
         this.sendButton.disabled = false;
     }
 
-    /// Reconnects after an idle eviction, on the user's initiative.
+    /// Stops reconnecting after another tab reclaimed this identity, and
+    /// offers the same manual way back idle eviction does.
+    ///
+    /// Reconnecting on its own here would immediately take the identity back
+    /// from the tab that just reclaimed it — and that tab's own automatic
+    /// reconnect would take it right back again, the exact flapping
+    /// `SUPERSEDED_CLOSE_CODE` exists to stop. Only a deliberate action from
+    /// whoever is actually looking at this tab breaks that cycle.
+    handleSuperseded() {
+        this.awaitingManualRejoin = true;
+        this.reconnectAttempts = 0;
+        this.updateConnectionStatus('idle');
+        this.addSystemMessage('This room is open in another tab. Say something here to bring it back.', 'info');
+
+        this.input.disabled = false;
+        this.sendButton.disabled = false;
+    }
+
+    /// Reconnects after an idle eviction or being superseded, on the user's
+    /// initiative.
     rejoinAfterIdle() {
-        if (!this.evictedForIdle || this.connected) return false;
-        this.evictedForIdle = false;
+        if (!this.awaitingManualRejoin || this.connected) return false;
+        this.awaitingManualRejoin = false;
         this.roster = [];
         this.addSystemMessage('Rejoining...', 'info');
         this.connect();

@@ -82,6 +82,15 @@ fn parity_table() -> Vec<Mirrored> {
                      stopped rooms ever fading (constraint #3)",
         },
         Mirrored {
+            js_const: "SUPERSEDED_CLOSE_CODE",
+            expected: Expected::Number(u64::from(SUPERSEDED_CLOSE_CODE)),
+            reason: "without agreement the client cannot tell being replaced \
+                     by another tab from a dropped connection, and its \
+                     automatic reconnect steals the identity straight back \
+                     from the tab that just reclaimed it — flapping the two \
+                     against each other forever",
+        },
+        Mirrored {
             js_const: "MAX_ATTACHMENT_BYTES",
             expected: Expected::Number(MAX_ATTACHMENT_BYTES as u64),
             reason: "the client's downscale loop targets this ceiling; too \

@@ -28,7 +28,9 @@ pub(crate) use tasks::{
     FrameSink, beat_and_evict_idle, encode_event, forward_broadcasts, send_history, send_pings,
 };
 #[cfg(test)]
-pub(crate) use tasks::{idle_close_frame, touch_and_check_idle};
+pub(crate) use tasks::{
+    idle_close_frame, is_superseded, superseded_close_frame, touch_and_check_idle,
+};
 
 #[cfg(test)]
 pub(crate) use lifecycle::{join_room, run_session};

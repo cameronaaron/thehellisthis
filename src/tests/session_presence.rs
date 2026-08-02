@@ -849,6 +849,75 @@ async fn a_missing_user_is_not_reported_as_idle() {
     assert!(!crate::session::touch_and_check_idle(&state, "empty", "u1").await);
 }
 
+/// A second connection under the same identity supersedes the first — the
+/// two-tab case `SUPERSEDED_CLOSE_CODE` exists for.
+///
+/// Reproduced directly against a real pair of connections before this was
+/// fixed: the first connection's socket stayed open on the wire indefinitely,
+/// still receiving broadcasts, while `connected_user_count` had already
+/// stopped counting it.
+#[tokio::test]
+async fn a_newer_connection_under_the_same_identity_supersedes_the_older_one() {
+    let state = Arc::new(AppState::new());
+    {
+        let mut rooms = state.rooms.write().await;
+        let mut room = create_room();
+        room.users.insert(
+            "u1".to_string(),
+            connected_user("u1", "otter", "conn-new", Instant::now()),
+        );
+        rooms.insert("main".to_string(), room);
+    }
+
+    assert!(
+        crate::session::is_superseded(&state, "main", "u1", "conn-old").await,
+        "a connection_id that is no longer current must be reported superseded"
+    );
+    assert!(
+        !crate::session::is_superseded(&state, "main", "u1", "conn-new").await,
+        "the current connection_id must not report itself as superseded"
+    );
+}
+
+/// Neither a missing room nor a missing user is "superseded" — the session is
+/// ending for some other reason, and this check only means to catch the one
+/// case where somebody *else* is now current under the same identity.
+#[tokio::test]
+async fn a_missing_user_is_not_reported_as_superseded() {
+    let state = Arc::new(AppState::new());
+
+    assert!(
+        !crate::session::is_superseded(&state, "no-such-room", "u1", "c1").await,
+        "no room means not superseded"
+    );
+
+    {
+        let mut rooms = state.rooms.write().await;
+        rooms.insert("empty".to_string(), create_room());
+    }
+    assert!(
+        !crate::session::is_superseded(&state, "empty", "u1", "c1").await,
+        "no user means not superseded"
+    );
+}
+
+/// The superseded-close frame carries the code the client reads.
+///
+/// Same reasoning as `the_idle_eviction_frame_carries_the_agreed_code`: a bare
+/// close is indistinguishable from a dropped connection, and the superseded
+/// tab's own reconnect logic would steal the identity straight back from the
+/// tab that just reclaimed it.
+#[test]
+fn the_superseded_close_frame_carries_the_agreed_code() {
+    let crate::session::Message::Close(Some(frame)) = crate::session::superseded_close_frame()
+    else {
+        panic!("a supersession must be a close frame carrying a reason");
+    };
+
+    assert_eq!(frame.code, SUPERSEDED_CLOSE_CODE);
+    assert_eq!(frame.reason.as_str(), "superseded");
+}
+
 /// An event arriving exactly at the heartbeat timeout is still this connection's.
 ///
 /// A lapsed heartbeat means the socket is being torn down, and the event is

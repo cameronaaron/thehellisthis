@@ -1028,6 +1028,7 @@ async fn a_talking_user_keeps_their_connection() {
             state,
             "chatty".to_string(),
             "u1".to_string(),
+            "c1".to_string(),
             sink.clone(),
         ),
     )
