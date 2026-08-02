@@ -5,7 +5,7 @@ use super::*;
 #[tokio::test]
 async fn test_message_with_unicode_emoji() {
     let text = "Hello 👋 World 🌍";
-    let result = validate_message(text);
+    let result = validate_and_render_message(text);
     assert!(result.is_ok());
 }
 

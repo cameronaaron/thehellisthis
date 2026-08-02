@@ -773,7 +773,7 @@ async fn a_duplicate_message_within_the_window_is_dropped() {
 
 /// Whitespace padding cannot smuggle a message past the length cap.
 ///
-/// `validate_message` checks the *trimmed* length; this is the second gate,
+/// `validate_and_render_message` checks the *trimmed* length; this is the second gate,
 /// on the untrimmed length, that exists because a message could trim down to
 /// something short while still costing MAX_MESSAGE_LEN+ bytes on the wire and
 /// in memory. Padding with whitespace instead of content is exactly the shape

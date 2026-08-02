@@ -73,10 +73,23 @@ async fn test_ws_close_frame_handled() {
 
 #[tokio::test]
 async fn test_message_html_escaping() {
+    // A message that is only a raw tag renders to nothing — Markdown's safe
+    // default omits raw HTML blocks entirely rather than passing them
+    // through sanitised — so there is no harmless version of this message
+    // left to send. It is correctly rejected as empty rather than stored as
+    // a blank bubble (§1.4d).
     let dangerous = "<img src=x onerror=alert(1)>";
-    let result = validate_message(dangerous).unwrap();
-    // Ammonia should remove the dangerous attributes
+    assert!(
+        validate_and_render_message(dangerous).is_err(),
+        "a message that is only a raw tag must be rejected, not delivered empty"
+    );
+
+    // Mixed with real content, the dangerous attribute is gone and the text
+    // survives.
+    let mixed = "Look at this <img src=x onerror=alert(1)> image";
+    let result = validate_and_render_message(mixed).unwrap();
     assert!(!result.contains("onerror"));
+    assert!(result.contains("Look at this"));
 }
 
 #[tokio::test]

@@ -32,8 +32,8 @@ use crate::startup::{
 };
 use crate::state::{AppState, announce_departures};
 use crate::validation::{
-    extract_client_ip, hash_client_address, sanitize_attachment, sanitize_reply, validate_input,
-    validate_message,
+    extract_client_ip, hash_client_address, sanitize_attachment, sanitize_reply,
+    validate_and_render_message, validate_input,
 };
 
 use axum::extract::{ConnectInfo, FromRequestParts, Path, State};

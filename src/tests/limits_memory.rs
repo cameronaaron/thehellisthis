@@ -877,7 +877,7 @@ async fn test_memory_tracker_total_bytes_tracking() {
     assert_eq!(tracker.total_bytes.load(Ordering::Relaxed), 800);
 }
 
-// Test validate_message with edge cases - covers lines 2354-2370
+// Test validate_and_render_message with edge cases - covers lines 2354-2370
 
 #[tokio::test]
 async fn test_memory_tracker_remove_bytes_underflow() {

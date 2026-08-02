@@ -17,7 +17,7 @@ use crate::protocol::{ClientEvent, OutgoingEvent, OutgoingMessage, SystemEvent, 
 use crate::room::ConnectionState;
 use crate::state::AppState;
 use crate::validation::{
-    render_message_html, sanitize_attachment, sanitize_reply, validate_message,
+    render_message_html, sanitize_attachment, sanitize_reply, validate_and_render_message,
 };
 
 /// Runs CPU-bound work — Markdown parsing, HTML sanitisation — on Tokio's
@@ -192,8 +192,8 @@ pub async fn apply_client_event_at(
 
             // An image on its own is a message. Text is required only when
             // there is nothing else to carry, which is why this is not simply
-            // `validate_message(&text)?` — an empty caption under a photograph
-            // is not an empty message.
+            // `validate_and_render_message(&text)?` — an empty caption under a
+            // photograph is not an empty message.
             let needs_text = attachment.is_none() || !text.trim().is_empty();
 
             // See `render_off_thread`: this is real CPU work (comrak, then
@@ -206,9 +206,10 @@ pub async fn apply_client_event_at(
             let render_text = text.clone();
             let rendered = render_off_thread(move || {
                 if needs_text {
-                    validate_message(&render_text)?;
+                    validate_and_render_message(&render_text)
+                } else {
+                    Ok(render_message_html(&render_text))
                 }
-                Ok::<String, ChatError>(render_message_html(&render_text))
             })
             .await;
 

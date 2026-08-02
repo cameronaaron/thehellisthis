@@ -47,12 +47,26 @@ pub fn validate_input(text: &str, max_len: usize) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Accepts or rejects a chat message, returning its sanitised plain form.
+/// Validates and renders a message in one pass: the shape checks a raw
+/// message has to pass, then [`render_message_html`] once, whose output is
+/// both what decides "was there anything here" and what actually gets stored
+/// and broadcast.
 ///
-/// The returned string is the *guard* value, not what gets broadcast: a
-/// message consisting only of markup sanitises to nothing and must be rejected
-/// here, before [`render_message_html`] turns the original Markdown into HTML.
-pub fn validate_message(text: &str) -> Result<String, ChatError> {
+/// This used to be two independent `ammonia::clean` passes over two different
+/// representations of the same text — this function's raw-text sanitisation,
+/// whose result was discarded except for an emptiness/length check, and
+/// [`render_message_html`]'s own sanitisation of the *rendered* HTML, which is
+/// what was actually stored. Beyond the redundant cost, the two could
+/// disagree: a message consisting only of `<img src=x onerror=alert(1)>` or
+/// `<div></div>` passed the raw-text check — `ammonia::clean` on raw text
+/// keeps some tags, stripped of their dangerous attributes, rather than
+/// removing them — but rendered to nothing, because Markdown's safe default
+/// omits raw HTML entirely before `ammonia` ever sees a real tag to keep. A
+/// message "not empty" by the check gating it was stored and broadcast as one
+/// that visibly was. Deriving "empty" from what actually gets stored, instead
+/// of a parallel computation over a different representation of the input,
+/// closes that gap along with the redundant work.
+pub fn validate_and_render_message(text: &str) -> Result<String, ChatError> {
     let trimmed = text.trim();
 
     if trimmed.is_empty() {
@@ -62,20 +76,15 @@ pub fn validate_message(text: &str) -> Result<String, ChatError> {
         return Err(ChatError::InvalidMessage("Message too long".into()));
     }
 
-    let clean_text = ammonia::clean(trimmed);
+    let html = render_message_html(trimmed);
 
-    if clean_text.trim().is_empty() {
+    if html.trim().is_empty() {
         return Err(ChatError::InvalidMessage(
             "Message cannot be empty after sanitization".into(),
         ));
     }
-    if clean_text.len() > MAX_MESSAGE_LEN {
-        return Err(ChatError::InvalidMessage(
-            "Sanitized message too long".into(),
-        ));
-    }
 
-    Ok(clean_text)
+    Ok(html)
 }
 
 /// Truncates to at most `max_bytes`, never splitting a UTF-8 character.

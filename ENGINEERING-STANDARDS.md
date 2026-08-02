@@ -346,6 +346,37 @@ Same instinct as §1.4a, one hop further down the pipeline: **the expensive
 part of "the same data, sent to everyone" should happen once, and what varies
 per recipient (here: nothing) is the only thing that should ever repeat.**
 
+### 1.4d Derive "empty" from what is actually stored, not a parallel check on a different representation
+
+`validate_message` used to run `ammonia::clean` twice per message: once over
+the raw text, purely to decide whether the result was non-empty and within
+length, and a second time inside `render_message_html`, over the *rendered*
+HTML, which is what was actually stored and broadcast. The first pass's
+output was discarded outright — computed, then thrown away.
+
+The redundant work was the smaller problem. The two passes could **disagree**.
+A message consisting only of `<img src=x onerror=alert(1)>` or `<div></div>`
+passed the raw-text check: `ammonia::clean` run directly on raw text keeps
+some tags, stripped of the attributes that make them dangerous, rather than
+deleting them outright, so the check saw non-empty output and let the message
+through. But `render_message_html` runs `comrak` **first**, and comrak's safe
+default treats HTML that opens a block (rather than sitting inline after real
+text) as a raw HTML block, which it omits entirely — before `ammonia` ever
+saw a real tag to keep anything of. A message judged "not empty" by the check
+gating it was stored and broadcast as one that visibly was: a blank bubble in
+every recipient's chat, with no error to the sender and no record of why.
+
+`validate_and_render_message` now does one render-and-sanitise pass and
+derives "empty" from that pass's own output — the same value that gets
+stored — instead of a parallel computation over a different representation of
+the input. There is exactly one definition of "this message renders to
+nothing," and it is the one the renderer actually produces.
+
+Same instinct as §1.4b: don't keep a second copy of an answer you can derive
+from the first. Here the "copy" wasn't stale data drifting out of sync over
+time — it was two independent computations over different inputs, which can
+disagree on their very first run.
+
 ### 1.5 Linear work belongs where it is paid once, not where it is paid per message
 
 Trimming history to `MAX_MESSAGES_PER_ROOM` moves the whole `Vec`. Doing it per
@@ -1624,7 +1655,7 @@ lore.
 | Per-IP rate limiting as real protection | **Rejected as a security boundary** (§5.5) — `X-Forwarded-For` is attacker-controlled | Reopens if the container stops being reachable except through the Worker, verifiable at the network layer. |
 | Sliding-window rate limiter | **Rejected** — needs a timestamp per event; the fixed window's edge behaviour is imperceptible in chat | Reopens if burst abuse is observed crossing window boundaries in production. |
 | `cargo-deny` in CI | **Not added, checked against a real duplicate-version case rather than left assumed** — `cargo tree --duplicates` shows `tokio-tungstenite` at both 0.29 (pulled in transitively by axum's own `ws` feature, pinned by axum's own `Cargo.toml`, not this project's) and 0.30 (this project's dev-dependency, tracking latest for the integration tests' own WS client). It does not bite: dev-dependencies never reach the release binary, so the duplication costs nothing beyond a slightly larger `cargo test` compile, and it resolves itself the moment axum bumps its own pin — downgrading this project's dev-dependency to match would trade freshness for a problem that has no actual cost. `cargo audit`/`pnpm audit` still cover advisories on both trees | Add when a duplicate-version pair has a real cost attached — a licence conflict, a security-relevant duplication that reaches the shipped binary, or a build-time regression worth measuring |
-| Removing the double `ammonia::clean` | **Deferred** — `validate_message` sanitises to detect markup-only messages, then `render_message_html` sanitises the rendered HTML. Two passes over ≤8 KB, microseconds | Reopens if message throughput is ever measured as CPU-bound. |
+| Removing the double `ammonia::clean` | **Done** (§1.4d) — reopened not because throughput was ever measured as CPU-bound (it wasn't; this entry's own "microseconds" stood for a long time), but because auditing every per-message path for the O(1) claim found the two passes could *disagree*: a message that was only `<img src=x onerror=alert(1)>` passed the raw-text check but rendered to nothing, since Markdown's safe default omits raw HTML entirely before `ammonia` ever saw a real tag. `validate_and_render_message` now does one render+sanitise pass and derives "empty" from what is actually stored, which fixed a real bug along with the redundant work | Closed. Reopens only if a message needs its raw, pre-render form validated for a new reason `render_message_html`'s output cannot answer. |
 | AVIF for attachments | **Deferred, unmeasured** — AVIF is ~20-30% smaller than WebP at equal quality, but the constraint is *encoding*, not decoding. Browser `canvas` AVIF encode support is thin where WebP's is universal, and `toDataURL` silently returns PNG for a type it cannot encode — so an AVIF-first attempt would run a full lossless PNG encode of a 1600px image and discard it, on every browser that lacks support, for every attempt in the retry loop. Where AVIF encode does exist it is slow, and `toDataURL` is synchronous. Adding it also needs `image/avif` in `ALLOWED_ATTACHMENT_MIMES` and its magic bytes in `sniff_image_mime`. **No browser was available to measure any of this** | Reopens when the encode path can actually be measured in a browser. The shape it would need: a one-time cached probe on a 1×1 canvas (never a probe per attempt), and async `toBlob` rather than blocking `toDataURL`. Worth revisiting if attachment bytes ever become the binding constraint — they are not today |
 | Synchronous `toDataURL` in the attachment encoder | **Known cost, unmeasured** — the encoder tries up to 15 (size, quality) combinations, each a canvas redraw plus a synchronous encode that blocks the main thread. A 128 KB *base64* ceiling is ~96 KB of image, which 1600px will usually miss, so the loop probably runs several times rather than once | Reopens with a browser to measure in. The fix is `toBlob` (async) plus starting the search from a size estimated off the source dimensions instead of always at 1600px. Both are unverifiable from here, and shipping an unmeasured rewrite of a path that currently works is the trade §0.5 warns about |
 | Rust nightly / experimental features | **Rejected** — this is a server that holds every room in one process, and nightly has no stability guarantee: a feature can change or vanish between two nights, and the build breaking is the site going down. The features that would actually help are already stable and in use — let-chains (1.88, which the MSRV bump turned on and clippy applied 49 times), inline `const` blocks for the budget assertions, `LazyLock`, async fn in traits. Nothing on nightly addresses a constraint this project actually has: the bottleneck is lock duration and the memory ceiling, neither of which a language feature moves | Reopens for a *specific* feature with a measured win that stable cannot express, pinned to an exact nightly, and only if the container build can be reproduced from it. "It is newer" is not a reason (§0.3) |

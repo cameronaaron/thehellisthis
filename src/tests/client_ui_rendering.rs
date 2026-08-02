@@ -25,7 +25,7 @@ async fn test_reserved_path_robots_txt() {
 #[tokio::test]
 async fn test_message_with_inline_code() {
     let text = "Use `cargo test` to run tests";
-    let result = validate_message(text);
+    let result = validate_and_render_message(text);
     assert!(result.is_ok());
 }
 

@@ -18,5 +18,6 @@ pub(crate) use attachments::{decode_base64_prefix, sniff_image_mime};
 pub use client_address::{extract_client_ip, hash_client_address};
 
 pub use text::{
-    matches_room_name_shape, render_message_html, sanitize_reply, validate_input, validate_message,
+    matches_room_name_shape, render_message_html, sanitize_reply, validate_and_render_message,
+    validate_input,
 };

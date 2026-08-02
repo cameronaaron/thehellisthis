@@ -4,15 +4,16 @@ use super::*;
 
 #[tokio::test]
 async fn test_validate_message_cases() {
-    assert!(validate_message("Hello").is_ok());
-    assert!(validate_message("").is_err());
-    assert!(validate_message(&"a".repeat(MAX_MESSAGE_LEN + 1)).is_err());
+    assert!(validate_and_render_message("Hello").is_ok());
+    assert!(validate_and_render_message("").is_err());
+    assert!(validate_and_render_message(&"a".repeat(MAX_MESSAGE_LEN + 1)).is_err());
 
     // Pure script tags with no text content should be rejected (empty after sanitization)
-    assert!(validate_message("<script>alert('xss')</script>").is_err());
+    assert!(validate_and_render_message("<script>alert('xss')</script>").is_err());
 
     // But text with script tags mixed in should have the script removed and text preserved
-    let sanitized = validate_message("Hello <script>alert('xss')</script> world").unwrap();
+    let sanitized =
+        validate_and_render_message("Hello <script>alert('xss')</script> world").unwrap();
     assert!(!sanitized.contains("<script>"));
     assert!(sanitized.contains("Hello"));
     assert!(sanitized.contains("world"));
@@ -28,8 +29,14 @@ async fn test_validate_input_cases() {
 
 #[tokio::test]
 async fn test_html_sanitization_removes_script() {
-    let dangerous = "<script>alert('xss')</script><p>Safe content</p>";
-    let result = validate_message(dangerous);
+    // A `<script>` tag opening the message is *block*-level raw HTML to
+    // Markdown, which the safe default omits entirely — the whole input,
+    // "Safe content" included, since that text was never extracted as its
+    // own paragraph, only ever existed inside the omitted block. Leading
+    // text keeps the script tag *inline* instead, where only the tag itself
+    // is omitted and surrounding text is still its own paragraph content.
+    let dangerous = "Safe content <script>alert('xss')</script> more";
+    let result = validate_and_render_message(dangerous);
 
     assert!(result.is_ok());
     let sanitized = result.unwrap();
@@ -39,14 +46,14 @@ async fn test_html_sanitization_removes_script() {
 
 #[tokio::test]
 async fn test_empty_message_rejection() {
-    let result = validate_message("");
+    let result = validate_and_render_message("");
     assert!(result.is_err());
 }
 
 #[tokio::test]
 async fn test_oversized_message_rejection() {
     let huge_msg = "a".repeat(MAX_MESSAGE_LEN + 1);
-    let result = validate_message(&huge_msg);
+    let result = validate_and_render_message(&huge_msg);
     assert!(result.is_err());
 }
 
@@ -283,37 +290,37 @@ async fn test_validate_input_special_chars() {
 async fn test_validate_message_length_boundaries() {
     // Max length message
     let max_msg = "a".repeat(MAX_MESSAGE_LEN);
-    assert!(validate_message(&max_msg).is_ok());
+    assert!(validate_and_render_message(&max_msg).is_ok());
 
     // Over max length
     let too_long = "a".repeat(MAX_MESSAGE_LEN + 1);
-    assert!(validate_message(&too_long).is_err());
+    assert!(validate_and_render_message(&too_long).is_err());
 
     // Empty message
-    assert!(validate_message("").is_err());
+    assert!(validate_and_render_message("").is_err());
 
     // Single character
-    assert!(validate_message("a").is_ok());
+    assert!(validate_and_render_message("a").is_ok());
 }
 
 #[tokio::test]
 async fn test_message_with_links() {
     let msg_with_link = "Check this out: https://example.com";
-    let result = validate_message(msg_with_link);
+    let result = validate_and_render_message(msg_with_link);
     assert!(result.is_ok());
 }
 
 #[tokio::test]
 async fn test_message_with_code_blocks() {
     let code_msg = "```rust\nfn main() {\n    println!(\"hello\");\n}\n```";
-    let result = validate_message(code_msg);
+    let result = validate_and_render_message(code_msg);
     assert!(result.is_ok());
 }
 
 #[tokio::test]
 async fn test_message_with_bold_italic() {
     let formatted = "**bold** and *italic*";
-    let result = validate_message(formatted);
+    let result = validate_and_render_message(formatted);
     // Just verify it's valid
     assert!(result.is_ok());
 }
@@ -322,16 +329,11 @@ async fn test_message_with_bold_italic() {
 async fn test_message_with_lists() {
     let list_msg = "- Item 1\n- Item 2\n- Item 3";
 
-    // `validate_message` sanitises to decide whether anything survives; it is
-    // not the renderer, so the Markdown is still Markdown here.
-    let guard = validate_message(list_msg).unwrap();
-    assert_eq!(
-        guard, list_msg,
-        "plain Markdown has nothing for the sanitiser to remove"
-    );
-
-    // The rendering is what the room actually stores.
-    let rendered = crate::validation::render_message_html(list_msg);
+    // `validate_and_render_message` returns the rendered HTML directly — it
+    // is the one render+sanitise pass, not a raw-text guard plus a separate
+    // render (§1.4d), so there is no verbatim-Markdown value to compare
+    // against the original input any more.
+    let rendered = validate_and_render_message(list_msg).unwrap();
     assert_eq!(
         rendered.matches("<li>").count(),
         3,
@@ -346,35 +348,35 @@ async fn test_message_with_lists() {
 #[tokio::test]
 async fn test_message_with_special_markdown() {
     let text = "# Header\n## Subheader\n- List item";
-    let result = validate_message(text);
+    let result = validate_and_render_message(text);
     assert!(result.is_ok());
 }
 
 #[tokio::test]
 async fn test_message_with_code_block() {
     let text = "```rust\nfn main() {\n    println!(\"Hello\");\n}\n```";
-    let result = validate_message(text);
+    let result = validate_and_render_message(text);
     assert!(result.is_ok());
 }
 
 #[tokio::test]
 async fn test_message_at_max_length() {
     let text = "a".repeat(8000);
-    let result = validate_message(&text);
+    let result = validate_and_render_message(&text);
     assert!(result.is_ok());
 }
 
 #[tokio::test]
 async fn test_message_with_url() {
     let text = "Check out https://thehellisthis.com";
-    let result = validate_message(text);
+    let result = validate_and_render_message(text);
     assert!(result.is_ok());
 }
 
 #[tokio::test]
 async fn test_message_with_email() {
     let text = "Contact me at test@example.com";
-    let result = validate_message(text);
+    let result = validate_and_render_message(text);
     assert!(result.is_ok());
 }
 
@@ -387,7 +389,7 @@ async fn test_validate_input_spaces_new() {
 #[tokio::test]
 async fn test_message_newlines() {
     let text = "Line 1\nLine 2\nLine 3";
-    let result = validate_message(text);
+    let result = validate_and_render_message(text);
     assert!(result.is_ok());
 }
 
@@ -397,7 +399,7 @@ async fn test_message_newlines() {
 async fn test_message_only_whitespace() {
     // Whitespace-only messages should be rejected
     let text = "   \n\t  ";
-    let result = validate_message(text);
+    let result = validate_and_render_message(text);
     assert!(
         result.is_err(),
         "Whitespace-only messages should be rejected"
@@ -407,21 +409,21 @@ async fn test_message_only_whitespace() {
 #[tokio::test]
 async fn test_validate_message_empty_after_trim() {
     // Whitespace only should fail
-    assert!(validate_message("   ").is_err());
-    assert!(validate_message("\t\n").is_err());
-    assert!(validate_message("   \n\t   ").is_err());
+    assert!(validate_and_render_message("   ").is_err());
+    assert!(validate_and_render_message("\t\n").is_err());
+    assert!(validate_and_render_message("   \n\t   ").is_err());
 }
 
 #[tokio::test]
 async fn test_validate_message_empty_after_sanitization() {
     // HTML-only content that sanitizes to empty
-    assert!(validate_message("<script></script>").is_err());
-    assert!(validate_message("<style>body{}</style>").is_err());
+    assert!(validate_and_render_message("<script></script>").is_err());
+    assert!(validate_and_render_message("<style>body{}</style>").is_err());
 }
 
 #[tokio::test]
 async fn test_validate_message_preserves_safe_html() {
-    let result = validate_message("Hello <b>bold</b> world").unwrap();
+    let result = validate_and_render_message("Hello <b>bold</b> world").unwrap();
     assert!(result.contains("<b>") || result.contains("bold"));
     assert!(result.contains("Hello"));
 }
@@ -451,30 +453,30 @@ async fn test_validate_input_underscore_position() {
 #[tokio::test]
 async fn test_validate_message_max_length() {
     let max_msg = "a".repeat(MAX_MESSAGE_LEN);
-    assert!(validate_message(&max_msg).is_ok());
+    assert!(validate_and_render_message(&max_msg).is_ok());
 
     let over_max = "a".repeat(MAX_MESSAGE_LEN + 1);
-    assert!(validate_message(&over_max).is_err());
+    assert!(validate_and_render_message(&over_max).is_err());
 }
 
 #[tokio::test]
 async fn test_markdown_rendering_headers() {
     let msg = "# Header\n\nSome text";
-    let result = validate_message(msg).unwrap();
+    let result = validate_and_render_message(msg).unwrap();
     assert!(result.contains("<h1>") || result.contains("Header"));
 }
 
 #[tokio::test]
 async fn test_markdown_rendering_code() {
     let msg = "Here is `code` inline";
-    let result = validate_message(msg).unwrap();
+    let result = validate_and_render_message(msg).unwrap();
     assert!(result.contains("<code>") || result.contains("code"));
 }
 
 #[tokio::test]
 async fn test_markdown_rendering_links() {
     let msg = "[link](https://example.com)";
-    let result = validate_message(msg).unwrap();
+    let result = validate_and_render_message(msg).unwrap();
     // Links might be stripped or kept - just verify it doesn't error
     assert!(!result.is_empty());
 }
@@ -482,7 +484,7 @@ async fn test_markdown_rendering_links() {
 #[tokio::test]
 async fn test_validate_message_with_only_html_tags() {
     // Message that becomes empty after sanitization
-    let result = validate_message("<script>alert(1)</script>");
+    let result = validate_and_render_message("<script>alert(1)</script>");
 
     // Should return error since sanitized result is empty
     assert!(result.is_err());
@@ -521,24 +523,24 @@ async fn test_validate_input_unicode() {
 #[tokio::test]
 async fn test_validate_message_renders_markdown() {
     // Basic markdown should be rendered to HTML
-    let result = validate_message("**bold**").unwrap();
+    let result = validate_and_render_message("**bold**").unwrap();
     assert!(result.contains("<strong>") || result.contains("bold"));
 
     // Code blocks
-    let result = validate_message("`code`").unwrap();
+    let result = validate_and_render_message("`code`").unwrap();
     assert!(result.contains("<code>") || result.contains("code"));
 }
 
 #[tokio::test]
 async fn test_validate_message_strips_dangerous_tags() {
     // Script tags should be removed, but surrounding text preserved
-    let result = validate_message("before <script>alert(1)</script> after").unwrap();
+    let result = validate_and_render_message("before <script>alert(1)</script> after").unwrap();
     assert!(!result.contains("<script>"));
     assert!(result.contains("before"));
     assert!(result.contains("after"));
 
     // iframe should be removed
-    let result = validate_message("text <iframe src='evil.com'></iframe> more").unwrap();
+    let result = validate_and_render_message("text <iframe src='evil.com'></iframe> more").unwrap();
     assert!(!result.contains("<iframe>"));
 }
 
@@ -616,20 +618,20 @@ async fn test_validate_input_one_over_max() {
 #[tokio::test]
 async fn test_validate_message_exactly_max_length() {
     let text = "a".repeat(MAX_MESSAGE_LEN);
-    let result = validate_message(&text);
+    let result = validate_and_render_message(&text);
     assert!(result.is_ok());
 }
 
 #[tokio::test]
 async fn test_validate_message_one_over_max() {
     let text = "a".repeat(MAX_MESSAGE_LEN + 1);
-    let result = validate_message(&text);
+    let result = validate_and_render_message(&text);
     assert!(result.is_err());
 }
 
 #[tokio::test]
 async fn test_validate_message_single_char() {
-    let result = validate_message("a");
+    let result = validate_and_render_message("a");
     assert!(result.is_ok());
 }
 
@@ -691,7 +693,7 @@ async fn test_validate_input_empty_string() {
 
 #[tokio::test]
 async fn test_validate_message_single_character() {
-    let result = validate_message("x");
+    let result = validate_and_render_message("x");
     assert!(result.is_ok());
 }
 
@@ -699,10 +701,9 @@ async fn test_validate_message_single_character() {
 
 #[tokio::test]
 async fn test_validate_message_script_tag_sanitized() {
-    // A message that is *only* markup sanitises to nothing, and a message that
-    // says nothing is refused. That is the whole reason `validate_message`
-    // sanitises at all — it is the guard, not the renderer (§8 of CLAUDE.md).
-    let result = validate_message("<script>alert('xss')</script>");
+    // A message that is *only* markup renders to nothing, and a message that
+    // says nothing is refused (§1.4d).
+    let result = validate_and_render_message("<script>alert('xss')</script>");
     assert!(
         result.is_err(),
         "a message that is only a script tag has no content and must be refused"
@@ -799,19 +800,19 @@ async fn test_validate_input_invalid_cases() {
 #[tokio::test]
 async fn test_validate_message_edge_cases() {
     // Whitespace only
-    let result = validate_message("   \t\n   ");
+    let result = validate_and_render_message("   \t\n   ");
     assert!(result.is_err());
 
     // HTML that becomes empty after sanitization
-    let result = validate_message("<script></script>");
+    let result = validate_and_render_message("<script></script>");
     assert!(result.is_err());
 
     // Valid message with leading/trailing whitespace
-    let result = validate_message("  hello world  ");
+    let result = validate_and_render_message("  hello world  ");
     assert!(result.is_ok());
 
     // Unicode characters
-    let result = validate_message("Hello 世界 🌍");
+    let result = validate_and_render_message("Hello 世界 🌍");
     assert!(result.is_ok());
 }
 
@@ -983,7 +984,7 @@ fn rendered_html_is_bounded_by_the_input_cap() {
     for pattern in ["[a](b)", "***a***", "# a\n", "*a*", "- x\n"] {
         let input: String = pattern.repeat(MAX_MESSAGE_LEN / pattern.len());
         let input = &input[..input.len().min(MAX_MESSAGE_LEN)];
-        if crate::validation::validate_message(input).is_err() {
+        if crate::validation::validate_and_render_message(input).is_err() {
             continue;
         }
         let rendered = crate::validation::render_message_html(input);

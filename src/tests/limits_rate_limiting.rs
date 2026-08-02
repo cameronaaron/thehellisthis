@@ -385,19 +385,33 @@ fn limiter_defaults_match_their_constructors() {
     assert_eq!(state.memory_tracker.total_bytes.load(Ordering::SeqCst), 0);
 }
 
-/// A message that is short enough as text but expands past the limit once
-/// escaped is rejected.
+/// A message that is short enough as text but expands once escaped is still
+/// accepted, and its rendered form never exceeds the ceiling that exists for
+/// exactly this case.
+///
+/// This used to be rejected: `validate_message` sanitised the *raw* text and
+/// compared that against `MAX_MESSAGE_LEN` — a stricter, and different, bound
+/// than the one the actual stored value answers to. `render_message_html`
+/// already has its own graceful answer for "the rendered form is too big":
+/// fall back to escaped plain text, capped so it cannot itself overflow
+/// (`MAX_RENDERED_MESSAGE_LEN`), rather than reject a message the person
+/// still meant to send. `validate_and_render_message` now defers to that one
+/// policy instead of enforcing a second, stricter one ahead of it (§1.4d).
 #[test]
-fn messages_that_expand_past_the_limit_when_escaped_are_rejected() {
-    // Each '<' becomes "&lt;", so this is under the cap as input and far over
-    // it once sanitised.
+fn messages_that_expand_when_escaped_stay_within_the_rendered_ceiling() {
+    // Each '<' becomes "&lt;" once escaped, so this is under the cap as input
+    // and would be well over it if the old raw-text-sanitised bound still
+    // applied.
     let expands = "<".repeat(MAX_MESSAGE_LEN - 1);
     assert!(expands.len() <= MAX_MESSAGE_LEN);
 
-    let result = validate_message(&expands);
+    let result = validate_and_render_message(&expands);
+    let html = result.expect("render_message_html's own fallback must never need to reject");
     assert!(
-        result.is_err(),
-        "a message that exceeds the limit after sanitisation must be rejected"
+        html.len() <= MAX_RENDERED_MESSAGE_LEN,
+        "the rendered form must stay within the ceiling that exists for \
+         exactly this case: {} bytes",
+        html.len()
     );
 }
 
