@@ -50,8 +50,13 @@ const MPC_DEMO_MIN_INTERVAL: Duration = Duration::from_secs(5);
 /// every room except `nova`.
 enum NovaState {
     AwaitingHandshake,
-    HandshakeStarted(ResponderHandshakeState),
-    Established(RatchetedSession),
+    // Both non-unit variants boxed: an upstream dependency bump
+    // (novachannel-watch, 2026-08-04) grew `ResponderHandshakeState` and
+    // `RatchetedSession` past clippy's large-enum-variant threshold —
+    // every `NovaState` value was paying the largest variant's stack space
+    // regardless of which variant it actually held.
+    HandshakeStarted(Box<ResponderHandshakeState>),
+    Established(Box<RatchetedSession>),
 }
 
 /// Per-connection handshake/ratchet state, shared between the receive and
@@ -99,7 +104,7 @@ impl NovaSlot {
             }
         };
 
-        *state = NovaState::HandshakeStarted(responder_state);
+        *state = NovaState::HandshakeStarted(Box::new(responder_state));
         Some(OutgoingEvent::NovaHandshakeResponse {
             msg2: BASE64.encode(msg2),
         })
@@ -130,7 +135,8 @@ impl NovaSlot {
 
         match responder_state.complete(&msg3) {
             Ok(established) => {
-                *state = NovaState::Established(RatchetedSession::new(&established, false));
+                *state =
+                    NovaState::Established(Box::new(RatchetedSession::new(&established, false)));
                 true
             }
             Err(e) => {

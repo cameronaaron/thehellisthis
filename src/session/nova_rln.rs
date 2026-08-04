@@ -198,7 +198,7 @@ impl NovaRlnGroup {
 
         let new_share = StoredShare { x, y };
         let block_id = nullifier.as_int() as u64;
-        let mut rng = rand08::thread_rng();
+        let mut rng = rand::rng();
 
         match self.nullifiers.read(block_id, &mut rng) {
             None => {

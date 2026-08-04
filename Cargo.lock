@@ -429,7 +429,6 @@ checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
 dependencies = [
  "block-buffer 0.10.4",
  "crypto-common 0.1.7",
- "subtle",
 ]
 
 [[package]]
@@ -441,6 +440,7 @@ dependencies = [
  "block-buffer 0.12.1",
  "const-oid",
  "crypto-common 0.2.2",
+ "ctutils",
 ]
 
 [[package]]
@@ -670,17 +670,6 @@ dependencies = [
 
 [[package]]
 name = "getrandom"
-version = "0.2.17"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0"
-dependencies = [
- "cfg-if",
- "libc",
- "wasi",
-]
-
-[[package]]
-name = "getrandom"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "899def5c37c4fd7b2664648c28120ecec138e4d395b459e5ca34f9cce2dd77fd"
@@ -730,20 +719,20 @@ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
 name = "hkdf"
-version = "0.12.4"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b5f8eb2ad728638ea2c7d47a21db23b7b58a72ed6a38256b8a1849f15fbbdf7"
+checksum = "4aaa26c720c68b866f2c96ef5c1264b3e6f473fe5d4ce61cd44bbe913e553018"
 dependencies = [
  "hmac",
 ]
 
 [[package]]
 name = "hmac"
-version = "0.12.1"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e"
+checksum = "6303bc9732ae41b04cb554b844a762b4115a61bfaa81e3e83050991eeb56863f"
 dependencies = [
- "digest 0.10.7",
+ "digest 0.11.3",
 ]
 
 [[package]]
@@ -976,12 +965,11 @@ dependencies = [
  "novachannel-oram",
  "novachannel-rln",
  "rand 0.10.2",
- "rand 0.8.7",
  "regex",
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "thiserror 2.0.19",
+ "thiserror",
  "tokio",
  "tokio-tungstenite 0.30.0",
  "tower",
@@ -1199,7 +1187,7 @@ checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 [[package]]
 name = "novachannel"
 version = "0.1.0"
-source = "git+https://github.com/cameronaaron/internet.git?rev=f4bf7881e6d1da92daf28c9c5c5805fe02a4e2ad#f4bf7881e6d1da92daf28c9c5c5805fe02a4e2ad"
+source = "git+https://github.com/cameronaaron/internet.git?rev=5a9a112f535f14e43126515aa7df25cc0a1fc067#5a9a112f535f14e43126515aa7df25cc0a1fc067"
 dependencies = [
  "chacha20poly1305",
  "ed25519-dalek",
@@ -1210,8 +1198,8 @@ dependencies = [
  "ml-dsa",
  "ml-kem",
  "rand_core 0.10.1",
- "sha2 0.10.9",
- "thiserror 1.0.69",
+ "sha2 0.11.0",
+ "thiserror",
  "x25519-dalek",
  "zeroize",
 ]
@@ -1219,30 +1207,30 @@ dependencies = [
 [[package]]
 name = "novachannel-mpc"
 version = "0.1.0"
-source = "git+https://github.com/cameronaaron/internet.git?rev=f4bf7881e6d1da92daf28c9c5c5805fe02a4e2ad#f4bf7881e6d1da92daf28c9c5c5805fe02a4e2ad"
+source = "git+https://github.com/cameronaaron/internet.git?rev=5a9a112f535f14e43126515aa7df25cc0a1fc067#5a9a112f535f14e43126515aa7df25cc0a1fc067"
 dependencies = [
  "curve25519-dalek",
  "getrandom 0.4.3",
  "rand_core 0.10.1",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "zeroize",
 ]
 
 [[package]]
 name = "novachannel-oram"
 version = "0.1.0"
-source = "git+https://github.com/cameronaaron/internet.git?rev=f4bf7881e6d1da92daf28c9c5c5805fe02a4e2ad#f4bf7881e6d1da92daf28c9c5c5805fe02a4e2ad"
+source = "git+https://github.com/cameronaaron/internet.git?rev=5a9a112f535f14e43126515aa7df25cc0a1fc067#5a9a112f535f14e43126515aa7df25cc0a1fc067"
 dependencies = [
- "rand 0.8.7",
- "sha2 0.10.9",
+ "rand 0.10.2",
+ "sha2 0.11.0",
 ]
 
 [[package]]
 name = "novachannel-rln"
 version = "0.1.0"
-source = "git+https://github.com/cameronaaron/internet.git?rev=f4bf7881e6d1da92daf28c9c5c5805fe02a4e2ad#f4bf7881e6d1da92daf28c9c5c5805fe02a4e2ad"
+source = "git+https://github.com/cameronaaron/internet.git?rev=5a9a112f535f14e43126515aa7df25cc0a1fc067#5a9a112f535f14e43126515aa7df25cc0a1fc067"
 dependencies = [
- "rand 0.8.7",
+ "rand 0.10.2",
  "winterfell",
 ]
 
@@ -1432,22 +1420,11 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "rand"
-version = "0.8.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22f6172bdec972074665ed81ed53b71da00bfc44b65a753cfde883ec4c702a1a"
-dependencies = [
- "libc",
- "rand_chacha 0.3.1",
- "rand_core 0.6.4",
-]
-
-[[package]]
-name = "rand"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9ef1d0d795eb7d84685bca4f72f3649f064e6641543d3a8c415898726a57b41"
 dependencies = [
- "rand_chacha 0.9.0",
+ "rand_chacha",
  "rand_core 0.9.5",
 ]
 
@@ -1464,31 +1441,12 @@ dependencies = [
 
 [[package]]
 name = "rand_chacha"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6c10a63a0fa32252be49d21e7709d4d4baf8d231c2dbce1eaa8141b9b127d88"
-dependencies = [
- "ppv-lite86",
- "rand_core 0.6.4",
-]
-
-[[package]]
-name = "rand_chacha"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3022b5f1df60f26e1ffddd6c66e8aa15de382ae63b3a0c1bfc0e4d3e3f325cb"
 dependencies = [
  "ppv-lite86",
  "rand_core 0.9.5",
-]
-
-[[package]]
-name = "rand_core"
-version = "0.6.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
-dependencies = [
- "getrandom 0.2.17",
 ]
 
 [[package]]
@@ -1889,31 +1847,11 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
-version = "1.0.69"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6aaf5339b578ea85b50e080feb250a3e8ae8cfcdff9a461c9ec2904bc923f52"
-dependencies = [
- "thiserror-impl 1.0.69",
-]
-
-[[package]]
-name = "thiserror"
 version = "2.0.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09a43598840e33d5b0331f38c5e30d13bb11c11210a4b58f0d9b18a5a5eefcd9"
 dependencies = [
- "thiserror-impl 2.0.19",
-]
-
-[[package]]
-name = "thiserror-impl"
-version = "1.0.69"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
+ "thiserror-impl",
 ]
 
 [[package]]
@@ -2191,7 +2129,7 @@ dependencies = [
  "log",
  "rand 0.9.5",
  "sha1 0.10.7",
- "thiserror 2.0.19",
+ "thiserror",
 ]
 
 [[package]]
@@ -2207,7 +2145,7 @@ dependencies = [
  "log",
  "rand 0.10.2",
  "sha1 0.11.0",
- "thiserror 2.0.19",
+ "thiserror",
 ]
 
 [[package]]

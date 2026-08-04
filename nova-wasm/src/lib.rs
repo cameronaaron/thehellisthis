@@ -274,6 +274,6 @@ impl NovaDummyScheduler {
     /// *decision bit*, and is void if a dummy is distinguishable from a
     /// real send by size or timing (`novachannel-dp`'s own doc comment).
     pub fn decide(&self, has_real_message: bool) -> bool {
-        self.scheduler.decide(has_real_message, &mut rand::thread_rng())
+        self.scheduler.decide(has_real_message, &mut rand::rng())
     }
 }
