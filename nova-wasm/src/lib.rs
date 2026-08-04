@@ -245,38 +245,77 @@ impl NovaRlnIdentity {
 /// *network*-position observer whether this connection is sending real
 /// traffic at all, and the server already sees every real send regardless
 /// of what any scheduler decides.
+///
+/// Wraps a [`novachannel_dp::Budget`] alongside the scheduler: the crate's
+/// own module doc is explicit that watching `k` slots composes to `k *
+/// epsilon` total exposure (`sequential_epsilon`), so a scheduler that ran
+/// forever at a fixed epsilon would make no privacy claim at all — the
+/// guarantee it advertises has a lifetime, not just a per-slot value.
+/// `decide` spends one slot of that budget on every call, real or dummy
+/// (module doc: composition is about *slots watched*, not which ones sent
+/// a dummy), and once the budget is gone it stops manufacturing dummy
+/// traffic rather than silently exceeding the epsilon it started with —
+/// the same "fall back or stop, never overspend" contract `spend_slot`'s
+/// own doc comment requires of its callers.
 #[wasm_bindgen]
 pub struct NovaDummyScheduler {
     scheduler: novachannel_dp::DummyScheduler,
+    budget: novachannel_dp::Budget,
 }
 
 impl Default for NovaDummyScheduler {
     fn default() -> Self {
-        Self::new(1.0)
+        Self::new(1.0, 1000.0)
     }
 }
 
 #[wasm_bindgen]
 impl NovaDummyScheduler {
-    /// `epsilon`: the per-slot differential-privacy budget. Lower hides
-    /// more (higher dummy-send probability, more bandwidth); `client.js`
-    /// picks the actual value (`NOVA_DP_EPSILON`) — this binding is
-    /// mechanism, not policy.
+    /// `epsilon`: the per-slot differential-privacy cost. Lower hides more
+    /// (higher dummy-send probability, more bandwidth); `client.js` picks
+    /// the actual value (`NOVA_DP_EPSILON`) — this binding is mechanism,
+    /// not policy. `total_budget`: the total epsilon this connection is
+    /// willing to spend across its whole session before cover traffic
+    /// stops (`NOVA_DP_TOTAL_BUDGET`).
     #[wasm_bindgen(constructor)]
-    pub fn new(epsilon: f64) -> NovaDummyScheduler {
+    pub fn new(epsilon: f64, total_budget: f64) -> NovaDummyScheduler {
         NovaDummyScheduler {
             scheduler: novachannel_dp::DummyScheduler::new(epsilon),
+            budget: novachannel_dp::Budget::new(epsilon, total_budget),
         }
     }
 
     /// True if this slot should transmit — always true when
     /// `has_real_message`, otherwise true with the scheduler's calibrated
-    /// dummy probability. The caller (`client.js`) is responsible for
-    /// actually sending an indistinguishable dummy frame when this returns
-    /// true and there was no real message; the guarantee is about the
-    /// *decision bit*, and is void if a dummy is distinguishable from a
-    /// real send by size or timing (`novachannel-dp`'s own doc comment).
-    pub fn decide(&self, has_real_message: bool) -> bool {
+    /// dummy probability, *unless* the budget is exhausted, in which case
+    /// this always returns `has_real_message` (no more dummies — real
+    /// sends are never withheld, module doc). The caller (`client.js`) is
+    /// responsible for actually sending an indistinguishable dummy frame
+    /// when this returns true and there was no real message; the
+    /// guarantee is about the *decision bit*, and is void if a dummy is
+    /// distinguishable from a real send by size or timing
+    /// (`novachannel-dp`'s own doc comment).
+    pub fn decide(&mut self, has_real_message: bool) -> bool {
+        if !self.budget.spend_slot() {
+            return has_real_message;
+        }
         self.scheduler.decide(has_real_message, &mut rand::rng())
+    }
+
+    /// Total epsilon spent so far — `client.js`'s visible budget readout.
+    pub fn spent(&self) -> f64 {
+        self.budget.spent()
+    }
+
+    /// Epsilon left before cover traffic stops.
+    pub fn remaining(&self) -> f64 {
+        self.budget.remaining()
+    }
+
+    /// True once `remaining()` has hit zero and `decide` has stopped
+    /// manufacturing dummy traffic.
+    #[wasm_bindgen(js_name = isExhausted)]
+    pub fn is_exhausted(&self) -> bool {
+        self.budget.remaining() <= 0.0
     }
 }

@@ -1507,6 +1507,19 @@ body {
     background: var(--surface-container-highest, rgba(128, 128, 128, 0.1));
 }
 
+/* nova room only: the DP cover-traffic privacy odometer
+   (client.js::updateNovaDpBudgetReadout). Hidden until cover traffic
+   starts, same §10.9 reasoning as the two elements above — a plain text
+   line rather than a bar or gauge, since the number itself (an epsilon,
+   not a percentage) is the honest unit to show. */
+.nova-dp-budget-readout {
+    display: block;
+    padding: 2px var(--space-md, 16px) 4px;
+    font-size: 11px;
+    color: var(--on-surface-variant, currentColor);
+    opacity: 0.6;
+}
+
 .bubble.has-image {
     padding: 0;
     background: transparent;
@@ -2260,6 +2273,7 @@ body {
 <button id="novaMpcDemoBtn" class="nova-mpc-demo-button" type="button" hidden>
     Run MPC/FROST demo (protocol demonstration, not real distributed trust)
 </button>
+<div id="novaDpBudgetReadout" class="nova-dp-budget-readout" hidden></div>
 <footer class="input-container">
     <div class="composer">
         <button class="composer-action" id="attachBtn" type="button" aria-label="Attach an image">

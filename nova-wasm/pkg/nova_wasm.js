@@ -121,6 +121,18 @@ if (Symbol.dispose) NovaClient.prototype[Symbol.dispose] = NovaClient.prototype.
  * *network*-position observer whether this connection is sending real
  * traffic at all, and the server already sees every real send regardless
  * of what any scheduler decides.
+ *
+ * Wraps a [`novachannel_dp::Budget`] alongside the scheduler: the crate's
+ * own module doc is explicit that watching `k` slots composes to `k *
+ * epsilon` total exposure (`sequential_epsilon`), so a scheduler that ran
+ * forever at a fixed epsilon would make no privacy claim at all — the
+ * guarantee it advertises has a lifetime, not just a per-slot value.
+ * `decide` spends one slot of that budget on every call, real or dummy
+ * (module doc: composition is about *slots watched*, not which ones sent
+ * a dummy), and once the budget is gone it stops manufacturing dummy
+ * traffic rather than silently exceeding the epsilon it started with —
+ * the same "fall back or stop, never overspend" contract `spend_slot`'s
+ * own doc comment requires of its callers.
  */
 export class NovaDummyScheduler {
     __destroy_into_raw() {
@@ -136,11 +148,14 @@ export class NovaDummyScheduler {
     /**
      * True if this slot should transmit — always true when
      * `has_real_message`, otherwise true with the scheduler's calibrated
-     * dummy probability. The caller (`client.js`) is responsible for
-     * actually sending an indistinguishable dummy frame when this returns
-     * true and there was no real message; the guarantee is about the
-     * *decision bit*, and is void if a dummy is distinguishable from a
-     * real send by size or timing (`novachannel-dp`'s own doc comment).
+     * dummy probability, *unless* the budget is exhausted, in which case
+     * this always returns `has_real_message` (no more dummies — real
+     * sends are never withheld, module doc). The caller (`client.js`) is
+     * responsible for actually sending an indistinguishable dummy frame
+     * when this returns true and there was no real message; the
+     * guarantee is about the *decision bit*, and is void if a dummy is
+     * distinguishable from a real send by size or timing
+     * (`novachannel-dp`'s own doc comment).
      * @param {boolean} has_real_message
      * @returns {boolean}
      */
@@ -149,17 +164,45 @@ export class NovaDummyScheduler {
         return ret !== 0;
     }
     /**
-     * `epsilon`: the per-slot differential-privacy budget. Lower hides
-     * more (higher dummy-send probability, more bandwidth); `client.js`
-     * picks the actual value (`NOVA_DP_EPSILON`) — this binding is
-     * mechanism, not policy.
-     * @param {number} epsilon
+     * True once `remaining()` has hit zero and `decide` has stopped
+     * manufacturing dummy traffic.
+     * @returns {boolean}
      */
-    constructor(epsilon) {
-        const ret = wasm.novadummyscheduler_new(epsilon);
+    isExhausted() {
+        const ret = wasm.novadummyscheduler_isExhausted(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
+     * `epsilon`: the per-slot differential-privacy cost. Lower hides more
+     * (higher dummy-send probability, more bandwidth); `client.js` picks
+     * the actual value (`NOVA_DP_EPSILON`) — this binding is mechanism,
+     * not policy. `total_budget`: the total epsilon this connection is
+     * willing to spend across its whole session before cover traffic
+     * stops (`NOVA_DP_TOTAL_BUDGET`).
+     * @param {number} epsilon
+     * @param {number} total_budget
+     */
+    constructor(epsilon, total_budget) {
+        const ret = wasm.novadummyscheduler_new(epsilon, total_budget);
         this.__wbg_ptr = ret;
         NovaDummySchedulerFinalization.register(this, this.__wbg_ptr, this);
         return this;
+    }
+    /**
+     * Epsilon left before cover traffic stops.
+     * @returns {number}
+     */
+    remaining() {
+        const ret = wasm.novadummyscheduler_remaining(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * Total epsilon spent so far — `client.js`'s visible budget readout.
+     * @returns {number}
+     */
+    spent() {
+        const ret = wasm.novadummyscheduler_spent(this.__wbg_ptr);
+        return ret;
     }
 }
 if (Symbol.dispose) NovaDummyScheduler.prototype[Symbol.dispose] = NovaDummyScheduler.prototype.free;

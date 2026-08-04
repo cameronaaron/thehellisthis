@@ -94,6 +94,13 @@ const NOVA_RLN_EPOCH_SECONDS = 30;
 const NOVA_DP_EPSILON = 1.0;
 const NOVA_DP_SLOT_MS = 5000;
 const NOVA_DP_PADDING_BYTES = 64;
+// Total epsilon this connection spends before cover traffic stops
+// (novachannel-dp's Budget — a privacy odometer, not a tunable knob: the
+// crate's own doc says composing k slots costs k * epsilon, so a scheduler
+// that ran forever would make no bounded guarantee at all). At 1.0/slot and
+// a 5s slot, 720.0 is one hour of hidden presence before the readout below
+// reads zero and dummy sends stop (real messages are never withheld).
+const NOVA_DP_TOTAL_BUDGET = 720.0;
 
 function isTouchDevice() {
     return window.matchMedia('(pointer: coarse)').matches;
@@ -187,6 +194,7 @@ class ChatApp {
         this.novaAnonymousToggle = document.getElementById('novaAnonymousToggle');
         this.novaAnonymousToggleLabel = document.getElementById('novaAnonymousToggleLabel');
         this.novaMpcDemoBtn = document.getElementById('novaMpcDemoBtn');
+        this.novaDpBudgetReadout = document.getElementById('novaDpBudgetReadout');
         this.roomNameEl = document.getElementById('roomName');
         this.welcomeBanner = document.getElementById('welcomeBanner');
         this.createRoomBtn = document.getElementById('createRoomBtn');
@@ -671,18 +679,30 @@ class ChatApp {
 
     startNovaDummyTraffic() {
         if (!this.novaModule || !this.novaModule.NovaDummyScheduler) return;
-        this.novaDummyScheduler = new this.novaModule.NovaDummyScheduler(NOVA_DP_EPSILON);
+        this.novaDummyScheduler = new this.novaModule.NovaDummyScheduler(
+            NOVA_DP_EPSILON,
+            NOVA_DP_TOTAL_BUDGET
+        );
         this.novaHasRealMessageThisSlot = false;
+        this.novaDpBudgetWarned = false;
+        this.updateNovaDpBudgetReadout();
         this.novaDummyIntervalId = setInterval(() => {
             const hadReal = this.novaHasRealMessageThisSlot;
             this.novaHasRealMessageThisSlot = false;
-            if (hadReal) return;
-            if (this.novaDummyScheduler.decide(false)) {
+            // Every tick spends one slot of the DP budget, real or empty —
+            // novachannel-dp's own composition doc counts slots watched,
+            // not just the ones a dummy went out in. `decide` always
+            // returns true for a real slot; the send below is skipped then
+            // since the real message already transmitted through its own
+            // path, not through this one.
+            const shouldTransmit = this.novaDummyScheduler.decide(hadReal);
+            if (shouldTransmit && !hadReal) {
                 this.sendEvent({
                     type: 'Dummy',
                     padding: 'x'.repeat(NOVA_DP_PADDING_BYTES),
                 });
             }
+            this.updateNovaDpBudgetReadout();
         }, NOVA_DP_SLOT_MS);
     }
 
@@ -690,6 +710,33 @@ class ChatApp {
         if (this.novaDummyIntervalId) {
             clearInterval(this.novaDummyIntervalId);
             this.novaDummyIntervalId = null;
+        }
+        if (this.novaDpBudgetReadout) {
+            this.novaDpBudgetReadout.hidden = true;
+        }
+    }
+
+    // The visible readout for the DP privacy odometer: how much epsilon
+    // this connection has left before cover traffic stops hiding its
+    // send/silent pattern. Updated every slot rather than only near
+    // exhaustion, since "there is a finite budget at all" is itself part
+    // of what this demo panel is meant to show.
+    updateNovaDpBudgetReadout() {
+        if (!this.novaDummyScheduler) return;
+        const remaining = this.novaDummyScheduler.remaining();
+        const exhausted = this.novaDummyScheduler.isExhausted();
+        if (this.novaDpBudgetReadout) {
+            this.novaDpBudgetReadout.hidden = false;
+            this.novaDpBudgetReadout.textContent = exhausted
+                ? 'DP cover-traffic budget: exhausted (real messages still send normally)'
+                : `DP cover-traffic budget: ε ${remaining.toFixed(1)} of ${NOVA_DP_TOTAL_BUDGET.toFixed(1)} remaining`;
+        }
+        if (exhausted && !this.novaDpBudgetWarned) {
+            this.novaDpBudgetWarned = true;
+            this.addSystemMessage(
+                'Differential-privacy cover-traffic budget exhausted for this connection — real messages still send normally, but the send/silent pattern of this session is no longer hidden from a network-position observer (novachannel-dp: composing many slots at a fixed epsilon has a finite lifetime).',
+                'error'
+            );
         }
     }
 

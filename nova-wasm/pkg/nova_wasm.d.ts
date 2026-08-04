@@ -47,6 +47,18 @@ export class NovaClient {
  * *network*-position observer whether this connection is sending real
  * traffic at all, and the server already sees every real send regardless
  * of what any scheduler decides.
+ *
+ * Wraps a [`novachannel_dp::Budget`] alongside the scheduler: the crate's
+ * own module doc is explicit that watching `k` slots composes to `k *
+ * epsilon` total exposure (`sequential_epsilon`), so a scheduler that ran
+ * forever at a fixed epsilon would make no privacy claim at all — the
+ * guarantee it advertises has a lifetime, not just a per-slot value.
+ * `decide` spends one slot of that budget on every call, real or dummy
+ * (module doc: composition is about *slots watched*, not which ones sent
+ * a dummy), and once the budget is gone it stops manufacturing dummy
+ * traffic rather than silently exceeding the epsilon it started with —
+ * the same "fall back or stop, never overspend" contract `spend_slot`'s
+ * own doc comment requires of its callers.
  */
 export class NovaDummyScheduler {
     free(): void;
@@ -54,20 +66,38 @@ export class NovaDummyScheduler {
     /**
      * True if this slot should transmit — always true when
      * `has_real_message`, otherwise true with the scheduler's calibrated
-     * dummy probability. The caller (`client.js`) is responsible for
-     * actually sending an indistinguishable dummy frame when this returns
-     * true and there was no real message; the guarantee is about the
-     * *decision bit*, and is void if a dummy is distinguishable from a
-     * real send by size or timing (`novachannel-dp`'s own doc comment).
+     * dummy probability, *unless* the budget is exhausted, in which case
+     * this always returns `has_real_message` (no more dummies — real
+     * sends are never withheld, module doc). The caller (`client.js`) is
+     * responsible for actually sending an indistinguishable dummy frame
+     * when this returns true and there was no real message; the
+     * guarantee is about the *decision bit*, and is void if a dummy is
+     * distinguishable from a real send by size or timing
+     * (`novachannel-dp`'s own doc comment).
      */
     decide(has_real_message: boolean): boolean;
     /**
-     * `epsilon`: the per-slot differential-privacy budget. Lower hides
-     * more (higher dummy-send probability, more bandwidth); `client.js`
-     * picks the actual value (`NOVA_DP_EPSILON`) — this binding is
-     * mechanism, not policy.
+     * True once `remaining()` has hit zero and `decide` has stopped
+     * manufacturing dummy traffic.
      */
-    constructor(epsilon: number);
+    isExhausted(): boolean;
+    /**
+     * `epsilon`: the per-slot differential-privacy cost. Lower hides more
+     * (higher dummy-send probability, more bandwidth); `client.js` picks
+     * the actual value (`NOVA_DP_EPSILON`) — this binding is mechanism,
+     * not policy. `total_budget`: the total epsilon this connection is
+     * willing to spend across its whole session before cover traffic
+     * stops (`NOVA_DP_TOTAL_BUDGET`).
+     */
+    constructor(epsilon: number, total_budget: number);
+    /**
+     * Epsilon left before cover traffic stops.
+     */
+    remaining(): number;
+    /**
+     * Total epsilon spent so far — `client.js`'s visible budget readout.
+     */
+    spent(): number;
 }
 
 /**
@@ -113,7 +143,10 @@ export interface InitOutput {
     readonly novaclient_open: (a: number, b: number, c: number) => [number, number, number, number];
     readonly novaclient_seal: (a: number, b: number, c: number) => [number, number, number, number];
     readonly novadummyscheduler_decide: (a: number, b: number) => number;
-    readonly novadummyscheduler_new: (a: number) => number;
+    readonly novadummyscheduler_isExhausted: (a: number) => number;
+    readonly novadummyscheduler_new: (a: number, b: number) => number;
+    readonly novadummyscheduler_remaining: (a: number) => number;
+    readonly novadummyscheduler_spent: (a: number) => number;
     readonly novarlnidentity_commitment: (a: number) => [number, number];
     readonly novarlnidentity_new: () => number;
     readonly novarlnidentity_prove: (a: number, b: number, c: number, d: bigint, e: number, f: number) => [number, number, number, number];
