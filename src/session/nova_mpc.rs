@@ -1,6 +1,14 @@
 //! `nova` room only: a labeled protocol-demonstration panel for
-//! `novachannel-mpc`'s threshold DKG and decryption (FROST's Feldman VSS
-//! half, not its signature half — see that crate's own module doc).
+//! `novachannel-mpc`'s threshold DKG, threshold decryption, and FROST
+//! threshold signing (RFC 9591) — the same DKG-derived key shares back
+//! both.
+//!
+//! The signing half attests to something real rather than an arbitrary
+//! demo string: the room's current RLN membership root
+//! (`session/nova_rln.rs`), the same "a mixnode quorum jointly attesting
+//! to the current membership set... instead of needing separate PKI for
+//! the membership tree itself" use case `novachannel_rln::merkle`'s own
+//! doc comment names.
 //!
 //! # This is a demonstration, not distributed trust
 //!
@@ -27,6 +35,10 @@
 //! everyone in the room can watch happen. Broadcasting it is the more
 //! useful behaviour, not a privacy shortcut taken because it was easier.
 
+use novachannel_mpc::frost::{
+    aggregate, public_verification_share, round1_commit, round2_sign, verify,
+    verify_signature_share,
+};
 use novachannel_mpc::{
     Dealer, KeyShare, ParticipantId, combine_partials, derive_symmetric_key, encapsulate,
     finalize_key_share_excluding_faulty, identify_faulty_dealers, partial_decrypt,
@@ -52,20 +64,33 @@ pub(crate) struct MpcDemoResult {
     /// `true` when this function returns at all — a real cryptographic
     /// check, not a canned success flag, computed fresh on every request.
     pub recovered_key_matches: bool,
+    /// What the quorum's FROST signature attests to (module doc — the
+    /// room's current RLN membership root).
+    pub signed_message: String,
+    /// Whether every signer's round-2 share verified individually
+    /// (`verify_signature_share`) *and* the aggregated signature verifies
+    /// against the group public key alone (`verify`) — an ordinary
+    /// Schnorr check with no notion of thresholds, shares, or signers,
+    /// which is the entire point of a threshold *signature* as opposed to
+    /// a multi-signature scheme.
+    pub signature_valid: bool,
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Runs one full DKG + threshold-decryption round: `NUM_OPERATORS`
-/// simulated dealers commit, reveal, and finalize key shares; a simulated
-/// sender encapsulates a symmetric key to the resulting group public key;
-/// a `THRESHOLD`-sized quorum recovers it via partial decryption and
-/// Lagrange combination. Pure CPU, microseconds — no I/O, so this runs
-/// inline rather than off-thread (contrast `render_off_thread` in
-/// `session/events.rs`, which exists for genuinely slow work).
-pub(crate) fn run_demo() -> MpcDemoResult {
+/// Runs one full DKG + threshold-decryption + FROST-signing round:
+/// `NUM_OPERATORS` simulated dealers commit, reveal, and finalize key
+/// shares; a simulated sender encapsulates a symmetric key to the
+/// resulting group public key; a `THRESHOLD`-sized quorum recovers it via
+/// partial decryption and Lagrange combination, then jointly signs
+/// `message` (RFC 9591's two-round protocol) and the result is verified
+/// two ways — every individual share, then the aggregate alone. Pure CPU,
+/// microseconds — no I/O, so this runs inline rather than off-thread
+/// (contrast `render_off_thread` in `session/events.rs`, which exists for
+/// genuinely slow work).
+pub(crate) fn run_demo(message: &str) -> MpcDemoResult {
     let dealers: Vec<Dealer> = (0..NUM_OPERATORS)
         .map(|_| Dealer::new(THRESHOLD, NUM_OPERATORS))
         .collect();
@@ -111,12 +136,71 @@ pub(crate) fn run_demo() -> MpcDemoResult {
     let combined = combine_partials(&partials);
     let recovered_key = derive_symmetric_key(&combined);
 
+    // --- FROST signing: the same quorum jointly signs `message` --------
+    let message_bytes = message.as_bytes();
+
+    // Round 1: each signer's nonce pair and commitment. `nonces_by_pid`
+    // still holding the secret nonces when round 2 runs is exactly what
+    // `SecretNonces` being consumed by `round2_sign` protects against
+    // accidental reuse of — each is used exactly once, right below.
+    let mut nonces_by_pid = std::collections::HashMap::new();
+    let mut commitments = Vec::with_capacity(quorum.len());
+    for &pid in &quorum {
+        let (nonces, commitment) = round1_commit(pid);
+        nonces_by_pid.insert(pid, nonces);
+        commitments.push(commitment);
+    }
+
+    // Round 2: each signer's share, immediately verified against their
+    // own public verification share before anything gets aggregated —
+    // the crate's own recommended order (module doc), so a bad share is
+    // attributed to the signer that produced it rather than only
+    // discovered once the final aggregate fails to verify.
+    let mut signature_shares = Vec::with_capacity(quorum.len());
+    let mut every_share_verified = true;
+    for &pid in &quorum {
+        let nonces = nonces_by_pid
+            .remove(&pid)
+            .expect("this pid's nonces were just inserted above");
+        let z_i = round2_sign(
+            &key_shares[(pid - 1) as usize],
+            nonces,
+            message_bytes,
+            &quorum,
+            &commitments,
+        );
+        let verification_share = public_verification_share(pid, &dealer_commitments, &faulty);
+        if !verify_signature_share(
+            pid,
+            &verification_share,
+            &z_i,
+            message_bytes,
+            &quorum,
+            &commitments,
+            &group_public_key,
+        ) {
+            every_share_verified = false;
+        }
+        signature_shares.push((pid, z_i));
+    }
+
+    let signature = aggregate(
+        &group_public_key,
+        message_bytes,
+        &commitments,
+        &signature_shares,
+    );
+    let signature_valid =
+        every_share_verified && verify(&signature, &group_public_key, message_bytes);
+
     MpcDemoResult {
         num_operators: NUM_OPERATORS,
         threshold: THRESHOLD,
         quorum,
         group_public_key_hex: hex_encode(group_public_key.compress().as_bytes()),
         recovered_key_matches: recovered_key == expected_key,
+        signed_message: message.to_string(),
+        signature_valid,
     }
 }
 
@@ -134,7 +218,13 @@ use crate::state::AppState;
 /// in the room including the asker (module doc: nothing here is a secret
 /// belonging to whoever clicked the button).
 pub(crate) async fn handle_demo_request(state: &Arc<AppState>, room: &str) {
-    let result = run_demo();
+    // What the quorum signs: the room's current RLN membership root
+    // (module doc) — a real value, not an arbitrary demo string, read
+    // under `nova_rln_group`'s own lock and released before the (CPU-only,
+    // lock-free) demo itself runs.
+    let message = state.nova_rln_group.read().await.root_hex();
+
+    let result = run_demo(&message);
 
     let event = OutgoingEvent::NovaMpcDemoResult {
         num_operators: result.num_operators,
@@ -142,6 +232,8 @@ pub(crate) async fn handle_demo_request(state: &Arc<AppState>, room: &str) {
         quorum: result.quorum,
         group_public_key: result.group_public_key_hex,
         recovered_key_matches: result.recovered_key_matches,
+        signed_message: result.signed_message,
+        signature_valid: result.signature_valid,
     };
 
     let mut rooms = state.rooms.write().await;

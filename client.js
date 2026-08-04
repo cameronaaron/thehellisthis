@@ -602,12 +602,15 @@ class ChatApp {
                     'error'
                 );
                 break;
-            case 'NovaMpcDemoResult':
+            case 'NovaMpcDemoResult': {
+                const decryptOk = data.recovered_key_matches;
+                const signOk = data.signature_valid;
                 this.addSystemMessage(
-                    `MPC/FROST demo (protocol demonstration, not real distributed trust — every operator ran in this one server process): ${data.quorum.length} of ${data.num_operators} simulated operators jointly decrypted a key only their combined shares could produce. Match: ${data.recovered_key_matches ? 'yes' : 'no'}.`,
-                    data.recovered_key_matches ? 'success' : 'error'
+                    `MPC/FROST demo (protocol demonstration, not real distributed trust — every operator ran in this one server process): ${data.quorum.length} of ${data.num_operators} simulated operators jointly decrypted a key only their combined shares could produce (match: ${decryptOk ? 'yes' : 'no'}), then jointly signed the current room membership root (${data.signed_message.slice(0, 16)}…) with a FROST threshold signature — every share and the aggregate both verified: ${signOk ? 'yes' : 'no'}.`,
+                    decryptOk && signOk ? 'success' : 'error'
                 );
                 break;
+            }
             default:
                 console.warn('Unknown event type:', data.type);
         }

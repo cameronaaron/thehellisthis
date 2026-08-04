@@ -528,6 +528,14 @@ async fn nova_mpc_demo_broadcasts_a_real_result_to_the_whole_room() {
             .unwrap_or("")
             .is_empty()
     );
+    assert!(
+        received["signature_valid"].as_bool().unwrap_or(false),
+        "every FROST share and the aggregate must verify: {received}"
+    );
+    assert!(
+        !received["signed_message"].as_str().unwrap_or("").is_empty(),
+        "the quorum must have signed the room's real RLN root: {received}"
+    );
 
     handle.abort();
 }

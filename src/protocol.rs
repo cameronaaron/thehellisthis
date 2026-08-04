@@ -302,18 +302,23 @@ pub enum OutgoingEvent {
     NovaRlnSlashed {
         recovered_secret: String,
     },
-    /// `nova` room only (`session/nova_mpc.rs`): the result of one
-    /// DKG + threshold-decryption demonstration round. `client.js` labels
-    /// this a protocol demonstration, not real distributed trust — see
-    /// that module's doc comment for why (every simulated operator lives
-    /// in this one process). Broadcast to the whole room, since nothing in
-    /// it is per-connection state or a secret belonging to whoever asked.
+    /// `nova` room only (`session/nova_mpc.rs`): the result of one DKG +
+    /// threshold-decryption + FROST-signing demonstration round.
+    /// `client.js` labels this a protocol demonstration, not real
+    /// distributed trust — see that module's doc comment for why (every
+    /// simulated operator lives in this one process). Broadcast to the
+    /// whole room, since nothing in it is per-connection state or a secret
+    /// belonging to whoever asked.
     NovaMpcDemoResult {
         num_operators: u32,
         threshold: u32,
         quorum: Vec<u32>,
         group_public_key: String,
         recovered_key_matches: bool,
+        /// What the quorum's FROST signature attests to — the room's
+        /// current RLN membership root at the moment this ran.
+        signed_message: String,
+        signature_valid: bool,
     },
 }
 
