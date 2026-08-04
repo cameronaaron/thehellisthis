@@ -9,7 +9,7 @@
 # `overrides` block in package.json is silently ignored, so under npm this floor
 # was enforced and under pnpm it was merely coincidental until it moved here.
 overrides:
-  undici: '^7.18.2'
+  undici: '^7.29.0'
 
 # pnpm refuses to run a dependency's install scripts unless it is named here.
 # That default is the right one — an install script is arbitrary code from a
