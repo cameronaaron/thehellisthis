@@ -49,6 +49,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # `novachannel` (Cargo.toml) is a git dependency on a private repo —
+      # `cameronaaron/internet` — so `cargo fetch`/`build`/`test` all need a
+      # credential to clone it. `NOVACHANNEL_PAT` is a fine-grained PAT
+      # scoped to `contents: read` on that one repo; this rewrites plain
+      # `https://github.com/` git URLs to carry it, which is what Cargo's
+      # own git fetcher uses under the hood. See ENGINEERING-STANDARDS.md's
+      # nova room plan for the full prerequisite list — this is one of them.
+      - name: Configure private-repo git credential
+        run: git config --global url."https://${{ secrets.NOVACHANNEL_PAT }}@github.com/".insteadOf "https://github.com/"
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -78,6 +88,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Configure private-repo git credential
+        run: git config --global url."https://${{ secrets.NOVACHANNEL_PAT }}@github.com/".insteadOf "https://github.com/"
 
       - uses: dtolnay/rust-toolchain@stable
 

@@ -78,6 +78,16 @@ static STYLE_BLOCK_HASH: LazyLock<String> = LazyLock::new(|| {
 /// serve was not a trade worth making without being able to verify the
 /// production origin directly.
 ///
+/// `'wasm-unsafe-eval'` is scoped, not `'unsafe-eval'`: it grants exactly
+/// `WebAssembly.instantiate`/`compile`, which CSP3 requires explicitly even
+/// for a same-origin module, and grants nothing about `eval()` or
+/// `new Function()` — those stay refused. It exists for one consumer, the
+/// `nova` room's `/nova.js`/`/nova_wasm_bg.wasm` (`nova-wasm/`,
+/// `session/nova.rs`), loaded only inside `client.js`'s
+/// `roomName === NOVA_ROOM_NAME` branch; every other room never triggers a
+/// WebAssembly compile at all, so this permission being room-wide rather
+/// than page-wide is a smaller policy than it looks.
+///
 /// Every other directive is `'self'` or `'none'`. There are no third-party
 /// origins at all: the page used to load its typeface and icon font from
 /// Google, which both widened this policy and told a third party the address of
@@ -88,7 +98,7 @@ static STYLE_BLOCK_HASH: LazyLock<String> = LazyLock::new(|| {
 static CONTENT_SECURITY_POLICY: LazyLock<String> = LazyLock::new(|| {
     format!(
         "default-src 'self'; \
-         script-src 'self'; \
+         script-src 'self' 'wasm-unsafe-eval'; \
          style-src 'self' {}; \
          font-src 'none'; \
          img-src 'self' data:; \

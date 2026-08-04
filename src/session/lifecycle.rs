@@ -10,12 +10,13 @@ use tokio::sync::Mutex;
 use tracing::{debug, error, trace, warn};
 use uuid::Uuid;
 
-use crate::config::MAX_PAYLOAD_SIZE;
+use crate::config::{MAX_PAYLOAD_SIZE, NOVA_ROOM};
 use crate::protocol::{ClientEvent, OutgoingEvent, OutgoingMessage, Reaction, SystemEvent};
 use crate::room::{ConnectionState, RoomState};
 use crate::state::AppState;
 
 use super::admission::insert_user;
+use super::nova::NovaSlot;
 use super::teardown::cleanup_user;
 use super::{
     FrameSink, Message, apply_client_event, beat_and_evict_idle, encode_event, forward_broadcasts,
@@ -170,8 +171,13 @@ pub(crate) async fn run_session<S, R>(
         let _ = tx.send_frame(Message::Text(json.into())).await;
     }
 
+    // `nova` only: the handshake/ratchet state this one connection needs,
+    // shared between the forward and receive tasks below. Every other room
+    // never allocates this (`session/nova.rs`'s module doc).
+    let nova_slot = (room == NOVA_ROOM).then(|| Arc::new(NovaSlot::new()));
+
     // ---- Task 1: room broadcasts → this client ---------------------------
-    let forward_task = forward_broadcasts(receiver, ws_tx.clone());
+    let forward_task = forward_broadcasts(receiver, ws_tx.clone(), nova_slot.clone());
 
     // ---- Task 2: this client → the room ----------------------------------
     let receive_task = {
@@ -180,6 +186,7 @@ pub(crate) async fn run_session<S, R>(
         let user_id = user_id.clone();
         let animal_name = animal_name.clone();
         let ws_tx = ws_tx.clone();
+        let nova_slot = nova_slot.clone();
 
         async move {
             while let Some(msg_result) = ws_rx.next().await {
@@ -201,13 +208,26 @@ pub(crate) async fn run_session<S, R>(
                         };
 
                         // A reply owed to this connection alone — currently
-                        // only `RequestRoster` has one — is sent here, on the
-                        // one sink that is actually this connection's own.
-                        // Nothing else can reach it: `room_state.sender` is
-                        // shared by every connection in the room.
-                        if let Some(reply) =
+                        // only `RequestRoster` and the nova handshake have
+                        // one — is sent here, on the one sink that is
+                        // actually this connection's own. Nothing else can
+                        // reach it: `room_state.sender` is shared by every
+                        // connection in the room.
+                        let reply = if let Some(slot) = &nova_slot {
+                            super::nova::dispatch(
+                                &state,
+                                &room,
+                                &user_id,
+                                &animal_name,
+                                slot,
+                                event,
+                            )
+                            .await
+                        } else {
                             apply_client_event(&state, &room, &user_id, &animal_name, event).await
-                        {
+                        };
+
+                        if let Some(reply) = reply {
                             let json = encode_event(&reply);
                             let mut tx = ws_tx.lock().await;
                             if tx.send_frame(Message::Text(json.into())).await.is_err() {

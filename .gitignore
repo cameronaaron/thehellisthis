@@ -2,6 +2,10 @@
 # NOTE: Cargo.lock IS tracked — this is a binary crate, and the deployed
 # container must build from the exact dependency set that CI tested.
 /target/
+# nova-wasm/ is a separate crate (scripts/build-nova-wasm.sh). Its own
+# target/ is exactly as much a build artifact as the root one; only
+# nova-wasm/pkg/ — wasm-pack's *output* — is meant to be committed.
+/nova-wasm/target/
 
 # Coverage reports (regenerate with `cargo tarpaulin`)
 tarpaulin-report.*

@@ -243,7 +243,7 @@ async fn test_rate_limiter_existing_user_rate_limited() {
     );
 
     // User should still be allowed but their rate limiter is checked
-    let _allowed = room_state.is_user_allowed(&user_id);
+    let _allowed = room_state.is_user_allowed(&user_id, crate::config::MAX_USERS_PER_ROOM);
     // Result depends on rate limiter state - just exercise the code path
 }
 

@@ -15,6 +15,7 @@
 mod admission;
 mod events;
 mod lifecycle;
+mod nova;
 mod tasks;
 mod teardown;
 

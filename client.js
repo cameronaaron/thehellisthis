@@ -71,6 +71,11 @@ const MAIN_ROOM_FADE_SECONDS = 1800;
 
 const IDLE_EVICTION_SECONDS = 600;
 
+// The novachannel proof-of-concept room (server: config::NOVA_ROOM). Only
+// this room ever imports /nova.js — every other room's bundle behavior is
+// unchanged (mirrors the roomName === MAIN_ROOM_NAME precedent above).
+const NOVA_ROOM_NAME = 'nova';
+
 function isTouchDevice() {
     return window.matchMedia('(pointer: coarse)').matches;
 }
@@ -539,10 +544,83 @@ class ChatApp {
                 break;
             case 'ReconnectToken':
                 this.finishHistoryLoad();
+                if (this.roomName === NOVA_ROOM_NAME) this.startNovaHandshake();
+                break;
+            case 'NovaHandshakeResponse':
+                this.completeNovaHandshake(data.msg2);
+                break;
+            case 'Sealed':
+                this.handleSealedEvent(data.data);
                 break;
             default:
                 console.warn('Unknown event type:', data.type);
         }
+    }
+
+    // ---- nova room only: novachannel handshake and sealed transport -------
+    //
+    // Nowhere else in this file branches on room name for anything beyond
+    // the idle-grace-period read at `updateHeartbeat()` — this is the one
+    // other place, and it is entirely self-contained: every method here is
+    // only ever called when `this.roomName === NOVA_ROOM_NAME`.
+
+    async startNovaHandshake() {
+        try {
+            const { default: init, NovaClient } = await import('/nova.js');
+            await init();
+            this.novaClient = new NovaClient();
+            const msg1 = this.novaClient.startHandshake();
+            this.ws.send(JSON.stringify({ type: 'NovaHandshakeInit', msg1 }));
+        } catch (e) {
+            console.error('nova: failed to start handshake', e);
+            this.addSystemMessage('Secure channel setup failed.', 'error');
+        }
+    }
+
+    completeNovaHandshake(msg2) {
+        if (!this.novaClient) return;
+        try {
+            const msg3 = this.novaClient.completeHandshake(msg2);
+            this.ws.send(JSON.stringify({ type: 'NovaHandshakeComplete', msg3 }));
+            this.addSystemMessage('Secure channel established.', 'success');
+        } catch (e) {
+            console.error('nova: handshake failed', e);
+            this.addSystemMessage('Secure channel setup failed.', 'error');
+        }
+    }
+
+    handleSealedEvent(dataB64) {
+        if (!this.novaClient) return;
+        try {
+            const plaintext = this.novaClient.open(dataB64);
+            // `undefined` is a ratchet-control record with nothing to
+            // deliver (nova-wasm/src/lib.rs's `open` doc) — Phase 1 never
+            // sends one, but the client honors the type regardless.
+            if (plaintext === undefined) return;
+            this.handleServerEvent(JSON.parse(plaintext));
+        } catch (e) {
+            console.error('nova: failed to open sealed frame', e);
+        }
+    }
+
+    // Sends `payload` (a plain object, not yet stringified) as this
+    // connection's next frame — sealed first when nova's session is
+    // established, exactly as sent otherwise. Every outgoing
+    // `this.ws.send(...)` in the file goes through this rather than the
+    // socket directly, so nova's transport is a property of *sending*, not
+    // something every call site has to remember.
+    sendEvent(payload) {
+        if (this.novaClient && this.novaClient.isEstablished()) {
+            try {
+                const data = this.novaClient.seal(JSON.stringify(payload));
+                this.ws.send(JSON.stringify({ type: 'Sealed', data }));
+                return;
+            } catch (e) {
+                console.error('nova: failed to seal outgoing frame', e);
+                return;
+            }
+        }
+        this.ws.send(JSON.stringify(payload));
     }
 
     handleIncomingMessage(msg) {
@@ -978,7 +1056,7 @@ class ChatApp {
 
     sendReaction(messageId, emoji) {
         if (!this.connected || this.ws.readyState !== WebSocket.OPEN) return;
-        this.ws.send(JSON.stringify({ type: 'React', message_id: messageId, emoji }));
+        this.sendEvent({ type: 'React', message_id: messageId, emoji });
         this.hideReactionBar();
     }
 
@@ -1426,7 +1504,7 @@ class ChatApp {
                 };
             }
 
-            this.ws.send(JSON.stringify(messagePayload));
+            this.sendEvent(messagePayload);
             this.myLastSentTime = Date.now();
             this.input.value = '';
             this.clearAttachment();
@@ -1446,7 +1524,7 @@ class ChatApp {
     sendTypingIndicator(is_typing) {
         if (this.connected && this.ws.readyState === WebSocket.OPEN) {
             try {
-                this.ws.send(JSON.stringify({ type: 'Typing', is_typing }));
+                this.sendEvent({ type: 'Typing', is_typing });
             } catch (e) {
                 console.warn('Failed to send typing indicator:', e);
             }
@@ -1456,7 +1534,7 @@ class ChatApp {
     sendReadReceipt(message_id) {
         if (this.connected && message_id && this.ws.readyState === WebSocket.OPEN) {
             try {
-                this.ws.send(JSON.stringify({ type: 'ReadReceipt', message_id }));
+                this.sendEvent({ type: 'ReadReceipt', message_id });
             } catch (e) {
                 console.warn('Failed to send read receipt:', e);
             }
@@ -1526,7 +1604,7 @@ class ChatApp {
 
     requestRoster() {
         if (!this.connected || this.ws.readyState !== WebSocket.OPEN) return;
-        this.ws.send(JSON.stringify({ type: 'RequestRoster' }));
+        this.sendEvent({ type: 'RequestRoster' });
     }
 
     renderParticipants() {

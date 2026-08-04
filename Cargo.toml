@@ -75,6 +75,17 @@ ammonia = "4.1.4"
 sha2 = "0.10.9"
 base64 = "0.22.1"
 
+# `nova` room only (routes.rs/session/nova.rs): a hybrid classical/post-quantum
+# secure channel layered under wss:// for that one room's message payloads.
+# Private upstream repo, so pinned to an exact commit rather than a branch —
+# unlike the container base images (ENGINEERING-STANDARDS.md §9.4, "these_
+# images_track_latest_on_purpose"), an unreviewed change to a cryptography
+# dependency reaching the running server is a different risk category than an
+# unreviewed OS patch level, so this is bumped deliberately by a reviewed PR
+# (.github/workflows/novachannel-watch.yml opens one when upstream moves),
+# never automatically.
+novachannel = { git = "https://github.com/cameronaaron/internet.git", package = "novachannel", rev = "f4bf7881e6d1da92daf28c9c5c5805fe02a4e2ad" }
+
 [dev-dependencies]
 # `test-util` gives tests simulated time, so the housekeeping loops can be
 # asserted to actually run on their 60-second intervals without a test that

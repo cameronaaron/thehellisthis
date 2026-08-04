@@ -137,7 +137,7 @@ async fn test_is_user_allowed_existing_user() {
     );
 
     // Existing user should be allowed (via rate limiter check)
-    assert!(room_state.is_user_allowed(&user_id));
+    assert!(room_state.is_user_allowed(&user_id, MAX_USERS_PER_ROOM));
 }
 
 #[tokio::test]

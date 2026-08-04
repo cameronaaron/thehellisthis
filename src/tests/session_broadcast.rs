@@ -702,7 +702,7 @@ async fn forwarding_delivers_every_broadcast_in_order() {
     let sink = Arc::new(tokio::sync::Mutex::new(RecordingSink::default()));
     timeout(
         Duration::from_secs(5),
-        crate::session::forward_broadcasts(receiver, sink.clone()),
+        crate::session::forward_broadcasts(receiver, sink.clone(), None),
     )
     .await
     .expect("the task ends when the room's sender is dropped");

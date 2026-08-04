@@ -21,7 +21,7 @@ use crate::cleanup::cleanup_rooms;
 use crate::config::{RESOURCE_CLEANUP_INTERVAL, ROOM_CLEANUP_INTERVAL, VERSION};
 use crate::routes::{
     admin_dashboard_handler, app_js_handler, health_handler, main_room_handler, metrics_handler,
-    robots_txt_handler, room_handler, root_redirect,
+    nova_js_handler, nova_wasm_handler, robots_txt_handler, room_handler, root_redirect,
 };
 use crate::security::security_header_layers;
 use crate::session::ws_handler;
@@ -73,6 +73,8 @@ pub(crate) fn build_router(state: Arc<AppState>) -> Router {
         .route("/", get(root_redirect))
         .route("/main", get(main_room_handler).layer(no_store()))
         .route("/app.js", get(app_js_handler))
+        .route("/nova.js", get(nova_js_handler))
+        .route("/nova_wasm_bg.wasm", get(nova_wasm_handler))
         .route(
             "/health",
             get(health_handler)

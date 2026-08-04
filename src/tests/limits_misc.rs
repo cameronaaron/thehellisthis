@@ -144,7 +144,7 @@ async fn test_is_user_allowed_at_capacity() {
     }
 
     // At capacity, should reject new users
-    assert!(!room_state.is_user_allowed("new_user"));
+    assert!(!room_state.is_user_allowed("new_user", crate::config::MAX_USERS_PER_ROOM));
 }
 
 #[tokio::test]
@@ -177,7 +177,7 @@ async fn test_is_user_allowed_new_user_under_capacity() {
     }
 
     // New user should be allowed when under capacity
-    assert!(room_state.is_user_allowed("brand_new_user"));
+    assert!(room_state.is_user_allowed("brand_new_user", crate::config::MAX_USERS_PER_ROOM));
 }
 
 #[tokio::test]

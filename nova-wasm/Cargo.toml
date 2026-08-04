@@ -1,0 +1,28 @@
+[package]
+name = "nova-wasm"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Browser bindings for novachannel's core PQ channel, used by the nova room only (see ../src/session/nova.rs). Built manually with wasm-pack; the output is checked in and served as /nova.wasm — the same include_bytes! model index.html already uses, not a build step in the main crate."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# Pinned to the exact same commit as the server's own dependency
+# (../Cargo.toml) — client and server must speak the same wire format, and a
+# mismatched pin is exactly the kind of drift `novachannel-watch.yml` exists
+# to catch (it bumps both in the same PR).
+novachannel = { git = "https://github.com/cameronaaron/internet.git", package = "novachannel", rev = "f4bf7881e6d1da92daf28c9c5c5805fe02a4e2ad" }
+wasm-bindgen = "0.2"
+base64 = "0.22"
+# novachannel pulls in getrandom 0.4 transitively (via rand, x25519-dalek,
+# ml-kem, ...) with its native `sys_rng` backend, which does not exist on
+# wasm32. Feature unification means naming the wasm backend here turns it on
+# for that same transitive dependency — the server binary never enables
+# this feature, so it never links a JS-backed RNG.
+getrandom = { version = "0.4", features = ["wasm_js"] }
+
+[profile.release]
+opt-level = "s"
+lto = true

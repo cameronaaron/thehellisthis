@@ -6,9 +6,7 @@ use std::time::Instant;
 
 use tracing::{debug, trace};
 
-use crate::config::{
-    HEARTBEAT_TIMEOUT, MAX_TOTAL_ROOMS_MEMORY, MAX_USERS_PER_ROOM, MEMORY_SOFT_LIMIT_RATIO,
-};
+use crate::config::{HEARTBEAT_TIMEOUT, MAX_TOTAL_ROOMS_MEMORY, MEMORY_SOFT_LIMIT_RATIO};
 use crate::limits::MemoryTracker;
 use crate::protocol::{OutgoingEvent, SystemEvent, encode_broadcast};
 
@@ -66,10 +64,13 @@ impl RoomState {
     ///
     /// Returns `false` when the room is at capacity, or when a known user is
     /// reconnecting faster than [`crate::config::MAX_ROOM_JOIN_ATTEMPTS`]
-    /// allows.
-    pub fn is_user_allowed(&mut self, user_id: &str) -> bool {
-        if self.connected_user_count() >= MAX_USERS_PER_ROOM {
-            debug!(limit = MAX_USERS_PER_ROOM, "room is at capacity");
+    /// allows. `limit` is the caller's job to pick — every room uses
+    /// [`crate::config::MAX_USERS_PER_ROOM`] except `nova`, whose pairwise
+    /// message-sealing cost caps it far lower
+    /// ([`crate::config::room_user_limit`], [`crate::config::NOVA_MAX_USERS`]).
+    pub fn is_user_allowed(&mut self, user_id: &str, limit: usize) -> bool {
+        if self.connected_user_count() >= limit {
+            debug!(limit, "room is at capacity");
             return false;
         }
 

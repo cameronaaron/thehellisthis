@@ -31,6 +31,33 @@ pub(crate) const MAIN_ROOM: &str = "main";
 /// Connected users allowed in a single room.
 pub(crate) const MAX_USERS_PER_ROOM: usize = 100;
 
+/// The novachannel proof-of-concept room (session/nova.rs). Never
+/// garbage-collected — same reasoning as [`MAIN_ROOM`], a demo link should
+/// stay alive — but unlike `main` it does not fade: there is no reason a
+/// research demo's history should shrink on the flagship room's schedule.
+/// See [`NOVA_MAX_USERS`] for the other way it deliberately differs from
+/// every other room.
+pub(crate) const NOVA_ROOM: &str = "nova";
+
+/// Connected users allowed in [`NOVA_ROOM`] — far below
+/// [`MAX_USERS_PER_ROOM`], because nova's message path is not O(1) the way
+/// every other room's is: `novachannel` is a pairwise channel, not a group
+/// one, so the server reseals each outgoing message once per connected
+/// recipient (`session/nova.rs::forward_sealed`). That cost is paid only by
+/// this one room, and only up to this ceiling.
+pub(crate) const NOVA_MAX_USERS: usize = 12;
+
+/// The connected-user ceiling for `room`. Every room uses
+/// [`MAX_USERS_PER_ROOM`] except [`NOVA_ROOM`], which is far lower — see
+/// [`NOVA_MAX_USERS`] for why.
+pub(crate) fn room_user_limit(room: &str) -> usize {
+    if room == NOVA_ROOM {
+        NOVA_MAX_USERS
+    } else {
+        MAX_USERS_PER_ROOM
+    }
+}
+
 /// Path segments that can never be a room, because they are real routes or
 /// well-known files. Kept sorted for readability.
 pub(crate) const RESERVED_ROOM_NAMES: &[&str] = &[

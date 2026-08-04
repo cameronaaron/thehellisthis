@@ -23,6 +23,16 @@ use crate::validation::matches_room_name_shape;
 pub(crate) const CLIENT_HTML: &str = include_str!("../../index.html");
 const CLIENT_JS: &str = include_str!("../../client.js");
 
+/// `nova` room only: the WASM bindings for `novachannel`'s browser side
+/// (`nova-wasm/`, built manually with `wasm-pack build --target web`, output
+/// checked in). `include_str!`/`include_bytes!`, same reasoning as
+/// [`CLIENT_HTML`]/[`CLIENT_JS`] — the container image ships exactly the
+/// artifact that was built, and serving either costs no syscall. Loaded by
+/// `client.js` only inside its `roomName === NOVA_ROOM_NAME` branch, so no
+/// other room's page weight changes.
+const NOVA_JS: &str = include_str!("../../nova-wasm/pkg/nova_wasm.js");
+const NOVA_WASM: &[u8] = include_bytes!("../../nova-wasm/pkg/nova_wasm_bg.wasm");
+
 /// FNV-1a (64-bit) — a cache key, not a security control.
 ///
 /// A cryptographic hash would carry a dependency to solve a problem that does
@@ -94,6 +104,38 @@ pub async fn app_js_handler(headers: HeaderMap) -> Response {
             (header::ETAG, CLIENT_JS_ETAG.as_str()),
         ],
         CLIENT_JS,
+    )
+        .into_response()
+}
+
+/// Serves `nova`'s WASM glue module. Unlike `/app.js` this is not
+/// content-addressed into the page's own URL — nothing else in `index.html`
+/// references it, `client.js` `fetch`/`import()`s it directly by this fixed
+/// path — so caching is a plain short-lived `max-age` rather than the
+/// `immutable` treatment a stamped URL earns. A demo room's asset, not the
+/// shipped page's own script.
+pub async fn nova_js_handler() -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "public, max-age=3600"),
+        ],
+        NOVA_JS,
+    )
+        .into_response()
+}
+
+/// Serves `nova`'s compiled WASM binary. The glue module's own `init()`
+/// fetches this at a URL relative to its own — see `nova-wasm/src/lib.rs`'s
+/// module doc — which is why this route's path must stay a sibling of
+/// wherever `/nova.js` is mounted.
+pub async fn nova_wasm_handler() -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "application/wasm"),
+            (header::CACHE_CONTROL, "public, max-age=3600"),
+        ],
+        NOVA_WASM,
     )
         .into_response()
 }

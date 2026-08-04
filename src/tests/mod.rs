@@ -790,6 +790,7 @@ mod session_broadcast;
 mod session_frames;
 mod session_identity;
 mod session_join_and_room;
+mod session_nova;
 mod session_presence;
 mod session_throttles;
 mod startup;

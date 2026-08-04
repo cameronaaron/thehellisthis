@@ -13,7 +13,10 @@ mod page;
 pub(crate) use page::CLIENT_HTML;
 #[cfg(test)]
 pub(crate) use page::{RoomNameRejection, fnv1a, room_name_rejection};
-pub use page::{app_js_handler, main_room_handler, room_handler, root_redirect};
+pub use page::{
+    app_js_handler, main_room_handler, nova_js_handler, nova_wasm_handler, room_handler,
+    root_redirect,
+};
 
 pub use admin::admin_dashboard_handler;
 #[cfg(test)]

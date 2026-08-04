@@ -97,6 +97,15 @@ fn parity_table() -> Vec<Mirrored> {
                      high and the server rejects an image the client thought \
                      was safe, after the user has waited for it to encode",
         },
+        Mirrored {
+            js_const: "NOVA_ROOM_NAME",
+            expected: Expected::Text(NOVA_ROOM),
+            reason: "the client only imports /nova.js and drives the \
+                     novachannel handshake when its own room name matches \
+                     this literal (session/nova.rs); wrong, and either every \
+                     other room pays for loading the WASM module or nova \
+                     itself never does",
+        },
     ]
 }
 

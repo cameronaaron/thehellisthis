@@ -1,0 +1,16 @@
+{
+  "name": "nova-wasm",
+  "type": "module",
+  "description": "Browser bindings for novachannel's core PQ channel, used by the nova room only (see ../src/session/nova.rs). Built manually with wasm-pack; the output is checked in and served as /nova.wasm — the same include_bytes! model index.html already uses, not a build step in the main crate.",
+  "version": "0.1.0",
+  "files": [
+    "nova_wasm_bg.wasm",
+    "nova_wasm.js",
+    "nova_wasm.d.ts"
+  ],
+  "main": "nova_wasm.js",
+  "types": "nova_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

@@ -13,9 +13,7 @@ use http::{HeaderMap, header};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use crate::config::{
-    MAX_CONCURRENT_CONNECTIONS_PER_IP, MAX_CONCURRENT_USERS, MAX_ROOM_NAME_LEN, MAX_USERS_PER_ROOM,
-};
+use crate::config::{MAX_CONCURRENT_CONNECTIONS_PER_IP, MAX_CONCURRENT_USERS, MAX_ROOM_NAME_LEN};
 use crate::error::ChatError;
 use crate::identity::{OptionalUserCookie, UserCookie, create_user_cookies};
 use crate::limits::RateLimiter;
@@ -251,12 +249,13 @@ pub(crate) async fn admit_user(
         .and_then(|c| Uuid::parse_str(&c.user_id).ok().map(|_| c));
 
     let candidate_id = cookie_identity.map(|c| c.user_id.as_str());
-    if !room_state.is_user_allowed(candidate_id.unwrap_or("")) {
+    let limit = crate::config::room_user_limit(room);
+    if !room_state.is_user_allowed(candidate_id.unwrap_or(""), limit) {
         let connected = room_state.connected_user_count();
         warn!(
             room = %room,
             connected,
-            limit = MAX_USERS_PER_ROOM,
+            limit,
             "refused: room is full, or this visitor is rejoining too fast"
         );
         return None;

@@ -1,0 +1,83 @@
+name: novachannel freshness watch
+
+# Checks whether cameronaaron/internet (novachannel, the nova room's crypto
+# dependency — see ENGINEERING-STANDARDS.md's nova room plan) has moved past
+# the commit pinned in Cargo.toml, and opens a PR bumping the pin if so.
+#
+# Deliberately *never* merges or deploys on its own: nova's dependency is
+# cryptography, and an unreviewed change reaching the running server is a
+# different risk category than the container base images this repo already
+# lets float on `latest` (§9.4's "these_images_track_latest_on_purpose" is
+# the precedent this is the inverse of). The PR is the entire gate — merging
+# it is what deploys, via the existing Cloudflare Git integration, exactly
+# like any other change to this repo.
+on:
+  schedule:
+    # Same slot as ci.yml's weekly audit trigger, so a freshness bump shows
+    # up on a day this repo is already being looked at.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+jobs:
+  check:
+    name: Check for a new novachannel commit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the pinned rev
+        id: pinned
+        run: |
+          rev=$(grep -oE 'rev = "[0-9a-f]{40}"' Cargo.toml | head -1 | grep -oE '[0-9a-f]{40}')
+          if [ -z "$rev" ]; then
+            echo "::error::could not find a pinned novachannel rev in Cargo.toml"
+            exit 1
+          fi
+          echo "rev=$rev" >> "$GITHUB_OUTPUT"
+
+      - name: Read the latest upstream commit
+        id: latest
+        env:
+          GH_TOKEN: ${{ secrets.NOVACHANNEL_PAT }}
+        run: |
+          sha=$(gh api repos/cameronaaron/internet/commits/main --jq .sha)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Bump the pin and open a PR
+        if: steps.pinned.outputs.rev != steps.latest.outputs.sha
+        env:
+          GH_TOKEN: ${{ secrets.NOVACHANNEL_PAT }}
+          OLD_REV: ${{ steps.pinned.outputs.rev }}
+          NEW_REV: ${{ steps.latest.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git config --global url."https://${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+          git config user.name "novachannel-watch"
+          git config user.email "noreply@thehellisthis.com"
+
+          branch="novachannel-bump-${NEW_REV:0:12}"
+          git checkout -b "$branch"
+
+          # Both pins move together — server and browser must speak the same
+          # wire format, or the nova room's handshake fails outright.
+          sed -i "s/rev = \"${OLD_REV}\"/rev = \"${NEW_REV}\"/" Cargo.toml nova-wasm/Cargo.toml
+          cargo update -p novachannel
+
+          git add Cargo.toml nova-wasm/Cargo.toml Cargo.lock
+
+          commit_msg=$(printf '%s\n\n%s\n%s\n\n%s' \
+            "chore: bump novachannel to ${NEW_REV:0:12}" \
+            "cameronaaron/internet moved from ${OLD_REV} to ${NEW_REV}:" \
+            "https://github.com/cameronaaron/internet/compare/${OLD_REV}...${NEW_REV}" \
+            "Opened automatically by novachannel-watch.yml. Review the diff, then run scripts/build-nova-wasm.sh and commit the rebuilt nova-wasm/pkg/ before merging, since the checked-in WASM artifact must match this pin (constraint #11's model, extended to nova-wasm).")
+          git commit -m "$commit_msg"
+          git push -u origin "$branch"
+
+          pr_body=$(printf '%s\n\n%s\n\n%s' \
+            "Upstream \`cameronaaron/internet\` moved: [\`${OLD_REV:0:12}\`...\`${NEW_REV:0:12}\`](https://github.com/cameronaaron/internet/compare/${OLD_REV}...${NEW_REV})." \
+            "This bumps the pinned \`rev\` in both \`Cargo.toml\` and \`nova-wasm/Cargo.toml\` and refreshes \`Cargo.lock\`. It does **not** rebuild \`nova-wasm/pkg/\` -- that still needs \`scripts/build-nova-wasm.sh\` run locally and its output committed before this is safe to merge, since the checked-in WASM binary has to match whatever the server now expects." \
+            "Nothing here auto-merges. Merging to \`main\` is what deploys.")
+
+          gh pr create \
+            --title "chore: bump novachannel to ${NEW_REV:0:12}" \
+            --body "$pr_body"

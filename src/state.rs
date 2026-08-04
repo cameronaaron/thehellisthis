@@ -21,6 +21,13 @@ pub struct AppState {
     pub memory_tracker: MemoryTracker,
     pub connection_pool: ConnectionPool,
     pub security_manager: SecurityManager,
+    /// The server's novachannel identity for the `nova` room
+    /// (`session/nova.rs`). Generated fresh every process start, the same way
+    /// `ConnectionPool`'s address hashing is keyed per-process (§5.6) — there
+    /// is no database to persist a long-term key in, and every `nova` client
+    /// trusts it on first connection (TOFU) rather than pinning it out of
+    /// band, so a restart simply looks like a new session, not an error.
+    pub nova_identity: novachannel::Identity,
 }
 
 impl Default for AppState {
@@ -39,6 +46,7 @@ impl AppState {
             memory_tracker: MemoryTracker::new(),
             connection_pool: ConnectionPool::new(),
             security_manager: SecurityManager::new(),
+            nova_identity: novachannel::Identity::generate(),
         }
     }
 

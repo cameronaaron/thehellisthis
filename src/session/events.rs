@@ -367,5 +367,21 @@ pub async fn apply_client_event_at(
             });
             None
         }
+
+        // `nova` room only (`session/nova.rs`). These never reach this
+        // function in normal operation: `session/lifecycle.rs` routes every
+        // `nova` connection's events through `nova::dispatch` instead of
+        // here, and `dispatch` only ever forwards an *unwrapped* `Sealed`
+        // payload's inner event on to `apply_client_event` — never one of
+        // these three themselves. Reaching this arm means one arrived for a
+        // non-`nova` room (`dispatch` is never in that path, so nothing
+        // intercepted it) or `nova`'s own routing has a bug; either way,
+        // there is nothing to do under the room lock.
+        ClientEvent::NovaHandshakeInit { .. }
+        | ClientEvent::NovaHandshakeComplete { .. }
+        | ClientEvent::Sealed { .. } => {
+            warn!(user_id = %user_id, room = %room, "nova transport frame reached room-event dispatch");
+            None
+        }
     }
 }

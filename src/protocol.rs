@@ -252,6 +252,23 @@ pub enum OutgoingEvent {
         user_id: String,
         animal_name: String,
     },
+    /// `nova` room only (`session/nova.rs`): the server's half of
+    /// `novachannel`'s 3-message handshake, base64-encoded `msg2`. Sent to
+    /// the connection that asked, never broadcast — the same reply-to-asker
+    /// pattern as [`OutgoingEvent::Roster`], for the same reason: this
+    /// answer belongs to one connection, and the room's broadcast channel
+    /// would hand it to everybody (§5.15).
+    NovaHandshakeResponse {
+        msg2: String,
+    },
+    /// `nova` room only: every frame this connection would otherwise have
+    /// received, `novachannel`-sealed under that connection's own ratchet
+    /// and base64-encoded. `data` decrypts to another `OutgoingEvent` —
+    /// this is a transport wrapper, not a new event shape, so nothing about
+    /// `Message`/`System`/etc. changes for `nova` versus any other room.
+    Sealed {
+        data: String,
+    },
 }
 
 /// Client → server.
@@ -279,4 +296,19 @@ pub enum ClientEvent {
     /// Ask who is in the room. Answered to the asker alone.
     #[serde(rename = "RequestRoster")]
     RequestRoster,
+    /// `nova` room only: msg1 of `novachannel`'s handshake, base64-encoded,
+    /// sent by the client immediately after receiving `Welcome`.
+    #[serde(rename = "NovaHandshakeInit")]
+    NovaHandshakeInit { msg1: String },
+    /// `nova` room only: msg3, completing the handshake this connection's
+    /// `NovaHandshakeInit` started.
+    #[serde(rename = "NovaHandshakeComplete")]
+    NovaHandshakeComplete { msg3: String },
+    /// `nova` room only: a `novachannel`-sealed, base64-encoded
+    /// `ClientEvent` — the client-to-server mirror of
+    /// [`OutgoingEvent::Sealed`]. `data` decrypts to another `ClientEvent`,
+    /// dispatched exactly as if it had arrived unsealed; every other room
+    /// never sends this variant.
+    #[serde(rename = "Sealed")]
+    Sealed { data: String },
 }

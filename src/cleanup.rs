@@ -12,7 +12,7 @@ use tracing::{debug, info};
 
 use crate::config::{
     DISCONNECTED_USER_RETENTION, EMPTY_ROOM_CLEANUP_DELAY, MAIN_ROOM, MAIN_ROOM_FADE_IDLE,
-    MAIN_ROOM_FADE_KEEP, MAX_MESSAGES_PER_ROOM,
+    MAIN_ROOM_FADE_KEEP, MAX_MESSAGES_PER_ROOM, NOVA_ROOM,
 };
 use crate::room::{ConnectionState, RoomState, UserData};
 use crate::state::AppState;
@@ -53,6 +53,11 @@ pub async fn cleanup_rooms_at(state: &Arc<AppState>, now: Instant) {
         // room could fill it and make every room on the server start dropping
         // messages (ENGINEERING-STANDARDS.md §3).
         let is_main = room_name == MAIN_ROOM;
+        // `nova` is permanent like `main` (a demo link should stay alive) but
+        // does not fade like `main` — there is no reason a research demo's
+        // history should shrink on the flagship room's schedule, so only
+        // `is_main` feeds the fade target below.
+        let is_permanent = is_main || room_name == NOVA_ROOM;
         let idle_for = now.duration_since(room.last_activity);
         let target = history_trim_target(is_main, idle_for);
 
@@ -73,7 +78,7 @@ pub async fn cleanup_rooms_at(state: &Arc<AppState>, now: Instant) {
         }
 
         let has_connected_users = room.users.values().any(UserData::is_connected);
-        if is_abandoned(is_main, has_connected_users, idle_for) {
+        if is_abandoned(is_permanent, has_connected_users, idle_for) {
             rooms_to_remove.push(room_name.clone());
         }
     }
@@ -134,8 +139,13 @@ pub(crate) fn history_trim_target(is_main: bool, idle_for: Duration) -> usize {
     }
 }
 
-/// Whether a room has earned deletion: not `main`, which fades instead of
-/// dying; nobody connected; idle for at least `EMPTY_ROOM_CLEANUP_DELAY`.
-pub(crate) fn is_abandoned(is_main: bool, has_connected_users: bool, idle_for: Duration) -> bool {
-    !is_main && !has_connected_users && idle_for >= EMPTY_ROOM_CLEANUP_DELAY
+/// Whether a room has earned deletion: not permanent (`main`, which fades
+/// instead of dying, or `nova`, the novachannel demo); nobody connected; idle
+/// for at least `EMPTY_ROOM_CLEANUP_DELAY`.
+pub(crate) fn is_abandoned(
+    is_permanent: bool,
+    has_connected_users: bool,
+    idle_for: Duration,
+) -> bool {
+    !is_permanent && !has_connected_users && idle_for >= EMPTY_ROOM_CLEANUP_DELAY
 }

@@ -377,7 +377,7 @@ async fn forwarding_stops_when_the_client_is_gone() {
     let sink = Arc::new(tokio::sync::Mutex::new(RecordingSink::failing_after(1)));
     timeout(
         Duration::from_secs(5),
-        crate::session::forward_broadcasts(receiver, sink.clone()),
+        crate::session::forward_broadcasts(receiver, sink.clone(), None),
     )
     .await
     .expect("a failing sink must end the forward task, not hang it");
