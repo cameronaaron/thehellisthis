@@ -18,6 +18,11 @@ COPY Cargo.toml Cargo.lock* ./
 COPY src ./src
 COPY index.html ./index.html
 COPY client.js ./client.js
+# nova-wasm/pkg is wasm-pack's committed *output* (scripts/build-nova-wasm.sh
+# produces it, not this build): src/routes/page.rs pulls it in with
+# include_str!/include_bytes!, so it must be in the build context or
+# `cargo build` fails looking for a file that exists in the repo but not here.
+COPY nova-wasm/pkg ./nova-wasm/pkg
 
 # No build-dependency install here: nothing in the dependency tree links
 # OpenSSL (`grep openssl Cargo.lock` finds nothing — the server does no

@@ -1,5 +1,5 @@
 # Build context should contain only what the image actually needs:
-# Cargo.toml, Cargo.lock, src/, index.html, robots.txt.
+# Cargo.toml, Cargo.lock, src/, index.html, client.js, nova-wasm/pkg.
 target
 .git
 .github
