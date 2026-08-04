@@ -269,6 +269,53 @@ pub enum OutgoingEvent {
     Sealed {
         data: String,
     },
+    /// `nova` room only (`session/nova_rln.rs`): this connection's leaf
+    /// index in the room's RLN membership tree, assigned once at
+    /// registration and permanent for the room's lifetime.
+    RlnRegistered {
+        leaf_index: usize,
+    },
+    /// `nova` room only: this leaf's current Merkle authentication path —
+    /// requested fresh before every anonymous post rather than cached,
+    /// since it changes whenever another member registers (§ design note
+    /// in `session/nova_rln.rs`).
+    RlnPathResponse {
+        path: Vec<RlnPathStep>,
+        root: String,
+    },
+    /// `nova` room only: an anonymously-posted, rate-limited message. No
+    /// `user_id`/`animal_name` at all — that omission *is* the point of an
+    /// RLN proof, not a field left blank.
+    NovaAnonymousMessage {
+        message_id: Uuid,
+        text: String,
+        timestamp: String,
+    },
+    /// `nova` room only: a member posted a second, *different* anonymous
+    /// message inside one rate-limit epoch, which is exactly the condition
+    /// under which RLN's Shamir-style share leaks their identity secret to
+    /// anyone holding both proofs — this server included. Broadcast so
+    /// every viewer can see the mechanism work, not silently logged.
+    NovaRlnSlashed {
+        recovered_secret: String,
+    },
+}
+
+/// One step of an RLN Merkle authentication path, wire-shaped:
+/// [`novachannel_rln::merkle::PathStep`] mirrored as hex/tag rather than the
+/// library's own type, so `protocol.rs` stays the one place that defines
+/// what crosses the socket (this file's own module doc) rather than
+/// re-exporting a cryptography crate's internal representation.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct RlnPathStep {
+    pub sibling: String,
+    pub side: RlnSide,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
+pub enum RlnSide {
+    Left,
+    Right,
 }
 
 /// Client → server.
@@ -311,4 +358,31 @@ pub enum ClientEvent {
     /// never sends this variant.
     #[serde(rename = "Sealed")]
     Sealed { data: String },
+    /// `nova` room only: registers this connection's RLN identity
+    /// commitment in the room's membership tree. Once per connection —
+    /// `session/nova_rln.rs` assigns a permanent leaf index in reply.
+    #[serde(rename = "RlnRegister")]
+    RlnRegister { commitment: String },
+    /// `nova` room only: asks for this leaf's *current* Merkle path.
+    /// Requested fresh before every anonymous post, not cached — see
+    /// `session/nova_rln.rs`'s design note on why the path changes whenever
+    /// another member registers.
+    #[serde(rename = "RlnPathRequest")]
+    RlnPathRequest { leaf_index: usize },
+    /// `nova` room only: an anonymous, rate-limited message. `proof` is the
+    /// base64-encoded STARK proof; `y`/`nullifier` are the RLN share this
+    /// proof carries (hex of each field element's big-endian bytes) — the
+    /// two values the server cannot recompute itself, since deriving them
+    /// needs the secret key this proof exists specifically not to reveal.
+    /// Everything else the proof is checked against — the room's current
+    /// membership root, the current rate-limit epoch, and the message
+    /// binding `x` — the server recomputes independently rather than
+    /// trusting a client-supplied copy (`session/nova_rln.rs`).
+    #[serde(rename = "RlnMessage")]
+    RlnMessage {
+        proof: String,
+        y: String,
+        nullifier: String,
+        text: String,
+    },
 }

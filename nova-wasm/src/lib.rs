@@ -107,3 +107,132 @@ impl NovaClient {
         }
     }
 }
+
+/// One step of an RLN Merkle path, exactly as `RlnPathResponse.path`
+/// serialises it (`protocol.rs::RlnPathStep`) — this is the wire format,
+/// parsed here rather than imported, since `nova-wasm` has no dependency on
+/// the server crate and shouldn't grow one just for two field names.
+#[derive(serde::Deserialize)]
+struct WirePathStep {
+    sibling: String,
+    side: String,
+}
+
+fn hex_to_field(hex: &str) -> Result<novachannel_rln_field::BaseElement, JsValue> {
+    let bytes = hex_decode(hex).ok_or_else(|| js_err("malformed hex"))?;
+    let arr: [u8; 16] = bytes
+        .try_into()
+        .map_err(|_| js_err("hex is not 16 bytes"))?;
+    Ok(novachannel_rln_field::BaseElement::new(
+        u128::from_be_bytes(arr),
+    ))
+}
+
+fn field_to_hex(v: novachannel_rln_field::BaseElement) -> String {
+    use novachannel_rln_field::StarkField;
+    v.as_int()
+        .to_be_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+fn hex_decode(hex: &str) -> Option<Vec<u8>> {
+    if !hex.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok())
+        .collect()
+}
+
+/// The `winterfell`/`novachannel_rln` field types, named once so the rest
+/// of this file reads as domain code rather than re-typing the same
+/// `winterfell::math::fields::f128::BaseElement` path everywhere.
+mod novachannel_rln_field {
+    pub use winterfell::math::StarkField;
+    pub use winterfell::math::fields::f128::BaseElement;
+}
+
+/// An RLN membership identity — the anonymous, rate-limited side of `nova`
+/// (`session/nova_rln.rs` is the server-side verifier and nullifier set).
+/// Independent of [`NovaClient`]: an anonymous post doesn't need this
+/// connection's PQ-channel identity, and never carries it.
+#[wasm_bindgen]
+pub struct NovaRlnIdentity {
+    identity: novachannel_rln::Identity,
+}
+
+impl Default for NovaRlnIdentity {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[wasm_bindgen]
+impl NovaRlnIdentity {
+    /// A fresh secret key, generated in the browser and never sent anywhere
+    /// — only its public [`commitment`](Self::commitment) and, later, proof
+    /// outputs ever leave this object.
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> NovaRlnIdentity {
+        NovaRlnIdentity {
+            identity: novachannel_rln::Identity::generate(),
+        }
+    }
+
+    /// Hex-encoded commitment for `{"type":"RlnRegister","commitment":...}`.
+    pub fn commitment(&self) -> String {
+        let params = novachannel_rln::permutation::Params::new();
+        field_to_hex(self.identity.commitment(&params))
+    }
+
+    /// Proves membership + a rate-limit share for `text` at the given
+    /// epoch, using `path_json` (`RlnPathResponse.path`, passed through
+    /// verbatim as JSON text — fetched fresh immediately before this call,
+    /// never cached; see `session/nova_rln.rs`'s module doc for why).
+    /// Returns a JSON string `{"proof":...,"y":...,"nullifier":...}`, the
+    /// three fields `{"type":"RlnMessage",...}` needs beyond `text` itself.
+    pub fn prove(&self, path_json: &str, epoch: u64, text: &str) -> Result<String, JsValue> {
+        use novachannel_rln::air;
+        use novachannel_rln::merkle::{PathStep, Side};
+        use novachannel_rln::permutation::{Params, compress2};
+        use novachannel_rln::{bytes_to_field, epoch_field};
+
+        let wire_path: Vec<WirePathStep> =
+            serde_json::from_str(path_json).map_err(js_err)?;
+        let path = wire_path
+            .into_iter()
+            .map(|step| {
+                Ok(PathStep {
+                    sibling: hex_to_field(&step.sibling)?,
+                    side: match step.side.as_str() {
+                        "Left" => Side::Left,
+                        "Right" => Side::Right,
+                        other => return Err(js_err(format!("unknown side {other}"))),
+                    },
+                })
+            })
+            .collect::<Result<Vec<_>, JsValue>>()?;
+
+        let params = Params::new();
+        let epoch_x = epoch_field(epoch);
+        let message_x = bytes_to_field(text.as_bytes());
+        let a1 = compress2(&params, self.identity.sk, epoch_x);
+        let y = self.identity.sk + a1 * message_x;
+
+        let witness = air::Witness {
+            sk: self.identity.sk,
+            path,
+        };
+        let (proof, public) = air::prove(&witness, epoch_x, message_x, y, a1).map_err(js_err)?;
+
+        let out = serde_json::json!({
+            "proof": BASE64.encode(proof.to_bytes()),
+            "y": field_to_hex(public.y),
+            "nullifier": field_to_hex(public.nullifier),
+        });
+        Ok(out.to_string())
+    }
+}

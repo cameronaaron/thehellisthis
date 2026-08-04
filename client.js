@@ -76,6 +76,11 @@ const IDLE_EVICTION_SECONDS = 600;
 // unchanged (mirrors the roomName === MAIN_ROOM_NAME precedent above).
 const NOVA_ROOM_NAME = 'nova';
 
+// How long an RLN rate-limit epoch lasts (server: config::NOVA_RLN_EPOCH_SECONDS).
+// A second, different anonymous post from the same member inside one epoch
+// recovers their identity secret — that's the mechanism, not a bug.
+const NOVA_RLN_EPOCH_SECONDS = 30;
+
 function isTouchDevice() {
     return window.matchMedia('(pointer: coarse)').matches;
 }
@@ -165,6 +170,8 @@ class ChatApp {
         this.typingText = document.getElementById('typingText');
         this.statusText = document.getElementById('statusText');
         this.charCount = document.getElementById('charCount');
+        this.novaAnonymousToggle = document.getElementById('novaAnonymousToggle');
+        this.novaAnonymousToggleLabel = document.getElementById('novaAnonymousToggleLabel');
         this.roomNameEl = document.getElementById('roomName');
         this.welcomeBanner = document.getElementById('welcomeBanner');
         this.createRoomBtn = document.getElementById('createRoomBtn');
@@ -552,6 +559,27 @@ class ChatApp {
             case 'Sealed':
                 this.handleSealedEvent(data.data);
                 break;
+            case 'RlnRegistered':
+                if (this.pendingRlnRegisterResolve) {
+                    this.pendingRlnRegisterResolve(data);
+                    this.pendingRlnRegisterResolve = null;
+                }
+                break;
+            case 'RlnPathResponse':
+                if (this.pendingRlnPathResolve) {
+                    this.pendingRlnPathResolve(data);
+                    this.pendingRlnPathResolve = null;
+                }
+                break;
+            case 'NovaAnonymousMessage':
+                this.renderNovaAnonymousMessage(data);
+                break;
+            case 'NovaRlnSlashed':
+                this.addSystemMessage(
+                    `A member posted twice in one rate-limit window — their identity secret was recovered: ${data.recovered_secret.slice(0, 16)}…`,
+                    'error'
+                );
+                break;
             default:
                 console.warn('Unknown event type:', data.type);
         }
@@ -566,9 +594,10 @@ class ChatApp {
 
     async startNovaHandshake() {
         try {
-            const { default: init, NovaClient } = await import('/nova.js');
-            await init();
-            this.novaClient = new NovaClient();
+            const mod = await import('/nova.js');
+            await mod.default();
+            this.novaModule = mod;
+            this.novaClient = new mod.NovaClient();
             const msg1 = this.novaClient.startHandshake();
             this.ws.send(JSON.stringify({ type: 'NovaHandshakeInit', msg1 }));
         } catch (e) {
@@ -583,9 +612,100 @@ class ChatApp {
             const msg3 = this.novaClient.completeHandshake(msg2);
             this.ws.send(JSON.stringify({ type: 'NovaHandshakeComplete', msg3 }));
             this.addSystemMessage('Secure channel established.', 'success');
+            this.startNovaRlnRegistration();
         } catch (e) {
             console.error('nova: handshake failed', e);
             this.addSystemMessage('Secure channel setup failed.', 'error');
+        }
+    }
+
+    // ---- nova room only: anonymous, rate-limited posting via RLN ----------
+    //
+    // Independent of the PQ channel above: an anonymous post doesn't need
+    // *this connection's* sealed identity, only the room-wide RLN
+    // membership tree (server: session/nova_rln.rs). Registration happens
+    // once, right after the PQ handshake completes; a path is requested
+    // fresh immediately before every anonymous post rather than cached —
+    // see session/nova_rln.rs's module doc for why a cached path goes
+    // stale the moment anyone else registers.
+
+    async startNovaRlnRegistration() {
+        try {
+            if (!this.novaModule) return;
+            this.novaRlnIdentity = new this.novaModule.NovaRlnIdentity();
+            const commitment = this.novaRlnIdentity.commitment();
+            const registered = await new Promise((resolve) => {
+                this.pendingRlnRegisterResolve = resolve;
+                this.sendEvent({ type: 'RlnRegister', commitment });
+            });
+            this.novaRlnLeafIndex = registered.leaf_index;
+            if (this.novaAnonymousToggleLabel) {
+                this.novaAnonymousToggleLabel.hidden = false;
+            }
+        } catch (e) {
+            console.error('nova rln: registration failed', e);
+        }
+    }
+
+    requestNovaRlnPath() {
+        return new Promise((resolve) => {
+            this.pendingRlnPathResolve = resolve;
+            this.sendEvent({ type: 'RlnPathRequest', leaf_index: this.novaRlnLeafIndex });
+        });
+    }
+
+    async sendNovaAnonymousMessage(text) {
+        if (!this.novaRlnIdentity || this.novaRlnLeafIndex === undefined) {
+            this.showError('Anonymous identity is not ready yet.');
+            return;
+        }
+        try {
+            const pathResponse = await this.requestNovaRlnPath();
+            const epoch = BigInt(Math.floor(Date.now() / 1000 / NOVA_RLN_EPOCH_SECONDS));
+            const proofJson = this.novaRlnIdentity.prove(
+                JSON.stringify(pathResponse.path),
+                epoch,
+                text
+            );
+            const { proof, y, nullifier } = JSON.parse(proofJson);
+            this.sendEvent({ type: 'RlnMessage', proof, y, nullifier, text });
+            this.myLastSentTime = Date.now();
+            this.input.value = '';
+            this.charCount.textContent = '0';
+            this.input.focus();
+        } catch (e) {
+            console.error('nova rln: failed to post anonymously', e);
+            this.showError('Failed to post anonymously.');
+        }
+    }
+
+    // An RLN-proven message renders with no sender at all — that omission
+    // is the point of the proof, not a gap in the markup. Reuses the
+    // `.message`/`.bubble` classes every other room's messages already
+    // carry (and are already styled), plus one small label of its own.
+    renderNovaAnonymousMessage(msg) {
+        const row = document.createElement('div');
+        row.className = 'message received nova-anonymous';
+        row.dataset.messageId = msg.message_id;
+
+        const bubble = document.createElement('div');
+        bubble.className = 'bubble';
+
+        const label = document.createElement('div');
+        label.className = 'nova-anonymous-label';
+        label.textContent = 'Anonymous · RLN-verified';
+        bubble.appendChild(label);
+
+        const content = document.createElement('div');
+        content.className = 'message-content';
+        content.innerHTML = msg.text;
+        bubble.appendChild(content);
+
+        row.appendChild(bubble);
+        this.chat.appendChild(row);
+
+        if (this.shouldAutoScroll) {
+            this.scrollToBottom();
         }
     }
 
@@ -1486,6 +1606,15 @@ class ChatApp {
 
         if (text.length > 8000) {
             this.showError('Message is too long (max 8000 characters)');
+            return;
+        }
+
+        if (
+            this.roomName === NOVA_ROOM_NAME &&
+            this.novaAnonymousToggle &&
+            this.novaAnonymousToggle.checked
+        ) {
+            this.sendNovaAnonymousMessage(text);
             return;
         }
 

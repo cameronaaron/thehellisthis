@@ -14,6 +14,7 @@ use crate::config::{MAX_ROOMS, MAX_TOTAL_ROOMS_MEMORY};
 use crate::limits::{ConnectionPool, MemoryTracker, ResourceMonitor, SecurityManager};
 use crate::protocol::{OutgoingEvent, SystemEvent, encode_broadcast};
 use crate::room::RoomState;
+use crate::session::NovaRlnGroup;
 
 pub struct AppState {
     pub rooms: RwLock<HashMap<String, RoomState>>,
@@ -28,6 +29,11 @@ pub struct AppState {
     /// trusts it on first connection (TOFU) rather than pinning it out of
     /// band, so a restart simply looks like a new session, not an error.
     pub nova_identity: novachannel::Identity,
+    /// `nova`'s RLN membership tree and nullifier set
+    /// (`session/nova_rln.rs`). Singleton state for the one room that has
+    /// it, the same precedent as `nova_identity` — not a field every other
+    /// room's `RoomState` would carry for nothing.
+    pub nova_rln_group: RwLock<NovaRlnGroup>,
 }
 
 impl Default for AppState {
@@ -47,6 +53,7 @@ impl AppState {
             connection_pool: ConnectionPool::new(),
             security_manager: SecurityManager::new(),
             nova_identity: novachannel::Identity::generate(),
+            nova_rln_group: RwLock::new(NovaRlnGroup::new()),
         }
     }
 

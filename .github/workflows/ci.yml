@@ -80,6 +80,20 @@ jobs:
       - name: Verify binary exists
         run: test -f target/release/infinite-chat
 
+      # `nova_rln_anonymous_post_and_double_post_slashing` (session_nova.rs)
+      # is `#[cfg(not(debug_assertions))]`, not `#[ignore]`, so the debug
+      # `cargo test --all-features` above never sees it at all — it's a real
+      # STARK proof/verify, and winterfell's own debug-only sanity check
+      # (declared vs. measured transition-constraint degree) has a
+      # documented false positive on this AIR's sparse boundary-injection
+      # columns (novachannel-rln's own crate docs name it and say to run
+      # with --release). This step is that "run with --release", kept
+      # separate from the debug run above rather than switching the whole
+      # gate to release — everything else in this suite is meant to run
+      # under debug assertions.
+      - name: RLN proof test (release only — see test's own doc comment)
+        run: cargo test --release --all-features nova_rln
+
   # Separate job: tarpaulin rebuilds with instrumentation, so it cannot share
   # the gate job's artifacts anyway, and running it in parallel keeps it off the
   # critical path to a deploy.

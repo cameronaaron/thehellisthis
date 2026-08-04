@@ -1454,6 +1454,37 @@ body {
     color: var(--on-surface);
 }
 
+/* nova room only: an RLN-proven message, rendered with no sender at all
+   (client.js::renderNovaAnonymousMessage). A dashed border is the only
+   visual difference from an ordinary received bubble — the missing name
+   above it already says "anonymous"; this just makes it easy to spot in
+   a room mixing both kinds of message. */
+.message.nova-anonymous .bubble {
+    border: 1px dashed var(--outline, currentColor);
+}
+
+.nova-anonymous-label {
+    font-size: 12px;
+    font-weight: 600;
+    opacity: 0.7;
+    margin-bottom: 2px;
+}
+
+/* nova room only: the "post anonymously" checkbox above the composer.
+   Hidden until RLN registration completes (client.js::startNovaRlnRegistration) —
+   §10.9's "a rule that shows something implies a rule that hides it",
+   satisfied by the `hidden` attribute in the markup itself rather than a
+   CSS selector, the same as every other conditionally-shown element on
+   this page. */
+.nova-anonymous-toggle-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px var(--space-md, 16px);
+    font-size: 13px;
+    color: var(--on-surface-variant, currentColor);
+}
+
 .bubble.has-image {
     padding: 0;
     background: transparent;
@@ -2200,6 +2231,10 @@ body {
     </button>
 </div>
 
+<label id="novaAnonymousToggleLabel" class="nova-anonymous-toggle-label" hidden>
+    <input id="novaAnonymousToggle" type="checkbox"/>
+    Post anonymously (RLN-verified, rate-limited)
+</label>
 <footer class="input-container">
     <div class="composer">
         <button class="composer-action" id="attachBtn" type="button" aria-label="Attach an image">
@@ -2207,7 +2242,7 @@ body {
         </button>
         <input id="fileInput" type="file" accept="image/png,image/jpeg,image/gif,image/webp" hidden/>
         <div class="input-wrapper">
-            <inpu
+            <input
                 id="messageInput"
                 type="text"
                 placeholder="Message"

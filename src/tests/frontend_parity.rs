@@ -106,6 +106,15 @@ fn parity_table() -> Vec<Mirrored> {
                      other room pays for loading the WASM module or nova \
                      itself never does",
         },
+        Mirrored {
+            js_const: "NOVA_RLN_EPOCH_SECONDS",
+            expected: Expected::Number(NOVA_RLN_EPOCH_SECONDS),
+            reason: "the client computes which rate-limit epoch to prove \
+                     against from this; wrong, and every anonymous post \
+                     either proves against an epoch the server has already \
+                     moved past or is refused for one it hasn't reached yet \
+                     (session/nova_rln.rs)",
+        },
     ]
 }
 

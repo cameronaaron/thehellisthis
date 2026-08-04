@@ -35,7 +35,7 @@ use tracing::warn;
 use crate::protocol::{ClientEvent, OutgoingEvent};
 use crate::state::AppState;
 
-use super::{apply_client_event, encode_event};
+use super::{apply_client_event, encode_event, nova_rln};
 
 /// Where this connection is in the handshake, or the established session
 /// once it completes. `AwaitingHandshake` is the only reachable state for
@@ -210,8 +210,36 @@ pub(crate) async fn dispatch(
                 return None;
             }
 
-            let reply = apply_client_event(state, room, user_id, animal_name, inner).await?;
-            slot.seal(&encode_event(&reply)).await
+            match inner {
+                ClientEvent::RlnRegister { commitment } => {
+                    let reply = nova_rln::handle_register(state, &commitment).await?;
+                    slot.seal(&encode_event(&reply)).await
+                }
+                ClientEvent::RlnPathRequest { leaf_index } => {
+                    let reply = nova_rln::handle_path_request(state, leaf_index).await?;
+                    slot.seal(&encode_event(&reply)).await
+                }
+                ClientEvent::RlnMessage {
+                    proof,
+                    y,
+                    nullifier,
+                    text,
+                } => {
+                    // No reply owed to the asker: on success the sender
+                    // sees its own message the same way everyone else
+                    // does, through the room broadcast this call already
+                    // sends — that is *this connection's* identity leaking
+                    // nothing extra, since a `nova` sender already gets its
+                    // own broadcasts back like any other room.
+                    nova_rln::handle_message(state, room, &proof, &y, &nullifier, &text).await;
+                    None
+                }
+                inner => {
+                    let reply =
+                        apply_client_event(state, room, user_id, animal_name, inner).await?;
+                    slot.seal(&encode_event(&reply)).await
+                }
+            }
         }
         _ => {
             warn!(user_id = %user_id, room = %room, "nova: rejecting an unsealed application frame");

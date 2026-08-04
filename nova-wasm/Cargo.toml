@@ -14,14 +14,38 @@ crate-type = ["cdylib"]
 # mismatched pin is exactly the kind of drift `novachannel-watch.yml` exists
 # to catch (it bumps both in the same PR).
 novachannel = { git = "https://github.com/cameronaaron/internet.git", package = "novachannel", rev = "f4bf7881e6d1da92daf28c9c5c5805fe02a4e2ad" }
+# The RLN prover, for anonymous posting (session/nova_rln.rs is the
+# verifier side). Proving happens here, in the browser, and only here:
+# only the holder of `sk` can ever produce a valid proof, so a server that
+# could prove on a client's behalf could also forge one. Measured at ~1ms
+# native for this AIR's circuit size (DEPTH=5, 32 members) — comfortably
+# fast even with WASM's overhead, so no separate worker/background-proving
+# machinery was needed.
+novachannel-rln = { git = "https://github.com/cameronaaron/internet.git", package = "novachannel-rln", rev = "f4bf7881e6d1da92daf28c9c5c5805fe02a4e2ad" }
 wasm-bindgen = "0.2"
 base64 = "0.22"
+# Parses the `RlnPathResponse.path` JSON `client.js` hands in, and builds
+# the small JSON object `prove()` returns — not the wire format itself
+# (protocol.rs owns that), just this crate's own JS boundary.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# novachannel-rln builds its public API directly on winterfell's types
+# (`PathStep`'s field, `Proof`) rather than wrapping them; pinned to the
+# same version novachannel-rln itself depends on (its Cargo.toml), same
+# reasoning as the main crate's own direct `winterfell` dependency.
+winterfell = "0.13"
 # novachannel pulls in getrandom 0.4 transitively (via rand, x25519-dalek,
 # ml-kem, ...) with its native `sys_rng` backend, which does not exist on
 # wasm32. Feature unification means naming the wasm backend here turns it on
 # for that same transitive dependency — the server binary never enables
 # this feature, so it never links a JS-backed RNG.
 getrandom = { version = "0.4", features = ["wasm_js"] }
+# novachannel-rln pulls in a *second*, older getrandom major (0.2, via
+# winterfell's own `rand 0.8`) with its own separate wasm feature name —
+# same reasoning as above, just a different crate version needing it named
+# again (the main crate's Cargo.toml has an identical comment on `rand08`
+# for the matching reason on the server side).
+getrandom2 = { package = "getrandom", version = "0.2", features = ["js"] }
 
 [profile.release]
 opt-level = "s"

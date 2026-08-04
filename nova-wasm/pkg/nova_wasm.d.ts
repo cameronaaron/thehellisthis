@@ -42,17 +42,51 @@ export class NovaClient {
     startHandshake(): string;
 }
 
+/**
+ * An RLN membership identity — the anonymous, rate-limited side of `nova`
+ * (`session/nova_rln.rs` is the server-side verifier and nullifier set).
+ * Independent of [`NovaClient`]: an anonymous post doesn't need this
+ * connection's PQ-channel identity, and never carries it.
+ */
+export class NovaRlnIdentity {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Hex-encoded commitment for `{"type":"RlnRegister","commitment":...}`.
+     */
+    commitment(): string;
+    /**
+     * A fresh secret key, generated in the browser and never sent anywhere
+     * — only its public [`commitment`](Self::commitment) and, later, proof
+     * outputs ever leave this object.
+     */
+    constructor();
+    /**
+     * Proves membership + a rate-limit share for `text` at the given
+     * epoch, using `path_json` (`RlnPathResponse.path`, passed through
+     * verbatim as JSON text — fetched fresh immediately before this call,
+     * never cached; see `session/nova_rln.rs`'s module doc for why).
+     * Returns a JSON string `{"proof":...,"y":...,"nullifier":...}`, the
+     * three fields `{"type":"RlnMessage",...}` needs beyond `text` itself.
+     */
+    prove(path_json: string, epoch: bigint, text: string): string;
+}
+
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_novaclient_free: (a: number, b: number) => void;
+    readonly __wbg_novarlnidentity_free: (a: number, b: number) => void;
     readonly novaclient_completeHandshake: (a: number, b: number, c: number) => [number, number, number, number];
     readonly novaclient_isEstablished: (a: number) => number;
     readonly novaclient_new: () => number;
     readonly novaclient_open: (a: number, b: number, c: number) => [number, number, number, number];
     readonly novaclient_seal: (a: number, b: number, c: number) => [number, number, number, number];
     readonly novaclient_startHandshake: (a: number) => [number, number];
+    readonly novarlnidentity_commitment: (a: number) => [number, number];
+    readonly novarlnidentity_new: () => number;
+    readonly novarlnidentity_prove: (a: number, b: number, c: number, d: bigint, e: number, f: number) => [number, number, number, number];
     readonly __wbindgen_exn_store: (a: number) => void;
     readonly __externref_table_alloc: () => number;
     readonly __wbindgen_externrefs: WebAssembly.Table;

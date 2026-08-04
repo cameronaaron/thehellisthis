@@ -85,6 +85,29 @@ base64 = "0.22.1"
 # (.github/workflows/novachannel-watch.yml opens one when upstream moves),
 # never automatically.
 novachannel = { git = "https://github.com/cameronaaron/internet.git", package = "novachannel", rev = "f4bf7881e6d1da92daf28c9c5c5805fe02a4e2ad" }
+# `nova` room, Phase 2: anonymous rate-limited posting. Verification (cheap —
+# ~0.2ms native, measured) runs here; proving runs client-side in nova-wasm,
+# since only the holder of a member's `sk` may ever produce a valid proof —
+# a server that could prove on a client's behalf could also forge one.
+novachannel-rln = { git = "https://github.com/cameronaaron/internet.git", package = "novachannel-rln", rev = "f4bf7881e6d1da92daf28c9c5c5805fe02a4e2ad" }
+# Backs the nullifier set: which epoch-nullifier bucket the server touched
+# checking for a double-post is exactly the access-pattern leak this crate
+# exists to close (its own module doc), and it is the one primitive from the
+# full stack that fits with no design compromise (see the nova room plan).
+novachannel-oram = { git = "https://github.com/cameronaaron/internet.git", package = "novachannel-oram", rev = "f4bf7881e6d1da92daf28c9c5c5805fe02a4e2ad" }
+# novachannel-rln's own public API (`air::verify`, `PublicInputs`, the
+# `Proof` type its `RlnMessage` frame carries) is built directly on
+# winterfell's types rather than wrapping them, so deserialising a proof
+# off the wire needs this crate directly too. Pinned to the exact version
+# novachannel-rln itself depends on (its Cargo.toml, not a rev — this is a
+# normal crates.io dependency, not the private fork).
+winterfell = "0.13"
+# novachannel-oram's `PathOram::read`/`write` are generic over `rand 0.8`'s
+# `Rng` trait specifically (that crate's own pin), which is a different type
+# from this crate's own `rand 0.10`'s `Rng` as far as the compiler is
+# concerned — Cargo happily resolves both majors side by side, but calling
+# into the ORAM needs an RNG built from *this* version to satisfy its bound.
+rand08 = { package = "rand", version = "0.8" }
 
 [dev-dependencies]
 # `test-util` gives tests simulated time, so the housekeeping loops can be

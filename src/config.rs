@@ -47,6 +47,15 @@ pub(crate) const NOVA_ROOM: &str = "nova";
 /// this one room, and only up to this ceiling.
 pub(crate) const NOVA_MAX_USERS: usize = 12;
 
+/// How long an RLN rate-limit epoch lasts (`session/nova_rln.rs`). A member
+/// who posts a second *different* anonymous message inside one epoch leaks
+/// their identity secret to anyone who observes both proofs — that's the
+/// mechanism RLN is named for, not a bug. Thirty seconds is short enough to
+/// demonstrate live (send two anonymous messages a few seconds apart and
+/// watch the second one recover the first sender's key) without being so
+/// short that a genuinely single anonymous post per member feels cramped.
+pub(crate) const NOVA_RLN_EPOCH_SECONDS: u64 = 30;
+
 /// The connected-user ceiling for `room`. Every room uses
 /// [`MAX_USERS_PER_ROOM`] except [`NOVA_ROOM`], which is far lower — see
 /// [`NOVA_MAX_USERS`] for why.
