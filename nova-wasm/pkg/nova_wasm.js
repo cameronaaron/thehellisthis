@@ -129,6 +129,55 @@ export class NovaClient {
 if (Symbol.dispose) NovaClient.prototype[Symbol.dispose] = NovaClient.prototype.free;
 
 /**
+ * Cover-traffic decisions (`novachannel-dp`). The decision has to be made
+ * here, in the browser, not server-side: it exists to hide from a
+ * *network*-position observer whether this connection is sending real
+ * traffic at all, and the server already sees every real send regardless
+ * of what any scheduler decides.
+ */
+export class NovaDummyScheduler {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        NovaDummySchedulerFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_novadummyscheduler_free(ptr, 0);
+    }
+    /**
+     * True if this slot should transmit — always true when
+     * `has_real_message`, otherwise true with the scheduler's calibrated
+     * dummy probability. The caller (`client.js`) is responsible for
+     * actually sending an indistinguishable dummy frame when this returns
+     * true and there was no real message; the guarantee is about the
+     * *decision bit*, and is void if a dummy is distinguishable from a
+     * real send by size or timing (`novachannel-dp`'s own doc comment).
+     * @param {boolean} has_real_message
+     * @returns {boolean}
+     */
+    decide(has_real_message) {
+        const ret = wasm.novadummyscheduler_decide(this.__wbg_ptr, has_real_message);
+        return ret !== 0;
+    }
+    /**
+     * `epsilon`: the per-slot differential-privacy budget. Lower hides
+     * more (higher dummy-send probability, more bandwidth); `client.js`
+     * picks the actual value (`NOVA_DP_EPSILON`) — this binding is
+     * mechanism, not policy.
+     * @param {number} epsilon
+     */
+    constructor(epsilon) {
+        const ret = wasm.novadummyscheduler_new(epsilon);
+        this.__wbg_ptr = ret;
+        NovaDummySchedulerFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+}
+if (Symbol.dispose) NovaDummyScheduler.prototype[Symbol.dispose] = NovaDummyScheduler.prototype.free;
+
+/**
  * An RLN membership identity — the anonymous, rate-limited side of `nova`
  * (`session/nova_rln.rs` is the server-side verifier and nullifier set).
  * Independent of [`NovaClient`]: an anonymous post doesn't need this
@@ -328,6 +377,9 @@ function __wbg_get_imports() {
 const NovaClientFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_novaclient_free(ptr, 1));
+const NovaDummySchedulerFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_novadummyscheduler_free(ptr, 1));
 const NovaRlnIdentityFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_novarlnidentity_free(ptr, 1));

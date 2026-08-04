@@ -81,6 +81,20 @@ const NOVA_ROOM_NAME = 'nova';
 // recovers their identity secret — that's the mechanism, not a bug.
 const NOVA_RLN_EPOCH_SECONDS = 30;
 
+// Cover traffic (novachannel-dp). Client-only policy — the server has no
+// say in when a dummy fires and never needs to agree on these values, so
+// unlike NOVA_ROOM_NAME/NOVA_RLN_EPOCH_SECONDS there is nothing here for
+// frontend_parity.rs to check against a backend constant.
+//
+// Lower epsilon hides more (higher dummy-send probability) at the cost of
+// more bandwidth; 1.0 sends a dummy in roughly 37% of empty slots
+// (e^-1 ≈ 0.368). Padded to look like a typical short message, since the
+// guarantee is about the decision to transmit, not the content, and is
+// void if a passive observer can tell a dummy from a real send by size.
+const NOVA_DP_EPSILON = 1.0;
+const NOVA_DP_SLOT_MS = 5000;
+const NOVA_DP_PADDING_BYTES = 64;
+
 function isTouchDevice() {
     return window.matchMedia('(pointer: coarse)').matches;
 }
@@ -423,6 +437,7 @@ class ChatApp {
     handleWebSocketClose(event) {
         console.log('WebSocket disconnected', event && event.code);
         if (this.heartbeatTimeoutId) clearTimeout(this.heartbeatTimeoutId);
+        this.stopNovaDummyTraffic();
         this.connected = false;
         this.updateConnectionStatus('disconnected');
         this.sendButton.disabled = true;
@@ -613,9 +628,42 @@ class ChatApp {
             this.ws.send(JSON.stringify({ type: 'NovaHandshakeComplete', msg3 }));
             this.addSystemMessage('Secure channel established.', 'success');
             this.startNovaRlnRegistration();
+            this.startNovaDummyTraffic();
         } catch (e) {
             console.error('nova: handshake failed', e);
             this.addSystemMessage('Secure channel setup failed.', 'error');
+        }
+    }
+
+    // ---- nova room only: cover traffic (novachannel-dp) --------------------
+    //
+    // A dummy frame is indistinguishable, to anything downstream of the
+    // seal, from a real one — the server discards it before it becomes
+    // content (session/nova.rs::dispatch). Started once, right after the
+    // PQ channel establishes; stopped on disconnect, since a closed socket
+    // has no slots left to hide anything in.
+
+    startNovaDummyTraffic() {
+        if (!this.novaModule || !this.novaModule.NovaDummyScheduler) return;
+        this.novaDummyScheduler = new this.novaModule.NovaDummyScheduler(NOVA_DP_EPSILON);
+        this.novaHasRealMessageThisSlot = false;
+        this.novaDummyIntervalId = setInterval(() => {
+            const hadReal = this.novaHasRealMessageThisSlot;
+            this.novaHasRealMessageThisSlot = false;
+            if (hadReal) return;
+            if (this.novaDummyScheduler.decide(false)) {
+                this.sendEvent({
+                    type: 'Dummy',
+                    padding: 'x'.repeat(NOVA_DP_PADDING_BYTES),
+                });
+            }
+        }, NOVA_DP_SLOT_MS);
+    }
+
+    stopNovaDummyTraffic() {
+        if (this.novaDummyIntervalId) {
+            clearInterval(this.novaDummyIntervalId);
+            this.novaDummyIntervalId = null;
         }
     }
 
@@ -730,6 +778,16 @@ class ChatApp {
     // socket directly, so nova's transport is a property of *sending*, not
     // something every call site has to remember.
     sendEvent(payload) {
+        if (
+            (payload.type === 'Message' || payload.type === 'RlnMessage') &&
+            this.roomName === NOVA_ROOM_NAME
+        ) {
+            // A real send counts for *this* slot's cover-traffic decision —
+            // see startNovaDummyTraffic. Typing/read-receipts/reactions/
+            // roster requests don't count: they're not the content the
+            // scheduler exists to hide.
+            this.novaHasRealMessageThisSlot = true;
+        }
         if (this.novaClient && this.novaClient.isEstablished()) {
             try {
                 const data = this.novaClient.seal(JSON.stringify(payload));

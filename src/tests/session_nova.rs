@@ -411,3 +411,62 @@ async fn nova_rln_anonymous_post_and_double_post_slashing() {
 
     handle.abort();
 }
+
+/// Cover traffic (`novachannel-dp`, driven by `client.js`'s periodic
+/// scheduler) is discarded before it becomes content: no broadcast, no
+/// reply, nothing another connection ever sees. Sent right before a real
+/// message so the assertion isn't "nothing arrived within some timeout" —
+/// it's "the first thing that *did* arrive is the real message, not
+/// something derived from the dummy" (§6.4: a test that can pass by
+/// waiting for something that must not happen proves nothing).
+#[tokio::test]
+async fn nova_dummy_frames_are_discarded_without_a_trace() {
+    let (addr, handle) = start_ws_server().await;
+    let ws_url = format!("ws://{addr}/ws/{NOVA_ROOM}");
+
+    let (mut ws_a, _) = connect_async(&ws_url).await.expect("client A connects");
+    drain_preamble(&mut ws_a).await;
+    let mut session_a = handshake(&mut ws_a).await;
+
+    let (mut ws_b, _) = connect_async(&ws_url).await.expect("client B connects");
+    drain_preamble(&mut ws_b).await;
+    let mut session_b = handshake(&mut ws_b).await;
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let dummy = session_a
+        .seal(
+            serde_json::json!({"type": "Dummy", "padding": "x".repeat(64)})
+                .to_string()
+                .as_bytes(),
+        )
+        .expect("seal");
+    ws_a.send(text_frame(
+        serde_json::json!({"type": "Sealed", "data": BASE64.encode(&dummy)}).to_string(),
+    ))
+    .await
+    .expect("send dummy frame");
+
+    let plaintext =
+        serde_json::json!({"type": "Message", "text": "real message after a dummy"}).to_string();
+    let sealed = session_a.seal(plaintext.as_bytes()).expect("seal");
+    ws_a.send(text_frame(
+        serde_json::json!({"type": "Sealed", "data": BASE64.encode(&sealed)}).to_string(),
+    ))
+    .await
+    .expect("send real message");
+
+    let received = recv_sealed(&mut ws_b, &mut session_b).await;
+    assert_eq!(
+        received["type"], "Message",
+        "the dummy must produce nothing observable; first arrival should be the real message: {received}"
+    );
+    assert!(
+        received["message"]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("real message after a dummy")
+    );
+
+    handle.abort();
+}

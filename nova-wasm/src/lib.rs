@@ -236,3 +236,44 @@ impl NovaRlnIdentity {
         Ok(out.to_string())
     }
 }
+
+/// Cover-traffic decisions (`novachannel-dp`). The decision has to be made
+/// here, in the browser, not server-side: it exists to hide from a
+/// *network*-position observer whether this connection is sending real
+/// traffic at all, and the server already sees every real send regardless
+/// of what any scheduler decides.
+#[wasm_bindgen]
+pub struct NovaDummyScheduler {
+    scheduler: novachannel_dp::DummyScheduler,
+}
+
+impl Default for NovaDummyScheduler {
+    fn default() -> Self {
+        Self::new(1.0)
+    }
+}
+
+#[wasm_bindgen]
+impl NovaDummyScheduler {
+    /// `epsilon`: the per-slot differential-privacy budget. Lower hides
+    /// more (higher dummy-send probability, more bandwidth); `client.js`
+    /// picks the actual value (`NOVA_DP_EPSILON`) — this binding is
+    /// mechanism, not policy.
+    #[wasm_bindgen(constructor)]
+    pub fn new(epsilon: f64) -> NovaDummyScheduler {
+        NovaDummyScheduler {
+            scheduler: novachannel_dp::DummyScheduler::new(epsilon),
+        }
+    }
+
+    /// True if this slot should transmit — always true when
+    /// `has_real_message`, otherwise true with the scheduler's calibrated
+    /// dummy probability. The caller (`client.js`) is responsible for
+    /// actually sending an indistinguishable dummy frame when this returns
+    /// true and there was no real message; the guarantee is about the
+    /// *decision bit*, and is void if a dummy is distinguishable from a
+    /// real send by size or timing (`novachannel-dp`'s own doc comment).
+    pub fn decide(&self, has_real_message: bool) -> bool {
+        self.scheduler.decide(has_real_message, &mut rand::thread_rng())
+    }
+}

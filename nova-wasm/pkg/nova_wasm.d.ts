@@ -43,6 +43,35 @@ export class NovaClient {
 }
 
 /**
+ * Cover-traffic decisions (`novachannel-dp`). The decision has to be made
+ * here, in the browser, not server-side: it exists to hide from a
+ * *network*-position observer whether this connection is sending real
+ * traffic at all, and the server already sees every real send regardless
+ * of what any scheduler decides.
+ */
+export class NovaDummyScheduler {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * True if this slot should transmit — always true when
+     * `has_real_message`, otherwise true with the scheduler's calibrated
+     * dummy probability. The caller (`client.js`) is responsible for
+     * actually sending an indistinguishable dummy frame when this returns
+     * true and there was no real message; the guarantee is about the
+     * *decision bit*, and is void if a dummy is distinguishable from a
+     * real send by size or timing (`novachannel-dp`'s own doc comment).
+     */
+    decide(has_real_message: boolean): boolean;
+    /**
+     * `epsilon`: the per-slot differential-privacy budget. Lower hides
+     * more (higher dummy-send probability, more bandwidth); `client.js`
+     * picks the actual value (`NOVA_DP_EPSILON`) — this binding is
+     * mechanism, not policy.
+     */
+    constructor(epsilon: number);
+}
+
+/**
  * An RLN membership identity — the anonymous, rate-limited side of `nova`
  * (`session/nova_rln.rs` is the server-side verifier and nullifier set).
  * Independent of [`NovaClient`]: an anonymous post doesn't need this
@@ -77,6 +106,7 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_novaclient_free: (a: number, b: number) => void;
+    readonly __wbg_novadummyscheduler_free: (a: number, b: number) => void;
     readonly __wbg_novarlnidentity_free: (a: number, b: number) => void;
     readonly novaclient_completeHandshake: (a: number, b: number, c: number) => [number, number, number, number];
     readonly novaclient_isEstablished: (a: number) => number;
@@ -84,6 +114,8 @@ export interface InitOutput {
     readonly novaclient_open: (a: number, b: number, c: number) => [number, number, number, number];
     readonly novaclient_seal: (a: number, b: number, c: number) => [number, number, number, number];
     readonly novaclient_startHandshake: (a: number) => [number, number];
+    readonly novadummyscheduler_decide: (a: number, b: number) => number;
+    readonly novadummyscheduler_new: (a: number) => number;
     readonly novarlnidentity_commitment: (a: number) => [number, number];
     readonly novarlnidentity_new: () => number;
     readonly novarlnidentity_prove: (a: number, b: number, c: number, d: bigint, e: number, f: number) => [number, number, number, number];

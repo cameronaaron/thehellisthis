@@ -234,6 +234,10 @@ pub(crate) async fn dispatch(
                     nova_rln::handle_message(state, room, &proof, &y, &nullifier, &text).await;
                     None
                 }
+                // Cover traffic: discarded, on purpose, before it reaches
+                // anything that would treat it as content — no room lock,
+                // no broadcast, no reply. `padding` is never even read.
+                ClientEvent::Dummy { .. } => None,
                 inner => {
                     let reply =
                         apply_client_event(state, room, user_id, animal_name, inner).await?;

@@ -385,4 +385,14 @@ pub enum ClientEvent {
         nullifier: String,
         text: String,
     },
+    /// `nova` room only: cover traffic (`novachannel-dp`, driven by
+    /// `client.js`'s periodic scheduler tick). Carries no content that
+    /// matters — `padding` only exists so a sealed dummy frame is close in
+    /// size to a sealed real one, since the differential-privacy guarantee
+    /// is about the *decision to transmit*, not the frame's contents, and
+    /// is void if a size difference lets an observer tell them apart
+    /// anyway. The server does nothing with this but discard it: nobody
+    /// downstream of admission ever sees it (`session/nova.rs::dispatch`).
+    #[serde(rename = "Dummy")]
+    Dummy { padding: String },
 }
