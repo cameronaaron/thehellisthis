@@ -25,6 +25,7 @@
 //! long-term pinned host key, only a session's own authentication.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -35,7 +36,14 @@ use tracing::warn;
 use crate::protocol::{ClientEvent, OutgoingEvent};
 use crate::state::AppState;
 
-use super::{apply_client_event, encode_event, nova_rln};
+use super::{apply_client_event, encode_event, nova_mpc, nova_rln};
+
+/// How often one connection may trigger the MPC demo (`session/nova_mpc.rs`).
+/// The demo is cheap CPU, not a resource worth rationing for its own sake —
+/// this exists so a bored click doesn't flood the room with repeats of the
+/// same broadcast, the same reasoning as the reaction/roster throttles in
+/// `session/events.rs`.
+const MPC_DEMO_MIN_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Where this connection is in the handshake, or the established session
 /// once it completes. `AwaitingHandshake` is the only reachable state for
@@ -49,11 +57,21 @@ enum NovaState {
 /// Per-connection handshake/ratchet state, shared between the receive and
 /// forward tasks. Created once per `nova` connection; every other room never
 /// allocates one.
-pub(crate) struct NovaSlot(Mutex<NovaState>);
+pub(crate) struct NovaSlot {
+    handshake: Mutex<NovaState>,
+    /// When this connection last triggered the MPC demo, for
+    /// [`MPC_DEMO_MIN_INTERVAL`]. A separate mutex from `handshake` —
+    /// unrelated concerns, and the demo throttle has nothing to do with
+    /// handshake phase.
+    last_mpc_demo: Mutex<Option<Instant>>,
+}
 
 impl NovaSlot {
     pub(crate) fn new() -> Self {
-        NovaSlot(Mutex::new(NovaState::AwaitingHandshake))
+        NovaSlot {
+            handshake: Mutex::new(NovaState::AwaitingHandshake),
+            last_mpc_demo: Mutex::new(None),
+        }
     }
 
     /// Handles `ClientEvent::NovaHandshakeInit`: msg1 in, the reply to send
@@ -66,7 +84,7 @@ impl NovaSlot {
         identity: &Identity,
         msg1_b64: &str,
     ) -> Option<OutgoingEvent> {
-        let mut state = self.0.lock().await;
+        let mut state = self.handshake.lock().await;
         if !matches!(*state, NovaState::AwaitingHandshake) {
             warn!("nova: handshake init received out of phase");
             return None;
@@ -91,7 +109,7 @@ impl NovaSlot {
     /// the ratcheted session on success. No reply — the client already has
     /// everything it needs from its own local `complete()` call.
     pub(crate) async fn handle_complete(&self, msg3_b64: &str) -> bool {
-        let mut state = self.0.lock().await;
+        let mut state = self.handshake.lock().await;
         let NovaState::HandshakeStarted(_) = &*state else {
             warn!("nova: handshake complete received out of phase");
             return false;
@@ -128,7 +146,7 @@ impl NovaSlot {
     /// sends one, so receiving one is treated as malformed rather than
     /// handled.
     pub(crate) async fn open(&self, data_b64: &str) -> Option<ClientEvent> {
-        let mut state = self.0.lock().await;
+        let mut state = self.handshake.lock().await;
         let NovaState::Established(session) = &mut *state else {
             warn!("nova: sealed frame received before the handshake completed");
             return None;
@@ -156,7 +174,7 @@ impl NovaSlot {
     /// what to do about a `nova` connection that isn't sealed yet
     /// (`forward_broadcasts` simply does not forward until it is).
     pub(crate) async fn seal(&self, plaintext_json: &str) -> Option<OutgoingEvent> {
-        let mut state = self.0.lock().await;
+        let mut state = self.handshake.lock().await;
         let NovaState::Established(session) = &mut *state else {
             return None;
         };
@@ -165,6 +183,17 @@ impl NovaSlot {
         Some(OutgoingEvent::Sealed {
             data: BASE64.encode(record),
         })
+    }
+
+    /// `true` and records `now` if this connection last ran the MPC demo
+    /// longer than [`MPC_DEMO_MIN_INTERVAL`] ago (or never has).
+    pub(crate) async fn check_mpc_demo_throttle(&self, now: Instant) -> bool {
+        let mut last = self.last_mpc_demo.lock().await;
+        if last.is_some_and(|t| now.duration_since(t) < MPC_DEMO_MIN_INTERVAL) {
+            return false;
+        }
+        *last = Some(now);
+        true
     }
 }
 
@@ -238,6 +267,13 @@ pub(crate) async fn dispatch(
                 // anything that would treat it as content — no room lock,
                 // no broadcast, no reply. `padding` is never even read.
                 ClientEvent::Dummy { .. } => None,
+                ClientEvent::NovaMpcDemoRequest => {
+                    if !slot.check_mpc_demo_throttle(Instant::now()).await {
+                        return None;
+                    }
+                    nova_mpc::handle_demo_request(state, room).await;
+                    None
+                }
                 inner => {
                     let reply =
                         apply_client_event(state, room, user_id, animal_name, inner).await?;

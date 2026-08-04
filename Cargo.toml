@@ -102,6 +102,14 @@ novachannel-oram = { git = "https://github.com/cameronaaron/internet.git", packa
 # novachannel-rln itself depends on (its Cargo.toml, not a rev — this is a
 # normal crates.io dependency, not the private fork).
 winterfell = "0.13"
+# `nova` room, Phase 4: a labeled protocol-demonstration panel (not real
+# distributed trust — see session/nova_mpc.rs's module doc for why, and
+# the nova room plan's Context section for the product decision behind
+# showing it as a demo rather than gating anything real). Entirely
+# server-side: there's no reason to push simulated-operator math to the
+# browser when the whole point is that one process holding every share is
+# what the demo is honest about *not* being secure distributed trust.
+novachannel-mpc = { git = "https://github.com/cameronaaron/internet.git", package = "novachannel-mpc", rev = "f4bf7881e6d1da92daf28c9c5c5805fe02a4e2ad" }
 # novachannel-oram's `PathOram::read`/`write` are generic over `rand 0.8`'s
 # `Rng` trait specifically (that crate's own pin), which is a different type
 # from this crate's own `rand 0.10`'s `Rng` as far as the compiler is

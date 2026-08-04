@@ -972,6 +972,7 @@ dependencies = [
  "futures",
  "http",
  "novachannel",
+ "novachannel-mpc",
  "novachannel-oram",
  "novachannel-rln",
  "rand 0.10.2",
@@ -1212,6 +1213,18 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 1.0.69",
  "x25519-dalek",
+ "zeroize",
+]
+
+[[package]]
+name = "novachannel-mpc"
+version = "0.1.0"
+source = "git+https://github.com/cameronaaron/internet.git?rev=f4bf7881e6d1da92daf28c9c5c5805fe02a4e2ad#f4bf7881e6d1da92daf28c9c5c5805fe02a4e2ad"
+dependencies = [
+ "curve25519-dalek",
+ "getrandom 0.4.3",
+ "rand_core 0.10.1",
+ "sha2 0.10.9",
  "zeroize",
 ]
 

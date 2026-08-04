@@ -470,3 +470,56 @@ async fn nova_dummy_frames_are_discarded_without_a_trace() {
 
     handle.abort();
 }
+
+/// One client requests the MPC/FROST demo; the *other* connection receives
+/// the broadcast result too (module doc in session/nova_mpc.rs: nothing in
+/// it is per-asker), with `recovered_key_matches: true` — a real DKG and
+/// threshold decryption actually ran and actually agreed, not a canned
+/// response.
+#[tokio::test]
+async fn nova_mpc_demo_broadcasts_a_real_result_to_the_whole_room() {
+    let (addr, handle) = start_ws_server().await;
+    let ws_url = format!("ws://{addr}/ws/{NOVA_ROOM}");
+
+    let (mut ws_a, _) = connect_async(&ws_url).await.expect("client A connects");
+    drain_preamble(&mut ws_a).await;
+    let mut session_a = handshake(&mut ws_a).await;
+
+    let (mut ws_b, _) = connect_async(&ws_url).await.expect("client B connects");
+    drain_preamble(&mut ws_b).await;
+    let mut session_b = handshake(&mut ws_b).await;
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let request = session_a
+        .seal(
+            serde_json::json!({"type": "NovaMpcDemoRequest"})
+                .to_string()
+                .as_bytes(),
+        )
+        .expect("seal");
+    ws_a.send(text_frame(
+        serde_json::json!({"type": "Sealed", "data": BASE64.encode(&request)}).to_string(),
+    ))
+    .await
+    .expect("send demo request");
+
+    let received = recv_sealed(&mut ws_b, &mut session_b).await;
+    assert_eq!(received["type"], "NovaMpcDemoResult");
+    assert!(
+        received["recovered_key_matches"].as_bool().unwrap_or(false),
+        "a real quorum must recover the real encapsulated key: {received}"
+    );
+    assert_eq!(
+        received["quorum"].as_array().unwrap().len() as u64,
+        received["threshold"]
+    );
+    assert!(
+        !received["group_public_key"]
+            .as_str()
+            .unwrap_or("")
+            .is_empty()
+    );
+
+    handle.abort();
+}

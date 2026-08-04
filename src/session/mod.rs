@@ -16,6 +16,7 @@ mod admission;
 mod events;
 mod lifecycle;
 mod nova;
+mod nova_mpc;
 mod nova_rln;
 mod tasks;
 mod teardown;

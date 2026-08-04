@@ -299,6 +299,19 @@ pub enum OutgoingEvent {
     NovaRlnSlashed {
         recovered_secret: String,
     },
+    /// `nova` room only (`session/nova_mpc.rs`): the result of one
+    /// DKG + threshold-decryption demonstration round. `client.js` labels
+    /// this a protocol demonstration, not real distributed trust — see
+    /// that module's doc comment for why (every simulated operator lives
+    /// in this one process). Broadcast to the whole room, since nothing in
+    /// it is per-connection state or a secret belonging to whoever asked.
+    NovaMpcDemoResult {
+        num_operators: u32,
+        threshold: u32,
+        quorum: Vec<u32>,
+        group_public_key: String,
+        recovered_key_matches: bool,
+    },
 }
 
 /// One step of an RLN Merkle authentication path, wire-shaped:
@@ -395,4 +408,10 @@ pub enum ClientEvent {
     /// downstream of admission ever sees it (`session/nova.rs::dispatch`).
     #[serde(rename = "Dummy")]
     Dummy { padding: String },
+    /// `nova` room only: run one FROST/DKG protocol-demonstration round
+    /// (`session/nova_mpc.rs`). No payload — every parameter of the demo
+    /// is fixed, on purpose, so there is nothing here for a client to lie
+    /// about.
+    #[serde(rename = "NovaMpcDemoRequest")]
+    NovaMpcDemoRequest,
 }

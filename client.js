@@ -186,6 +186,7 @@ class ChatApp {
         this.charCount = document.getElementById('charCount');
         this.novaAnonymousToggle = document.getElementById('novaAnonymousToggle');
         this.novaAnonymousToggleLabel = document.getElementById('novaAnonymousToggleLabel');
+        this.novaMpcDemoBtn = document.getElementById('novaMpcDemoBtn');
         this.roomNameEl = document.getElementById('roomName');
         this.welcomeBanner = document.getElementById('welcomeBanner');
         this.createRoomBtn = document.getElementById('createRoomBtn');
@@ -253,6 +254,12 @@ class ChatApp {
             e.preventDefault();
             this.sendMessage();
         });
+
+        if (this.novaMpcDemoBtn) {
+            this.novaMpcDemoBtn.addEventListener('click', () => {
+                this.sendEvent({ type: 'NovaMpcDemoRequest' });
+            });
+        }
 
         document.getElementById('exploreLink').addEventListener('click', (e) => {
             e.preventDefault();
@@ -595,6 +602,12 @@ class ChatApp {
                     'error'
                 );
                 break;
+            case 'NovaMpcDemoResult':
+                this.addSystemMessage(
+                    `MPC/FROST demo (protocol demonstration, not real distributed trust — every operator ran in this one server process): ${data.quorum.length} of ${data.num_operators} simulated operators jointly decrypted a key only their combined shares could produce. Match: ${data.recovered_key_matches ? 'yes' : 'no'}.`,
+                    data.recovered_key_matches ? 'success' : 'error'
+                );
+                break;
             default:
                 console.warn('Unknown event type:', data.type);
         }
@@ -629,6 +642,9 @@ class ChatApp {
             this.addSystemMessage('Secure channel established.', 'success');
             this.startNovaRlnRegistration();
             this.startNovaDummyTraffic();
+            if (this.novaMpcDemoBtn) {
+                this.novaMpcDemoBtn.hidden = false;
+            }
         } catch (e) {
             console.error('nova: handshake failed', e);
             this.addSystemMessage('Secure channel setup failed.', 'error');

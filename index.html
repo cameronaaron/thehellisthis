@@ -1485,6 +1485,28 @@ body {
     color: var(--on-surface-variant, currentColor);
 }
 
+/* nova room only: triggers session/nova_mpc.rs's demo round. Hidden until
+   the PQ channel establishes (client.js::completeNovaHandshake) — same
+   §10.9 reasoning as the anonymous-post toggle above. The disclaimer is
+   in the button's own label, not a tooltip or a separate line, so it
+   cannot be missed by not hovering. */
+.nova-mpc-demo-button {
+    display: block;
+    width: calc(100% - 2 * var(--space-md, 16px));
+    margin: 4px var(--space-md, 16px);
+    padding: 8px 12px;
+    border: 1px dashed var(--outline, currentColor);
+    border-radius: 8px;
+    background: transparent;
+    color: var(--on-surface-variant, currentColor);
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.nova-mpc-demo-button:hover {
+    background: var(--surface-container-highest, rgba(128, 128, 128, 0.1));
+}
+
 .bubble.has-image {
     padding: 0;
     background: transparent;
@@ -2235,6 +2257,9 @@ body {
     <input id="novaAnonymousToggle" type="checkbox"/>
     Post anonymously (RLN-verified, rate-limited)
 </label>
+<button id="novaMpcDemoBtn" class="nova-mpc-demo-button" type="button" hidden>
+    Run MPC/FROST demo (protocol demonstration, not real distributed trust)
+</button>
 <footer class="input-container">
     <div class="composer">
         <button class="composer-action" id="attachBtn" type="button" aria-label="Attach an image">

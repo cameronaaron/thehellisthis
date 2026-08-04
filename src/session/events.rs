@@ -386,7 +386,8 @@ pub async fn apply_client_event_at(
         | ClientEvent::RlnRegister { .. }
         | ClientEvent::RlnPathRequest { .. }
         | ClientEvent::RlnMessage { .. }
-        | ClientEvent::Dummy { .. } => {
+        | ClientEvent::Dummy { .. }
+        | ClientEvent::NovaMpcDemoRequest => {
             warn!(user_id = %user_id, room = %room, "nova transport frame reached room-event dispatch");
             None
         }
