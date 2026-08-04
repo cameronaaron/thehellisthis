@@ -357,8 +357,13 @@ fn the_page_does_not_block_pinch_zoom() {
         !viewport.contains("maximum-scale=1"),
         "capping zoom fails WCAG 1.4.4: {viewport}"
     );
+    let input_rule = EMBEDDED_HTML
+        .lines()
+        .skip_while(|line| !line.contains("#messageInput"))
+        .take_while(|line| !line.trim_start().starts_with('}'))
+        .any(|line| line.contains("font-size: 16px"));
     assert!(
-        EMBEDDED_HTML.contains("font-size: 16px; /* Prevents iOS zoom */"),
+        input_rule,
         "the 16px input font is what makes blocking zoom unnecessary"
     );
 }

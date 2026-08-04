@@ -2,10 +2,6 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
-<!-- No maximum-scale/user-scalable=no: blocking pinch-zoom fails WCAG 1.4.4,
-     and iOS ignores it anyway on modern versions. The usual reason to set it —
-     stopping iOS zooming when an input is focused — is handled properly by
-     giving the input a 16px font size instead. -->
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
 <meta name="description" content="A social experiment in organic interaction. Anonymous ephemeral chat—no sign-up, no tracking. Rooms vanish when everyone leaves.">
 <meta name="theme-color" content="#1a73e8" media="(prefers-color-scheme: light)">
@@ -24,18 +20,8 @@
 <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect fill='%231a73e8' rx='20' width='100' height='100'/%3E%3Cpath fill='%23fff' d='M30 35h40c2.8 0 5 2.2 5 5v20c0 2.8-2.2 5-5 5H55l-10 10v-10H30c-2.8 0-5-2.2-5-5V40c0-2.8 2.2-5 5-5z'/%3E%3C/svg%3E">
 <style>
 :root {
-    /* System stacks rather than webfonts. The page used to pull Google Sans,
-       Roboto and Material Icons from fonts.googleapis.com, which meant every
-       visitor's browser announced their address and the room they were opening
-       to a third party — on a site whose whole premise is that you get an
-       animal name instead of an account. It also blocked first render on two
-       cross-origin round trips. */
     --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, 'Helvetica Neue', Arial, sans-serif;
-    /* System monospace stack. This was 'Roboto Mono', which stopped being
-       downloaded when the webfonts went and had been silently falling back to
-       the generic `monospace` ever since. */
     --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
-    /* The empty-room icon, inline so it costs no request and no third party. */
     --empty-chat-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 15a2 2 0 0 1-2 2H8l-4 4V5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2z'/%3E%3C/svg%3E");
     --font-display: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, 'Helvetica Neue', Arial, sans-serif;
 
@@ -76,9 +62,6 @@
     --shadow-2: 0 2px 6px 2px rgba(0,0,0,0.15), 0 1px 2px 0 rgba(0,0,0,0.3);
     --shadow-3: 0 4px 8px 3px rgba(0,0,0,0.15), 0 1px 3px 0 rgba(0,0,0,0.3);
     --shadow-4: 0 6px 10px 4px rgba(0,0,0,0.15), 0 2px 3px 0 rgba(0,0,0,0.3);
-    /* iMessage's own two colours. The blue is Apple's system blue; the grey is
-       the receiving bubble, which is a touch lighter than the page in light
-       mode and considerably lighter in dark. */
     --imessage-blue: #0b84ff;
     --composer-radius: 20px;
     --imessage-grey: #e9e9eb;
@@ -141,13 +124,10 @@
     }
 }
 
-/* The sprite itself is never rendered; only its <symbol>s are referenced. */
 .icon-sprite {
     display: none;
 }
 
-/* Stroke-drawn icons inheriting the current text colour. Sized in `em` so the
-   font-size rules that positioned the old icon font continue to apply. */
 .icon {
     width: 1em;
     height: 1em;
@@ -203,13 +183,6 @@ body {
     align-items: center;
     gap: 8px;
     z-index: 100;
-    /* 68px, not 56px: `.room-title` stacks an avatar, a name and a subtitle —
-       measured at 66px tall — and a `height` on a grid container does not
-       clip an overflowing track, it just stops matching it. The subtitle sat
-       65px down inside a 56px box with nothing hiding the difference, so the
-       border-bottom drawn at the box's true edge painted straight through the
-       middle of "1 here · 0m alive" — visible in the gaps between glyphs,
-       reading as a bar slicing through the text. */
     height: 68px;
     flex-shrink: 0;
     border-bottom: 1px solid var(--outline-variant);
@@ -218,9 +191,6 @@ body {
     -webkit-backdrop-filter: saturate(180%) blur(20px);
 }
 
-/* The dot's shape. Its colour is set separately per connection state
-   (`.app-bar-actions .status-chip.connected .status-dot`, near the header
-   rules) — this is the one place its size lives, and nothing else does. */
 .status-dot {
     width: 8px;
     height: 8px;
@@ -229,13 +199,6 @@ body {
     flex-shrink: 0;
 }
 
-/* Room Heartbeat Indicator */
-/* The room's remaining life reads as part of the subtitle now, not as its own
-   pill. It used to be a bordered chip in a row of chips; inside a 11px
-   subtitle that chip's padding and background stacked on the text around it.
-   `.active`/`.warning`/`.critical` used to reapply that same background —
-   contradicting the comment right above them and reintroducing a coloured box
-   behind plain subtitle text. Colour alone carries the state now. */
 .room-heartbeat {
     display: inline;
     color: inherit;
@@ -259,13 +222,11 @@ body {
     50% { opacity: 0.6; }
 }
 
-/* Room lifespan counter */
 .room-lifespan {
     font-size: inherit;
     opacity: 1;
 }
 
-/* Mute button */
 .mute-btn {
     width: 40px;
     height: 40px;
@@ -368,7 +329,6 @@ body {
     75% { box-shadow: 0 0 0 3px var(--primary); }
 }
 
-/* Extra: gradient animation effect */
 .room-fading {
     background: linear-gradient(to bottom, rgba(26, 115, 232, 0.02) 0%, rgba(26, 115, 232, 0.01) 100%);
 }
@@ -385,7 +345,6 @@ body {
     100% { box-shadow: 0 0 0 0 transparent; }
 }
 
-/* Room fade warning toast */
 .fade-warning {
     position: fixed;
     top: 80px;
@@ -424,21 +383,8 @@ body {
 
 #chat {
     flex: 1;
-    /* Without this, a flex item's default `min-height: auto` refuses to
-       shrink below its own content's height — so on a short viewport, a
-       welcome banner tall enough to need scrolling instead pushed the
-       composer off the bottom of the screen entirely, unreachable, rather
-       than #chat becoming the one thing that scrolls. */
     min-height: 0;
-    /* The conversation is a centred column, not the whole window. It used to be
-       full width with bubbles capped at 600px, so on a wide monitor one message
-       sat against the left edge and the next against the right with a metre of
-       nothing between them — reading it meant tracking across the screen.
-       The padding centres the column while the scroller keeps its full width,
-       so the scrollbar stays at the edge of the window where people expect it. */
     padding-inline: max(16px, calc((100% - var(--conversation-width)) / 2));
-    /* Anchors the empty-state overlay below, which must not participate in
-       flex layout — see the note on #chat:empty::before. */
     position: relative;
     padding-block: 24px 16px;
     overflow-y: auto;
@@ -446,34 +392,13 @@ body {
     display: flex;
     flex-direction: column;
     gap: 2px;
-    /* Instant, NOT smooth. Pinning to the bottom happens on every incoming
-       message and on every history frame during load; with smooth scrolling
-       each of those starts an animation chasing a target that is still
-       growing, which is what made the view slide around on reload. Smooth
-       scrolling is opt-in per call (scrollToMessage uses scrollIntoView). */
     scroll-behavior: auto;
-    /* The client pins the scroll position itself. Browser scroll anchoring
-       additionally adjusts scrollTop when content is inserted above the
-       viewport, and the two corrections fight each other during history load. */
     overflow-anchor: none;
     -webkit-overflow-scrolling: touch;
     overscroll-behavior: contain;
     background: var(--surface);
 }
 
-/* The empty state is an absolutely-positioned overlay, not a change to the
-   container's own alignment.
-   It used to be `#chat:empty { justify-content: center; align-items: center }`,
-   so the instant the first history message arrived `:empty` stopped matching
-   and the whole column snapped from centred to top-aligned — a visible
-   reorientation on every single page load that had any history. */
-/* The icon is a masked inline SVG, not a font ligature.
-   This was `content: 'chat_bubble'` in 'Material Icons Round' — a ligature that
-   resolved to a picture only while that font was being downloaded from Google.
-   Removing the webfont (§5.7) left the declaration behind, so every visitor
-   opening an empty room saw the literal word "chat_bubble" at 80px.
-   A mask rather than a background-image so the colour still comes from the
-   theme: `currentColor` has no meaning inside a data: URI. */
 #chat:empty::before {
     content: '';
     width: 80px;
@@ -502,13 +427,13 @@ body {
 }
 
 @keyframes messageSlide {
-    from { 
-        opacity: 0; 
-        transform: translateY(16px) scale(0.96); 
+    from {
+        opacity: 0;
+        transform: translateY(16px) scale(0.96);
     }
-    to { 
-        opacity: 1; 
-        transform: translateY(0) scale(1); 
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
     }
 }
 
@@ -517,17 +442,6 @@ body {
     to { opacity: 1; transform: scale(1); }
 }
 
-/* `addSystemMessage(text, type)` renders four class combinations —
-   `info`/`success`/`warning`/`error` — and only the last three ever had a
-   rule. There was no base `.system-message` at all: no padding, no radius, no
-   centering, nothing. "You joined as heron" rendered as a plain block div,
-   full-width edge to edge with the browser's default zero padding — the
-   "jank rectangle" is not a mis-styled pill, it is an *unstyled* element that
-   happened to pick up a background colour from its state class and nothing
-   else. `every_class_the_client_renders_is_styled` didn't catch it: it
-   asserted a rule containing the substring `.system-message` existed, and
-   `.system-message.error {}` satisfies a substring check while leaving the
-   bare class — and the fourth, `.info`, combination — with nothing. */
 .system-message {
     align-self: center;
     max-width: 90%;
@@ -559,8 +473,6 @@ body {
 
 .input-container {
     background: var(--surface-container);
-    /* Laid out against the same column as the messages, so the composer sits
-       under the conversation rather than drifting to the window's edges. */
     padding: 12px max(16px, calc((100% - var(--conversation-width)) / 2));
     padding-bottom: max(16px, env(safe-area-inset-bottom));
     display: flex;
@@ -678,13 +590,12 @@ body {
     opacity: 0.38;
 }
 
-/* Responsive Design */
 @media (max-width: 768px) {
     .app-bar {
         padding: 0 12px;
         gap: 8px;
     }
-    
+
     .status-chip span:not(.status-dot) {
         display: none;
     }
@@ -715,23 +626,23 @@ body {
     .bubble {
         max-width: 85%;
     }
-    
+
     .input-container {
         padding: 10px 12px;
     }
-    
+
     #messageInput {
-        font-size: 16px; /* Prevents iOS zoom */
+        font-size: 16px;
         padding: 12px 16px;
     }
-    
+
     .send-button {
         width: 48px;
         height: 48px;
         min-width: 48px;
         border-radius: var(--radius-md);
     }
-    
+
     .send-button .icon {
         font-size: 22px;
     }
@@ -776,13 +687,6 @@ body {
     30% { transform: translateY(-6px); opacity: 1; }
 }
 
-/* An inset card, not an edge-to-edge block. This used to be a full-bleed
-   square of Material's `--primary-container` blue sitting flush against the
-   window edges — the one place in the page that still looked like the design
-   this app replaced, clashing with every rounded, inset surface around it
-   (constraint #15a, ENGINEERING-STANDARDS.md §10.11's naming half). Margined
-   and rounded the same amount as a message bubble, it now reads as one more
-   card in the conversation rather than a banner bolted onto the top of it. */
 .welcome-banner {
     margin: 12px max(16px, calc((100% - var(--conversation-width)) / 2)) 4px;
     padding: 18px 20px;
@@ -790,15 +694,6 @@ body {
     background: color-mix(in srgb, var(--imessage-blue) 10%, var(--surface-container-high));
     border: 1px solid color-mix(in srgb, var(--imessage-blue) 20%, transparent);
     animation: slideDown 0.4s var(--transition-medium);
-    /* A sibling of #chat, not a child of it (§10.1 — the emptiness overlay
-       depends on #chat holding only messages), so its height is not part of
-       the flex space #chat gives up when it shrinks. On a short viewport its
-       own content — title, paragraph, three buttons — was taller than the
-       whole screen, and unlike #chat it had no `min-height: 0` floor to
-       shrink past, so the overflow had nowhere to go but through the footer:
-       the composer landed below the visible viewport, unreachable. Capped and
-       made independently scrollable so it can never do that regardless of
-       viewport height or how long the welcome text gets. */
     max-height: 45vh;
     overflow-y: auto;
 }
@@ -902,15 +797,11 @@ body {
     background: var(--on-surface-variant);
 }
 
-/* Firefox scrollbar */
-
-/* Selection styling */
 ::selection {
     background: var(--primary-container);
     color: var(--on-primary-container);
 }
 
-/* Reduce motion for accessibility */
 @media (prefers-reduced-motion: reduce) {
     *,
     *::before,
@@ -921,7 +812,6 @@ body {
     }
 }
 
-/* Print styles */
 @media print {
     .app-bar,
     .input-container,
@@ -929,34 +819,23 @@ body {
     .typing-indicator {
         display: none !important;
     }
-    
+
     #chat {
         overflow: visible;
         height: auto;
     }
 }
 
-/* High contrast mode support */
 @media (prefers-contrast: high) {
     :root {
         --outline: #000000;
         --outline-variant: #000000;
     }
-    
+
     .bubble {
         border: 1px solid var(--outline);
     }
 }
-
-/* ===================================================================
-   Attachments, reactions, emoji picker, lightbox
-   ===================================================================
-   Everything here follows §10.3: anything that appears only sometimes is
-   an overlay or is `hidden`, and never restyles a container that is also
-   present when it is absent. A control that changes the layout when it
-   shows up makes the conversation jump under the reader's eyes. */
-
-/* ---- Composer ---------------------------------------------------- */
 
 .composer {
     flex: 1;
@@ -1013,8 +892,6 @@ body {
     background: var(--primary-container);
     color: var(--on-primary-container);
 }
-
-/* ---- Staged attachment ------------------------------------------- */
 
 .attachment-tray {
     flex: none;
@@ -1091,26 +968,12 @@ body {
     background: color-mix(in srgb, var(--on-surface) 8%, transparent);
 }
 
-/* ---- Images inside messages -------------------------------------- */
-
-/* The wrapper carries an aspect-ratio built from the server's width/height,
-   so the space an image will occupy is reserved before a single byte of it
-   decodes. Without it every arriving picture shoves the conversation
-   downward as it loads — the layout shift §10.3 is about. */
-
-/* A picture that aged out of the room's budget. The message stays, so the
-   conversation keeps its shape; the space stays too, so nothing reflows. */
-
-/* The hover toolbar. Fixed-positioned so it is never part of any message's
-   box — a bar that reserved space would resize every row it touched. */
 .reaction-bar {
     position: fixed;
     z-index: 900;
     display: flex;
     align-items: center;
     gap: 2px;
-    /* A generous hit area: a pointer arriving slightly short of a 32px target
-       should still count as arriving. */
     padding: 5px 6px;
     gap: 3px;
     background: var(--surface-container-lowest);
@@ -1147,8 +1010,6 @@ body {
     background: var(--surface-container-high);
     transform: scale(1.15);
 }
-
-/* ---- Emoji picker ------------------------------------------------- */
 
 .emoji-panel {
     position: fixed;
@@ -1200,7 +1061,6 @@ body {
     background: var(--surface-container-high);
     color: var(--on-surface);
     font-family: inherit;
-    /* 16px so iOS does not zoom the page when this is focused. */
     font-size: 16px;
 }
 
@@ -1256,10 +1116,6 @@ body {
 
 .emoji-group-label {
     grid-column: 1 / -1;
-    /* 8px, not 4px, below the text: a sticky label sits in its own stacking
-       context and paints above the non-positioned cells beneath it, so a tight
-       gap here is the kind of margin that only fails at a font size, zoom
-       level or touch target this session's browser did not happen to hit. */
     padding: 10px 4px 8px;
     font-size: 11px;
     font-weight: 600;
@@ -1296,8 +1152,6 @@ body {
     color: var(--on-surface-variant);
     font-size: 13px;
 }
-
-/* ---- Jump to latest ---------------------------------------------- */
 
 .jump-latest {
     position: fixed;
@@ -1342,8 +1196,6 @@ body {
 .jump-latest-count[hidden] {
     display: none;
 }
-
-/* ---- Lightbox ----------------------------------------------------- */
 
 .lightbox {
     position: fixed;
@@ -1392,8 +1244,6 @@ body {
     background: rgba(255, 255, 255, 0.24);
 }
 
-/* ---- Drag and drop ------------------------------------------------ */
-
 .drop-overlay {
     position: fixed;
     inset: 0;
@@ -1428,18 +1278,6 @@ body {
     color: var(--primary);
 }
 
-/* ---- Date separators --------------------------------------------- */
-
-/* Not `position: sticky`: a sticky separator pins to the scroll
-   container's top the moment anything earlier has scrolled past it —
-   including the instant a two-message room loads auto-scrolled to the
-   bottom, where the separator's stuck position and the newest message's
-   flow position are the same pixels. No margin between them prevents
-   that, because the stuck render position is independent of the next
-   sibling's normal-flow position (§10.2's own "the client owns the scroll
-   position" reasoning, one layer further down). `main` caps at 75
-   messages and a spawned room fades fast, so multi-day scrollback rare
-   enough that the affordance sticky exists for was not worth the bug. */
 .date-separator {
     display: flex;
     align-items: center;
@@ -1464,8 +1302,6 @@ body {
     display: none;
 }
 
-/* ---- Motion preferences ------------------------------------------ */
-
 @media (prefers-reduced-motion: reduce) {
     .attachment-chip,
     .reaction-bar,
@@ -1483,8 +1319,6 @@ body {
     }
 }
 
-/* ---- Small screens ------------------------------------------------ */
-
 @media (max-width: 600px) {
     .emoji-panel {
         left: 8px;
@@ -1498,55 +1332,26 @@ body {
     }
 }
 
-/* ===================================================================
-   Layout refresh
-   ===================================================================
-   The conversation used to span the whole window: `#chat` was full width and
-   a bubble capped at 600px, so on a wide monitor one sat against the left
-   edge and the next against the right with a metre of nothing between them.
-   Reading it meant tracking across the screen line by line.
-
-   Everything now sits in one centred column of a readable width, which is
-   what every messaging application does and for the same reason. */
-
 :root {
     --conversation-width: 780px;
 }
-
-/* ---- Message rhythm ---------------------------------------------- */
-
-/* The tail: only the last bubble of a run gets the squared corner, so a group
-   of messages from one person reads as one block rather than a stack of
-   separate cards. */
-
 
 .message.sent:last-child,
 .message.sent:has(+ .message.received),
 
 .message.received:last-child,
 
-/* ---- Composer proportions ---------------------------------------- */
-
-
 .input-wrapper input {
-    /* 16px so iOS does not zoom the page on focus; the old 14px did. */
     font-size: 16px;
     padding: 10px 8px;
 }
-
-
-/* The character counter only matters when you are near the limit. */
 
 .composer:focus-within .input-info {
     opacity: 0.7;
 }
 
-/* ---- Typing indicator and reply preview join the column ----------- */
-
 .typing-indicator,
 .reply-preview,
-
-/* ---- Narrow screens: the column is the screen --------------------- */
 
 @media (max-width: 820px) {
     #chat,
@@ -1562,32 +1367,12 @@ body {
     }
 }
 
-/* ===================================================================
-   Messages — iMessage
-   ===================================================================
-   The bubble is the only coloured, tailed part. The sender's name sits above
-   it, the avatar beside it, tapbacks overlap its top corner and the receipt
-   sits below — all outside the bubble and none of them tinted by it. That is
-   why a message is a row containing a stack, rather than one element carrying
-   a background.
-
-       .message            row: avatar | stack
-         .avatar           received only, at the foot of a run
-         .stack
-           .sender         received only, at the head of a run
-           .replied-to
-           .bubble         the coloured, tailed part
-           .reactions      tapbacks, overlapping the bubble's top corner
-           .receipt        the time, under the last of a run
-*/
-
 .message {
     display: flex;
     align-items: flex-end;
     gap: 8px;
     position: relative;
     max-width: 100%;
-    /* Tight within a run; the run itself is spaced by `.run-end` below. */
     margin-block: 1px 0;
     animation: bubbleIn 220ms cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
 }
@@ -1606,7 +1391,6 @@ body {
     align-self: flex-start;
 }
 
-/* The gap between one person's run and the next person's. */
 .message.run-end {
     margin-bottom: 10px;
 }
@@ -1622,8 +1406,6 @@ body {
     align-items: flex-end;
 }
 
-/* ---- Avatar: once per run, at the foot, like a group conversation --- */
-
 .avatar {
     width: 28px;
     height: 28px;
@@ -1635,7 +1417,6 @@ body {
     font-weight: 600;
     background: var(--surface-container-highest);
     color: var(--on-surface-variant);
-    /* Reserved on every row so the column never shifts, shown on the last. */
     visibility: hidden;
     margin-bottom: 2px;
 }
@@ -1651,8 +1432,6 @@ body {
     font-weight: 400;
 }
 
-/* ---- The bubble ---------------------------------------------------- */
-
 .bubble {
     position: relative;
     padding: 7px 13px 8px;
@@ -1662,7 +1441,6 @@ body {
     word-wrap: break-word;
     overflow-wrap: break-word;
     max-width: 100%;
-    /* The tail is drawn outside the box. */
     overflow: visible;
 }
 
@@ -1676,7 +1454,6 @@ body {
     color: var(--on-surface);
 }
 
-/* An image fills its bubble edge to edge, the way an attachment does. */
 .bubble.has-image {
     padding: 0;
     background: transparent;
@@ -1687,11 +1464,6 @@ body {
 .bubble.has-image .message-content {
     padding: 7px 13px 6px;
 }
-
-/* ---- The tail ------------------------------------------------------
-   Two pseudo-elements: one draws the curved flick of colour, the other
-   masks its outer edge with the page background. Only the last bubble of
-   a run gets one, which is what makes a burst read as a single utterance. */
 
 .message.run-end .bubble::before,
 .message.run-end .bubble::after {
@@ -1729,13 +1501,10 @@ body {
     border-bottom-right-radius: 10px;
 }
 
-/* An image bubble has no tail: the picture is the shape. */
 .bubble.has-image::before,
 .bubble.has-image::after {
     display: none;
 }
-
-/* ---- Text inside a bubble ------------------------------------------ */
 
 .message-content p {
     margin: 0;
@@ -1789,8 +1558,6 @@ body {
     padding-left: 20px;
 }
 
-/* ---- Quoted reply --------------------------------------------------- */
-
 .replied-to {
     font-size: 13px;
     padding: 6px 12px;
@@ -1817,10 +1584,6 @@ body {
     overflow: hidden;
     text-overflow: ellipsis;
 }
-
-/* ---- Tapbacks ------------------------------------------------------
-   Overlapping the bubble's top corner rather than sitting below it, which
-   is what makes them read as attached to the message. */
 
 .reactions {
     display: flex;
@@ -1873,8 +1636,6 @@ body {
     font-size: 11px;
 }
 
-/* ---- The time, under the last of a run ------------------------------ */
-
 .receipt {
     font-size: 11px;
     color: var(--on-surface-variant);
@@ -1889,8 +1650,6 @@ body {
     opacity: 0.75;
     height: auto;
 }
-
-/* ---- Reply affordance ----------------------------------------------- */
 
 .reply-btn {
     align-self: center;
@@ -1919,8 +1678,6 @@ body {
     background: var(--surface-container-high);
 }
 
-/* ---- Highlight when a reply is followed ----------------------------- */
-
 .message.highlight .bubble {
     animation: bubbleFlash 1.4s ease-out;
 }
@@ -1935,11 +1692,6 @@ body {
     .message.highlight .bubble { animation: none; }
     .reaction-pill:hover { transform: none; }
 }
-
-/* ---- Images in a bubble --------------------------------------------
-   The wrapper carries an aspect-ratio built from the server's dimensions, so
-   the space is reserved before a byte of the image decodes. Without it every
-   arriving picture shoves the conversation downward as it loads (§10.3). */
 
 .message-image-wrap {
     display: block;
@@ -1967,8 +1719,6 @@ body {
     object-fit: cover;
 }
 
-/* A picture that aged out of the room's budget. The message stays, so the
-   conversation keeps its shape; the space stays too, so nothing reflows. */
 .message-image-faded {
     display: flex;
     flex-direction: column;
@@ -1989,21 +1739,10 @@ body {
     opacity: 0.7;
 }
 
-/* ---- Composer — iMessage --------------------------------------------
-   A pill that holds the text, with the attach and emoji controls inside it and
-   a round blue arrow outside. The send button is circular and only blue when
-   there is something to send, which is the affordance that tells you the
-   message is ready. */
-
-
-
-
 .input-wrapper input::placeholder {
     color: var(--on-surface-variant);
     opacity: 0.75;
 }
-
-
 
 .send-button:not(:disabled):hover {
     transform: scale(1.06);
@@ -2012,12 +1751,6 @@ body {
 .send-button:not(:disabled):active {
     transform: scale(0.94);
 }
-
-/* ---- Restored: the reply preview is hidden until you reply ----------
-   The base rule carrying `display: none` was removed by a bulk sweep over the
-   `.message*` rules, leaving only `.reply-preview.active { display: flex }`.
-   With nothing hiding it, the placeholder text baked into the markup —
-   "Replying to" / "Message text..." — sat above the composer permanently. */
 
 .reply-preview {
     display: none;
@@ -2031,23 +1764,12 @@ body {
     animation: slideUp 0.2s ease-out;
 }
 
-/* ---- Restored: the bridge that makes the reaction bar reachable ------
-   An invisible strip under the bar covering the gap to the message, so a
-   pointer travelling upward never crosses a region that counts as leaving
-   (§10.7). Removed by the same sweep. */
-
 .reaction-bar::before {
     content: '';
     position: absolute;
     inset: 100% 0 auto 0;
     height: 10px;
 }
-
-/* ---- Restored: history visibly fading in a dying room ---------------
-   §7 — a room going quiet is the product, and this is how it looks. The
-   oldest messages go first, so the conversation thins from the top while the
-   most recent stays legible. Retargeted from `.message` to `.stack`, since the
-   row now carries the avatar and only the stack should dim with the text. */
 
 .room-fading .stack {
     transition: opacity 0.5s ease-in-out;
@@ -2077,14 +1799,6 @@ body {
     opacity: 0.8;
 }
 
-/* ===================================================================
-   Navigation bar — iMessage
-   ===================================================================
-   The centre says who you are talking to; the sides are small and quiet.
-   Here the "who" is the room, and tapping it opens the list of everyone in
-   it, exactly as tapping a group's name does. */
-
-
 .nav-back {
     display: inline-flex;
     align-items: center;
@@ -2111,8 +1825,6 @@ body {
     opacity: 0.75;
 }
 
-/* The centre column: name over a quiet subtitle, and the whole thing is the
-   button that opens the roster. */
 .room-title {
     display: flex;
     flex-direction: column;
@@ -2191,13 +1903,6 @@ body {
     background: color-mix(in srgb, var(--on-surface) 8%, transparent);
 }
 
-/* Connection state is a dot and a word, always visible
-   (`updateConnectionStatus`): every state gets its own colour on the
-   standard traffic-light meaning — green for connected, amber for connecting
-   (genuinely in progress), grey for idle (nobody is
-   waiting on anything — the room let a quiet visitor go, which is not a
-   warning), red for disconnected/error. The base rule is `connecting`'s
-   colour; every other state overrides it below. */
 .app-bar-actions .status-chip {
     display: inline-flex;
     align-items: center;
@@ -2224,11 +1929,8 @@ body {
     color: var(--on-surface-variant);
 }
 
-/* ---- The roster ------------------------------------------------------ */
-
 .participants-sheet {
     position: fixed;
-    /* .app-bar is 68px, plus a small gap. */
     top: 74px;
     left: 50%;
     transform: translateX(-50%);
@@ -2381,17 +2083,12 @@ body {
 <g id="i-broken-image"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 14l4-4 3 3M14 12l3-3 4 4"/><path d="M3 3l18 18"/></g>
 </defs></svg>
 
-
 <header class="app-bar">
-    <!-- Left: the way back, as a chevron and a word — iMessage's shape. -->
     <a class="nav-back" href="/" title="Go to the main room">
         <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-chevron-left"/></svg>
         <span>thehellisthis</span>
     </a>
 
-    <!-- Centre: who you are talking to. Here that is the room, and tapping it
-         opens the list of everyone in it, exactly as tapping a group's name
-         does. -->
     <button class="room-title" id="userCount" type="button"
             aria-haspopup="dialog" aria-expanded="false" aria-controls="participantsSheet">
         <span class="room-avatar" id="roomAvatar" aria-hidden="true">
@@ -2406,7 +2103,6 @@ body {
         </span>
     </button>
 
-    <!-- Right: the actions, as plain round buttons. -->
     <div class="app-bar-actions">
         <div class="status-chip" id="statusChip" hidden>
             <span class="status-dot"></span>
@@ -2421,9 +2117,6 @@ body {
     </div>
 </header>
 
-<!-- Who is in the room. An overlay (§10.3): it appears over the conversation
-     rather than pushing it down, so opening it never moves what you were
-     reading. -->
 <div id="participantsSheet" class="participants-sheet" role="dialog"
      aria-label="People in this room" hidden>
     <div class="participants-header">
@@ -2467,15 +2160,11 @@ body {
 
 <div id="chat" role="log" aria-live="polite" aria-label="Chat messages" tabindex="0"></div>
 
-<!-- Jump-to-latest. An overlay (§10.3): it appears and disappears with the
-     scroll position and must never take part in the layout, or the
-     conversation would resize itself every time the reader scrolled up. -->
 <button class="jump-latest" id="jumpLatest" type="button" hidden aria-label="Jump to latest messages">
     <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-arrow-down"/></svg>
     <span class="jump-latest-count" id="jumpLatestCount" hidden>0</span>
 </button>
 
-<!-- Staged image, shown between picking one and sending it. -->
 <div id="attachmentTray" class="attachment-tray" hidden>
     <div class="attachment-chip">
         <img id="attachmentPreview" class="attachment-thumb" alt="Selected image preview"/>
@@ -2516,11 +2205,9 @@ body {
         <button class="composer-action" id="attachBtn" type="button" aria-label="Attach an image">
             <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-image"/></svg>
         </button>
-        <!-- accept is a hint to the picker; the server decides what is really
-             allowed, from the payload's own bytes. -->
         <input id="fileInput" type="file" accept="image/png,image/jpeg,image/gif,image/webp" hidden/>
         <div class="input-wrapper">
-            <input
+            <inpu
                 id="messageInput"
                 type="text"
                 placeholder="Message"
@@ -2544,7 +2231,6 @@ body {
     </button>
 </footer>
 
-<!-- Emoji picker. Built once and reused; its grid is filled by the client. -->
 <div id="emojiPanel" class="emoji-panel" role="dialog" aria-label="Choose an emoji" aria-modal="false" hidden>
     <div class="emoji-search-row">
         <svg class="icon emoji-search-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-search"/></svg>
@@ -2556,10 +2242,8 @@ body {
     <div class="emoji-empty" id="emojiEmpty" hidden>No emoji found</div>
 </div>
 
-<!-- Quick reaction bar, positioned next to whichever message is hovered. -->
 <div id="reactionBar" class="reaction-bar" role="toolbar" aria-label="React to message" hidden></div>
 
-<!-- Full-size image viewer. -->
 <div id="lightbox" class="lightbox" role="dialog" aria-modal="true" aria-label="Image viewer" hidden>
     <button class="lightbox-close" id="lightboxClose" type="button" aria-label="Close image">
         <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-close"/></svg>
@@ -2567,7 +2251,6 @@ body {
     <img id="lightboxImage" class="lightbox-image" alt=""/>
 </div>
 
-<!-- Drop target overlay, shown only while a file is being dragged over. -->
 <div id="dropOverlay" class="drop-overlay" hidden aria-hidden="true">
     <div class="drop-overlay-card">
         <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-image"/></svg>
