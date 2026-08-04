@@ -22,17 +22,36 @@ pub struct AppState {
     pub memory_tracker: MemoryTracker,
     pub connection_pool: ConnectionPool,
     pub security_manager: SecurityManager,
-    /// The server's novachannel identity for the `nova` room
-    /// (`session/nova.rs`). Generated fresh every process start, the same way
-    /// `ConnectionPool`'s address hashing is keyed per-process (§5.6) — there
-    /// is no database to persist a long-term key in, and every `nova` client
-    /// trusts it on first connection (TOFU) rather than pinning it out of
-    /// band, so a restart simply looks like a new session, not an error.
-    pub nova_identity: novachannel::Identity,
+    /// The DH-capable identity X3DH's `DH1` term uses
+    /// (`novachannel::prekey::DhIdentity`). Generated fresh every process
+    /// start, the same way `ConnectionPool`'s address hashing is keyed
+    /// per-process (§5.6) — there is no database to persist a long-term
+    /// key in, and every `nova` client trusts it on first connection
+    /// (TOFU) rather than pinning it out of band, so a restart simply
+    /// looks like a new session, not an error. The signing
+    /// `novachannel::Identity` that signs `nova_signed_prekey` below and
+    /// is embedded in `nova_prekey_bundle` is *not* stored here — it's
+    /// only ever needed once, at construction, to build those two.
+    pub nova_dh_identity: novachannel::prekey::DhIdentity,
+    /// The medium-term signed prekey `session/nova.rs::handle_x3dh_init`
+    /// DHs/decapsulates against. No one-time prekeys
+    /// (`novachannel::prekey::OneTimePreKeyStore`) — every `nova` bundle's
+    /// `one_time_prekey` is `None`; the extra forward-secrecy term they'd
+    /// add protects against a *specific* future compromise of both the
+    /// long-term and signed-prekey secrets together, which doesn't apply
+    /// here since both are already regenerated every process restart, and
+    /// a store that depletes as sessions consume entries needs a
+    /// replenishment policy this proof-of-concept doesn't have one for.
+    pub nova_signed_prekey: novachannel::prekey::SignedPreKey,
+    /// The public half of the two keys above, built once at startup —
+    /// `session/nova.rs` serves this on request rather than rebuilding it
+    /// per connection, since nothing in it ever changes for the life of
+    /// the process.
+    pub nova_prekey_bundle: novachannel::prekey::PreKeyBundle,
     /// `nova`'s RLN membership tree and nullifier set
     /// (`session/nova_rln.rs`). Singleton state for the one room that has
-    /// it, the same precedent as `nova_identity` — not a field every other
-    /// room's `RoomState` would carry for nothing.
+    /// it, the same precedent as `nova_dh_identity` — not a field every
+    /// other room's `RoomState` would carry for nothing.
     pub nova_rln_group: RwLock<NovaRlnGroup>,
 }
 
@@ -44,6 +63,16 @@ impl Default for AppState {
 
 impl AppState {
     pub fn new() -> Self {
+        let nova_identity = novachannel::Identity::generate();
+        let nova_dh_identity = novachannel::prekey::DhIdentity::generate();
+        let nova_signed_prekey = novachannel::prekey::SignedPreKey::generate(&nova_identity);
+        let nova_prekey_bundle = novachannel::prekey::PreKeyBundle::build(
+            nova_identity.public(),
+            &nova_dh_identity,
+            &nova_signed_prekey,
+            None,
+        );
+
         Self {
             // Pre-sized to the room cap: the map never has to rehash, and the
             // allocation is bounded by config rather than by traffic.
@@ -52,7 +81,9 @@ impl AppState {
             memory_tracker: MemoryTracker::new(),
             connection_pool: ConnectionPool::new(),
             security_manager: SecurityManager::new(),
-            nova_identity: novachannel::Identity::generate(),
+            nova_dh_identity,
+            nova_signed_prekey,
+            nova_prekey_bundle,
             nova_rln_group: RwLock::new(NovaRlnGroup::new()),
         }
     }

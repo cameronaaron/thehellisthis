@@ -12,19 +12,22 @@ export class NovaClient {
         wasm.__wbg_novaclient_free(ptr, 0);
     }
     /**
-     * Step 2: consumes the server's msg2 (from `NovaHandshakeResponse`),
-     * establishes the ratcheted session, and returns msg3, base64-encoded,
-     * to send as `{"type":"NovaHandshakeComplete","msg3":...}`.
-     * @param {string} msg2_b64
+     * Establishes a session against the server's prekey bundle
+     * (`NovaPreKeyBundleResponse.bundle`, base64) and returns the X3DH
+     * init message, base64, to send as
+     * `{"type":"NovaX3dhInit","message":...}`. Unlike the old handshake,
+     * there is no further reply to wait for — `self.session` is already
+     * established the moment this call returns successfully.
+     * @param {string} bundle_b64
      * @returns {string}
      */
-    completeHandshake(msg2_b64) {
+    establishSession(bundle_b64) {
         let deferred3_0;
         let deferred3_1;
         try {
-            const ptr0 = passStringToWasm0(msg2_b64, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const ptr0 = passStringToWasm0(bundle_b64, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
             const len0 = WASM_VECTOR_LEN;
-            const ret = wasm.novaclient_completeHandshake(this.__wbg_ptr, ptr0, len0);
+            const ret = wasm.novaclient_establishSession(this.__wbg_ptr, ptr0, len0);
             var ptr2 = ret[0];
             var len2 = ret[1];
             if (ret[3]) {
@@ -39,9 +42,9 @@ export class NovaClient {
         }
     }
     /**
-     * True once `completeHandshake` has succeeded — `client.js` uses this
+     * True once `establishSession` has succeeded — `client.js` uses this
      * to decide whether a frame should go out sealed or is still part of
-     * the handshake itself.
+     * establishing the session.
      * @returns {boolean}
      */
     isEstablished() {
@@ -49,9 +52,10 @@ export class NovaClient {
         return ret !== 0;
     }
     /**
-     * A fresh, ephemeral identity — generated in the browser, held only for
-     * this connection's lifetime. There is nothing to persist: TOFU, same
-     * as the server's own identity (`state.rs::AppState::nova_identity`).
+     * A fresh, ephemeral signing identity and a fresh, ephemeral X3DH DH
+     * identity — generated in the browser, held only for this
+     * connection's lifetime. There is nothing to persist: TOFU, same as
+     * the server's own keys (`state.rs::AppState::nova_dh_identity`).
      */
     constructor() {
         const ret = wasm.novaclient_new();
@@ -106,23 +110,6 @@ export class NovaClient {
             return getStringFromWasm0(ptr2, len2);
         } finally {
             wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-        }
-    }
-    /**
-     * Step 1: produces msg1, base64-encoded, to send as
-     * `{"type":"NovaHandshakeInit","msg1":...}`.
-     * @returns {string}
-     */
-    startHandshake() {
-        let deferred1_0;
-        let deferred1_1;
-        try {
-            const ret = wasm.novaclient_startHandshake(this.__wbg_ptr);
-            deferred1_0 = ret[0];
-            deferred1_1 = ret[1];
-            return getStringFromWasm0(ret[0], ret[1]);
-        } finally {
-            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
         }
     }
 }

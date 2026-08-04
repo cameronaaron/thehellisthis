@@ -1,17 +1,21 @@
 //! Browser bindings for `novachannel`'s core PQ channel: the initiator side
-//! of the same handshake `src/session/nova.rs` runs as the responder.
+//! of the X3DH exchange `src/session/nova.rs` runs as the responder.
 //!
 //! One object, one session — `client.js`'s `nova`-only branch constructs one
-//! `NovaClient` per connection and drives it through exactly the four calls
-//! below, in order. There is no group ratchet here (`novachannel` is
-//! pairwise): this client talks to the server, and only the server, which is
-//! what "the server reseals each broadcast once per recipient"
-//! (`session/nova.rs`, `session/tasks.rs::forward_broadcasts`) is the other
-//! half of.
+//! `NovaClient` per connection and drives it through `establishSession`
+//! (one call — X3DH's initiator completes locally, unlike the old
+//! synchronous handshake this replaced, which needed a second server round
+//! trip). There is no group ratchet here (`novachannel` is pairwise): this
+//! client talks to the server, and only the server, which is what "the
+//! server reseals each broadcast once per recipient" (`session/nova.rs`,
+//! `session/tasks.rs::forward_broadcasts`) is the other half of.
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use novachannel::{Identity, InitiatorHandshakeState, Opened, RatchetedSession, initiator_start};
+use novachannel::prekey::{DhIdentity, PreKeyBundle};
+use novachannel::ratchet::{Opened, RatchetedSession};
+use novachannel::x3dh::initiate;
+use novachannel::{Identity, PublicIdentity};
 use wasm_bindgen::prelude::*;
 
 fn js_err(e: impl std::fmt::Display) -> JsValue {
@@ -21,7 +25,7 @@ fn js_err(e: impl std::fmt::Display) -> JsValue {
 #[wasm_bindgen]
 pub struct NovaClient {
     identity: Identity,
-    handshake: Option<InitiatorHandshakeState>,
+    dh_identity: DhIdentity,
     session: Option<RatchetedSession>,
 }
 
@@ -33,47 +37,46 @@ impl Default for NovaClient {
 
 #[wasm_bindgen]
 impl NovaClient {
-    /// A fresh, ephemeral identity — generated in the browser, held only for
-    /// this connection's lifetime. There is nothing to persist: TOFU, same
-    /// as the server's own identity (`state.rs::AppState::nova_identity`).
+    /// A fresh, ephemeral signing identity and a fresh, ephemeral X3DH DH
+    /// identity — generated in the browser, held only for this
+    /// connection's lifetime. There is nothing to persist: TOFU, same as
+    /// the server's own keys (`state.rs::AppState::nova_dh_identity`).
     #[wasm_bindgen(constructor)]
     pub fn new() -> NovaClient {
         NovaClient {
             identity: Identity::generate(),
-            handshake: None,
+            dh_identity: DhIdentity::generate(),
             session: None,
         }
     }
 
-    /// Step 1: produces msg1, base64-encoded, to send as
-    /// `{"type":"NovaHandshakeInit","msg1":...}`.
-    #[wasm_bindgen(js_name = startHandshake)]
-    pub fn start_handshake(&mut self) -> String {
-        let (state, msg1) = initiator_start(None);
-        self.handshake = Some(state);
-        BASE64.encode(msg1)
+    /// Establishes a session against the server's prekey bundle
+    /// (`NovaPreKeyBundleResponse.bundle`, base64) and returns the X3DH
+    /// init message, base64, to send as
+    /// `{"type":"NovaX3dhInit","message":...}`. Unlike the old handshake,
+    /// there is no further reply to wait for — `self.session` is already
+    /// established the moment this call returns successfully.
+    #[wasm_bindgen(js_name = establishSession)]
+    pub fn establish_session(&mut self, bundle_b64: &str) -> Result<String, JsValue> {
+        let bundle_bytes = BASE64.decode(bundle_b64).map_err(js_err)?;
+        let bundle = PreKeyBundle::from_bytes(&bundle_bytes).map_err(js_err)?;
+        // The server's own identity is TOFU'd (module doc) — nothing to
+        // pin it against ahead of time — but the bundle's *internal*
+        // signature (the signed prekey, over its own embedded identity)
+        // is still checked: this is "trust whoever signed this bundle
+        // coherently," not "skip verification."
+        bundle.verify().map_err(js_err)?;
+
+        let my_public: PublicIdentity = self.identity.public();
+        let initiated =
+            initiate(&my_public, &self.dh_identity, &bundle, &[]).map_err(js_err)?;
+        self.session = Some(RatchetedSession::new(&initiated.session, true));
+        Ok(BASE64.encode(initiated.message.bytes))
     }
 
-    /// Step 2: consumes the server's msg2 (from `NovaHandshakeResponse`),
-    /// establishes the ratcheted session, and returns msg3, base64-encoded,
-    /// to send as `{"type":"NovaHandshakeComplete","msg3":...}`.
-    #[wasm_bindgen(js_name = completeHandshake)]
-    pub fn complete_handshake(&mut self, msg2_b64: &str) -> Result<String, JsValue> {
-        let handshake = self
-            .handshake
-            .take()
-            .ok_or_else(|| js_err("handshake was not started"))?;
-        let msg2 = BASE64.decode(msg2_b64).map_err(js_err)?;
-        let (msg3, established) = handshake
-            .complete(&self.identity, &msg2)
-            .map_err(js_err)?;
-        self.session = Some(RatchetedSession::new(&established, true));
-        Ok(BASE64.encode(msg3))
-    }
-
-    /// True once `completeHandshake` has succeeded — `client.js` uses this
+    /// True once `establishSession` has succeeded — `client.js` uses this
     /// to decide whether a frame should go out sealed or is still part of
-    /// the handshake itself.
+    /// establishing the session.
     #[wasm_bindgen(js_name = isEstablished)]
     pub fn is_established(&self) -> bool {
         self.session.is_some()

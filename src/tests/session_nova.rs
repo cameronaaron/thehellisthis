@@ -1,7 +1,7 @@
-//! End-to-end proof that the `nova` room's novachannel handshake and sealed
-//! transport actually work: two real WebSocket clients, playing the
-//! initiator side of the handshake themselves (the same steps `/nova.wasm`
-//! will run in a browser), against the real server.
+//! End-to-end proof that the `nova` room's novachannel X3DH session
+//! establishment and sealed transport actually work: two real WebSocket
+//! clients, playing the initiator side themselves (the same steps
+//! `/nova.wasm` will run in a browser), against the real server.
 //!
 //! Every other room's existing message tests keep passing unmodified
 //! elsewhere in this suite — nothing here touches a non-`nova` code path.
@@ -10,7 +10,8 @@ use super::*;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use novachannel::{Identity, Opened, RatchetedSession, initiator_start};
+use novachannel::x3dh::initiate;
+use novachannel::{DhIdentity, Identity, Opened, PreKeyBundle, RatchetedSession};
 // RLN's own proving path is exercised only by the release-only test below
 // (see its doc comment for why) — these imports go with it.
 #[cfg(not(debug_assertions))]
@@ -40,45 +41,52 @@ async fn drain_preamble(
     }
 }
 
-/// Runs the initiator side of the handshake over `ws`, returning the
-/// established `RatchetedSession` a real client would use for every
-/// message from here on.
+/// Runs the initiator side of X3DH over `ws`: fetches the server's prekey
+/// bundle, verifies it, and calls `initiate` — which completes the
+/// initiator's side of the session in this one call, unlike the old
+/// synchronous handshake this replaced (no second server round trip to
+/// wait for). Returns the established `RatchetedSession` a real client
+/// would use for every message from here on.
 async fn handshake(
     ws: &mut tokio_tungstenite::WebSocketStream<
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
     >,
 ) -> RatchetedSession {
     let local_identity = Identity::generate();
-    let (init_state, msg1) = initiator_start(None);
+    let local_dh_identity = DhIdentity::generate();
 
     ws.send(text_frame(
-        serde_json::json!({"type": "NovaHandshakeInit", "msg1": BASE64.encode(&msg1)}).to_string(),
+        serde_json::json!({"type": "NovaPreKeyBundleRequest"}).to_string(),
     ))
     .await
-    .expect("send NovaHandshakeInit");
+    .expect("send NovaPreKeyBundleRequest");
 
     let response = loop {
         let event = recv_json_event(ws).await;
-        if event["type"] == "NovaHandshakeResponse" {
+        if event["type"] == "NovaPreKeyBundleResponse" {
             break event;
         }
     };
-    let msg2 = BASE64
-        .decode(response["msg2"].as_str().expect("msg2 is a string"))
-        .expect("msg2 is valid base64");
+    let bundle_bytes = BASE64
+        .decode(response["bundle"].as_str().expect("bundle is a string"))
+        .expect("bundle is valid base64");
+    let bundle = PreKeyBundle::from_bytes(&bundle_bytes).expect("bundle deserializes");
+    bundle.verify().expect("bundle signature verifies");
 
-    let (msg3, established) = init_state
-        .complete(&local_identity, &msg2)
-        .expect("handshake completes");
+    let initiated = initiate(&local_identity.public(), &local_dh_identity, &bundle, &[])
+        .expect("x3dh initiate succeeds");
 
     ws.send(text_frame(
-        serde_json::json!({"type": "NovaHandshakeComplete", "msg3": BASE64.encode(&msg3)})
-            .to_string(),
+        serde_json::json!({
+            "type": "NovaX3dhInit",
+            "message": BASE64.encode(&initiated.message.bytes),
+        })
+        .to_string(),
     ))
     .await
-    .expect("send NovaHandshakeComplete");
+    .expect("send NovaX3dhInit");
 
-    RatchetedSession::new(&established, true)
+    RatchetedSession::new(&initiated.session, true)
 }
 
 /// Reads frames until a `Sealed` one arrives, opens it with `session`, and

@@ -380,8 +380,8 @@ pub async fn apply_client_event_at(
         // a non-`nova` room (`dispatch` is never in that path, so nothing
         // intercepted it) or `nova`'s own routing has a bug; either way,
         // there is nothing to do under the room lock.
-        ClientEvent::NovaHandshakeInit { .. }
-        | ClientEvent::NovaHandshakeComplete { .. }
+        ClientEvent::NovaPreKeyBundleRequest
+        | ClientEvent::NovaX3dhInit { .. }
         | ClientEvent::Sealed { .. }
         | ClientEvent::RlnRegister { .. }
         | ClientEvent::RlnPathRequest { .. }

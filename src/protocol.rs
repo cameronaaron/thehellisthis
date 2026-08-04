@@ -252,14 +252,17 @@ pub enum OutgoingEvent {
         user_id: String,
         animal_name: String,
     },
-    /// `nova` room only (`session/nova.rs`): the server's half of
-    /// `novachannel`'s 3-message handshake, base64-encoded `msg2`. Sent to
-    /// the connection that asked, never broadcast — the same reply-to-asker
-    /// pattern as [`OutgoingEvent::Roster`], for the same reason: this
-    /// answer belongs to one connection, and the room's broadcast channel
-    /// would hand it to everybody (§5.15).
-    NovaHandshakeResponse {
-        msg2: String,
+    /// `nova` room only (`session/nova.rs`): the server's published X3DH
+    /// prekey bundle (`novachannel::prekey::PreKeyBundle::to_bytes`,
+    /// base64), sent to the connection that asked. Reply-to-asker, the
+    /// same pattern as [`OutgoingEvent::Roster`] and for the same reason
+    /// (§5.15) — a bundle fetch belongs to one connection, and the room's
+    /// broadcast channel would hand it to everybody. The client calls
+    /// `x3dh::initiate` against this locally and completes its side of the
+    /// session in that one call — X3DH has no second server round trip the
+    /// way the handshake this replaced did.
+    NovaPreKeyBundleResponse {
+        bundle: String,
     },
     /// `nova` room only: every frame this connection would otherwise have
     /// received, `novachannel`-sealed under that connection's own ratchet
@@ -356,14 +359,20 @@ pub enum ClientEvent {
     /// Ask who is in the room. Answered to the asker alone.
     #[serde(rename = "RequestRoster")]
     RequestRoster,
-    /// `nova` room only: msg1 of `novachannel`'s handshake, base64-encoded,
-    /// sent by the client immediately after receiving `Welcome`.
-    #[serde(rename = "NovaHandshakeInit")]
-    NovaHandshakeInit { msg1: String },
-    /// `nova` room only: msg3, completing the handshake this connection's
-    /// `NovaHandshakeInit` started.
-    #[serde(rename = "NovaHandshakeComplete")]
-    NovaHandshakeComplete { msg3: String },
+    /// `nova` room only: asks for the server's X3DH prekey bundle, sent by
+    /// the client immediately after receiving `Welcome`. No payload — the
+    /// server has exactly one bundle to offer.
+    #[serde(rename = "NovaPreKeyBundleRequest")]
+    NovaPreKeyBundleRequest,
+    /// `nova` room only: the X3DH init message
+    /// (`novachannel::x3dh::InitMessage::bytes`, base64) produced by the
+    /// client's local `x3dh::initiate` call against
+    /// `NovaPreKeyBundleResponse`. Completes the session server-side in
+    /// one step — unlike the synchronous handshake this replaced, there is
+    /// no further reply the client waits for; it already has its own
+    /// session the moment it built this message.
+    #[serde(rename = "NovaX3dhInit")]
+    NovaX3dhInit { message: String },
     /// `nova` room only: a `novachannel`-sealed, base64-encoded
     /// `ClientEvent` — the client-to-server mirror of
     /// [`OutgoingEvent::Sealed`]. `data` decrypts to another `ClientEvent`,

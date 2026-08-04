@@ -1187,7 +1187,7 @@ checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 [[package]]
 name = "novachannel"
 version = "0.1.0"
-source = "git+https://github.com/cameronaaron/internet.git?rev=5a9a112f535f14e43126515aa7df25cc0a1fc067#5a9a112f535f14e43126515aa7df25cc0a1fc067"
+source = "git+https://github.com/cameronaaron/internet.git?rev=8b40a8a342376cd56ebf66a71a89005f981f5a2a#8b40a8a342376cd56ebf66a71a89005f981f5a2a"
 dependencies = [
  "chacha20poly1305",
  "ed25519-dalek",
@@ -1207,7 +1207,7 @@ dependencies = [
 [[package]]
 name = "novachannel-mpc"
 version = "0.1.0"
-source = "git+https://github.com/cameronaaron/internet.git?rev=5a9a112f535f14e43126515aa7df25cc0a1fc067#5a9a112f535f14e43126515aa7df25cc0a1fc067"
+source = "git+https://github.com/cameronaaron/internet.git?rev=8b40a8a342376cd56ebf66a71a89005f981f5a2a#8b40a8a342376cd56ebf66a71a89005f981f5a2a"
 dependencies = [
  "curve25519-dalek",
  "getrandom 0.4.3",
@@ -1219,7 +1219,7 @@ dependencies = [
 [[package]]
 name = "novachannel-oram"
 version = "0.1.0"
-source = "git+https://github.com/cameronaaron/internet.git?rev=5a9a112f535f14e43126515aa7df25cc0a1fc067#5a9a112f535f14e43126515aa7df25cc0a1fc067"
+source = "git+https://github.com/cameronaaron/internet.git?rev=8b40a8a342376cd56ebf66a71a89005f981f5a2a#8b40a8a342376cd56ebf66a71a89005f981f5a2a"
 dependencies = [
  "rand 0.10.2",
  "sha2 0.11.0",
@@ -1228,7 +1228,7 @@ dependencies = [
 [[package]]
 name = "novachannel-rln"
 version = "0.1.0"
-source = "git+https://github.com/cameronaaron/internet.git?rev=5a9a112f535f14e43126515aa7df25cc0a1fc067#5a9a112f535f14e43126515aa7df25cc0a1fc067"
+source = "git+https://github.com/cameronaaron/internet.git?rev=8b40a8a342376cd56ebf66a71a89005f981f5a2a#8b40a8a342376cd56ebf66a71a89005f981f5a2a"
 dependencies = [
  "rand 0.10.2",
  "winterfell",

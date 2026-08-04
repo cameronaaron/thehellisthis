@@ -573,10 +573,10 @@ class ChatApp {
                 break;
             case 'ReconnectToken':
                 this.finishHistoryLoad();
-                if (this.roomName === NOVA_ROOM_NAME) this.startNovaHandshake();
+                if (this.roomName === NOVA_ROOM_NAME) this.requestNovaPreKeyBundle();
                 break;
-            case 'NovaHandshakeResponse':
-                this.completeNovaHandshake(data.msg2);
+            case 'NovaPreKeyBundleResponse':
+                this.establishNovaSession(data.bundle);
                 break;
             case 'Sealed':
                 this.handleSealedEvent(data.data);
@@ -613,32 +613,39 @@ class ChatApp {
         }
     }
 
-    // ---- nova room only: novachannel handshake and sealed transport -------
+    // ---- nova room only: novachannel X3DH session establishment and
+    // sealed transport ---------------------------------------------------
     //
     // Nowhere else in this file branches on room name for anything beyond
     // the idle-grace-period read at `updateHeartbeat()` — this is the one
     // other place, and it is entirely self-contained: every method here is
     // only ever called when `this.roomName === NOVA_ROOM_NAME`.
+    //
+    // X3DH's initiator (this client) completes in one call —
+    // `establishSession` below both builds the init message *and*
+    // finishes the session locally, unlike the old synchronous handshake
+    // this replaced, which needed a second server round trip
+    // (`NovaHandshakeResponse`) before either side was done. See
+    // session/nova.rs's module doc for why X3DH replaced it.
 
-    async startNovaHandshake() {
+    async requestNovaPreKeyBundle() {
         try {
             const mod = await import('/nova.js');
             await mod.default();
             this.novaModule = mod;
             this.novaClient = new mod.NovaClient();
-            const msg1 = this.novaClient.startHandshake();
-            this.ws.send(JSON.stringify({ type: 'NovaHandshakeInit', msg1 }));
+            this.ws.send(JSON.stringify({ type: 'NovaPreKeyBundleRequest' }));
         } catch (e) {
-            console.error('nova: failed to start handshake', e);
+            console.error('nova: failed to request the prekey bundle', e);
             this.addSystemMessage('Secure channel setup failed.', 'error');
         }
     }
 
-    completeNovaHandshake(msg2) {
+    establishNovaSession(bundle) {
         if (!this.novaClient) return;
         try {
-            const msg3 = this.novaClient.completeHandshake(msg2);
-            this.ws.send(JSON.stringify({ type: 'NovaHandshakeComplete', msg3 }));
+            const message = this.novaClient.establishSession(bundle);
+            this.ws.send(JSON.stringify({ type: 'NovaX3dhInit', message }));
             this.addSystemMessage('Secure channel established.', 'success');
             this.startNovaRlnRegistration();
             this.startNovaDummyTraffic();
@@ -646,7 +653,7 @@ class ChatApp {
                 this.novaMpcDemoBtn.hidden = false;
             }
         } catch (e) {
-            console.error('nova: handshake failed', e);
+            console.error('nova: session establishment failed', e);
             this.addSystemMessage('Secure channel setup failed.', 'error');
         }
     }

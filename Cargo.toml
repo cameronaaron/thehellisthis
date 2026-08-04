@@ -84,17 +84,17 @@ base64 = "0.22.1"
 # unreviewed OS patch level, so this is bumped deliberately by a reviewed PR
 # (.github/workflows/novachannel-watch.yml opens one when upstream moves),
 # never automatically.
-novachannel = { git = "https://github.com/cameronaaron/internet.git", package = "novachannel", rev = "5a9a112f535f14e43126515aa7df25cc0a1fc067" }
+novachannel = { git = "https://github.com/cameronaaron/internet.git", package = "novachannel", rev = "8b40a8a342376cd56ebf66a71a89005f981f5a2a" }
 # `nova` room, Phase 2: anonymous rate-limited posting. Verification (cheap —
 # ~0.2ms native, measured) runs here; proving runs client-side in nova-wasm,
 # since only the holder of a member's `sk` may ever produce a valid proof —
 # a server that could prove on a client's behalf could also forge one.
-novachannel-rln = { git = "https://github.com/cameronaaron/internet.git", package = "novachannel-rln", rev = "5a9a112f535f14e43126515aa7df25cc0a1fc067" }
+novachannel-rln = { git = "https://github.com/cameronaaron/internet.git", package = "novachannel-rln", rev = "8b40a8a342376cd56ebf66a71a89005f981f5a2a" }
 # Backs the nullifier set: which epoch-nullifier bucket the server touched
 # checking for a double-post is exactly the access-pattern leak this crate
 # exists to close (its own module doc), and it is the one primitive from the
 # full stack that fits with no design compromise (see the nova room plan).
-novachannel-oram = { git = "https://github.com/cameronaaron/internet.git", package = "novachannel-oram", rev = "5a9a112f535f14e43126515aa7df25cc0a1fc067" }
+novachannel-oram = { git = "https://github.com/cameronaaron/internet.git", package = "novachannel-oram", rev = "8b40a8a342376cd56ebf66a71a89005f981f5a2a" }
 # novachannel-rln's own public API (`air::verify`, `PublicInputs`, the
 # `Proof` type its `RlnMessage` frame carries) is built directly on
 # winterfell's types rather than wrapping them, so deserialising a proof
@@ -109,7 +109,7 @@ winterfell = "0.13"
 # server-side: there's no reason to push simulated-operator math to the
 # browser when the whole point is that one process holding every share is
 # what the demo is honest about *not* being secure distributed trust.
-novachannel-mpc = { git = "https://github.com/cameronaaron/internet.git", package = "novachannel-mpc", rev = "5a9a112f535f14e43126515aa7df25cc0a1fc067" }
+novachannel-mpc = { git = "https://github.com/cameronaaron/internet.git", package = "novachannel-mpc", rev = "8b40a8a342376cd56ebf66a71a89005f981f5a2a" }
 [dev-dependencies]
 # `test-util` gives tests simulated time, so the housekeeping loops can be
 # asserted to actually run on their 60-second intervals without a test that

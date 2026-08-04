@@ -5,21 +5,25 @@ export class NovaClient {
     free(): void;
     [Symbol.dispose](): void;
     /**
-     * Step 2: consumes the server's msg2 (from `NovaHandshakeResponse`),
-     * establishes the ratcheted session, and returns msg3, base64-encoded,
-     * to send as `{"type":"NovaHandshakeComplete","msg3":...}`.
+     * Establishes a session against the server's prekey bundle
+     * (`NovaPreKeyBundleResponse.bundle`, base64) and returns the X3DH
+     * init message, base64, to send as
+     * `{"type":"NovaX3dhInit","message":...}`. Unlike the old handshake,
+     * there is no further reply to wait for — `self.session` is already
+     * established the moment this call returns successfully.
      */
-    completeHandshake(msg2_b64: string): string;
+    establishSession(bundle_b64: string): string;
     /**
-     * True once `completeHandshake` has succeeded — `client.js` uses this
+     * True once `establishSession` has succeeded — `client.js` uses this
      * to decide whether a frame should go out sealed or is still part of
-     * the handshake itself.
+     * establishing the session.
      */
     isEstablished(): boolean;
     /**
-     * A fresh, ephemeral identity — generated in the browser, held only for
-     * this connection's lifetime. There is nothing to persist: TOFU, same
-     * as the server's own identity (`state.rs::AppState::nova_identity`).
+     * A fresh, ephemeral signing identity and a fresh, ephemeral X3DH DH
+     * identity — generated in the browser, held only for this
+     * connection's lifetime. There is nothing to persist: TOFU, same as
+     * the server's own keys (`state.rs::AppState::nova_dh_identity`).
      */
     constructor();
     /**
@@ -35,11 +39,6 @@ export class NovaClient {
      * returning base64 for `{"type":"Sealed","data":...}`.
      */
     seal(plaintext: string): string;
-    /**
-     * Step 1: produces msg1, base64-encoded, to send as
-     * `{"type":"NovaHandshakeInit","msg1":...}`.
-     */
-    startHandshake(): string;
 }
 
 /**
@@ -108,12 +107,11 @@ export interface InitOutput {
     readonly __wbg_novaclient_free: (a: number, b: number) => void;
     readonly __wbg_novadummyscheduler_free: (a: number, b: number) => void;
     readonly __wbg_novarlnidentity_free: (a: number, b: number) => void;
-    readonly novaclient_completeHandshake: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly novaclient_establishSession: (a: number, b: number, c: number) => [number, number, number, number];
     readonly novaclient_isEstablished: (a: number) => number;
     readonly novaclient_new: () => number;
     readonly novaclient_open: (a: number, b: number, c: number) => [number, number, number, number];
     readonly novaclient_seal: (a: number, b: number, c: number) => [number, number, number, number];
-    readonly novaclient_startHandshake: (a: number) => [number, number];
     readonly novadummyscheduler_decide: (a: number, b: number) => number;
     readonly novadummyscheduler_new: (a: number) => number;
     readonly novarlnidentity_commitment: (a: number) => [number, number];
