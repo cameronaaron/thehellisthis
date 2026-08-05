@@ -55,6 +55,39 @@ async fn every_response_carries_security_headers() {
     }
 }
 
+/// `connect-src` names no bare `ws:`/`wss:` scheme-source. Either one, with
+/// no host, would let script exfiltrate to *any* origin over that scheme —
+/// `'self'` already covers this page's one same-origin WebSocket, since CSP
+/// treats `ws`/`wss` as `http`/`https`'s matching pair when testing `'self'`.
+#[tokio::test]
+async fn connect_src_grants_no_cross_origin_websocket_capability() {
+    let app = build_router(Arc::new(AppState::new()));
+    let response = app
+        .oneshot(Request::builder().uri("/main").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let csp = response
+        .headers()
+        .get("content-security-policy")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+
+    assert!(
+        csp.contains("connect-src 'self'"),
+        "connect-src must be exactly 'self': {csp}"
+    );
+    assert!(
+        !csp.contains("connect-src 'self' ws")
+            && !csp.contains("connect-src 'self' wss")
+            && !csp.contains(" ws: ")
+            && !csp.contains(" wss: "),
+        "connect-src must not name a bare ws:/wss: scheme-source, which \
+         matches any host on that scheme: {csp}"
+    );
+}
+
 /// `style-src` grants no blanket capability for inline style: no
 /// `'unsafe-inline'`, and the one legitimate inline surface — the page's own
 /// `<style>` block — is named by its exact content hash instead.
@@ -140,6 +173,46 @@ fn client_script_is_external_so_csp_can_forbid_inline() {
     assert!(
         !EMBEDDED_HTML.contains(" onclick=") && !EMBEDDED_HTML.contains(" onload="),
         "inline event handlers are inline script and would need 'unsafe-inline'"
+    );
+}
+
+/// The shipped page and script carry no developer comments — nothing a
+/// visitor sees in view-source or opens in DevTools' Sources panel is prose
+/// meant for the next engineer, only what the feature needs.
+///
+/// `client.js` had 163 `//`/`/* */` comments and `index.html`'s `<style>`
+/// block had 8 more before this test existed; both were stripped in one pass.
+/// The one legitimate `//` left in `client.js` is inside a template literal
+/// (`${protocol}//${location.host}`, the WebSocket URL), not a comment, so
+/// it is named explicitly here rather than making the check "no `//`
+/// anywhere" and having it immediately fail on that line.
+#[test]
+fn shipped_client_assets_contain_no_developer_comments() {
+    const WS_URL_PROTOCOL_LITERAL: &str = "${protocol}//${location.host}";
+
+    for (line_no, line) in EMBEDDED_JS.lines().enumerate() {
+        if let Some(index) = line.find("//") {
+            assert!(
+                line.contains(WS_URL_PROTOCOL_LITERAL),
+                "client.js:{}: unexpected `//` outside the known WebSocket \
+                 URL literal — looks like a comment: {:?}",
+                line_no + 1,
+                &line[index..]
+            );
+        }
+    }
+    assert!(
+        !EMBEDDED_JS.contains("/*"),
+        "client.js must not contain block comments"
+    );
+
+    assert!(
+        !EMBEDDED_HTML.contains("/*") && !EMBEDDED_HTML.contains("*/"),
+        "index.html must not contain CSS block comments"
+    );
+    assert!(
+        !EMBEDDED_HTML.contains("<!--"),
+        "index.html must not contain HTML comments"
     );
 }
 

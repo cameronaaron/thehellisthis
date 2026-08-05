@@ -96,6 +96,20 @@ static STYLE_BLOCK_HASH: LazyLock<String> = LazyLock::new(|| {
 /// than aspirational — the browser is told, in the policy itself, that this
 /// page has no business talking to anyone else.
 ///
+/// `connect-src 'self'` — no bare `ws:`/`wss:` scheme-sources. A
+/// scheme-source with no host matches *any* host on that scheme: had this
+/// read `connect-src 'self' ws: wss:`, script running under an XSS would be
+/// free to open a socket to `wss://attacker.example` and exfiltrate whatever
+/// it could read, which is exactly the capability `connect-src` exists to
+/// deny. `'self'` alone already covers the one connection this page ever
+/// makes — the CSP Fetch Directives spec treats `ws`/`wss` as the matching
+/// pair for `http`/`https` when testing a request against `'self'`, so the
+/// browser's own same-origin WebSocket to this host needs no separate grant.
+/// The Worker fronts the container on 443 and the container listens on
+/// :3000, but the browser never sees :3000 — every request it makes,
+/// including the WebSocket upgrade, targets the Worker's port, so `'self'`'s
+/// port match holds without a scheme-source carve-out.
+///
 /// `require-trusted-types-for 'script'` + `trusted-types chat-html` is a
 /// second, independent backstop behind the same thing `script-src` already
 /// guards: `client.js` calls `.innerHTML =` at seven sites, all through the
@@ -115,7 +129,7 @@ static CONTENT_SECURITY_POLICY: LazyLock<String> = LazyLock::new(|| {
          style-src 'self' {}; \
          font-src 'none'; \
          img-src 'self' data:; \
-         connect-src 'self' ws: wss:; \
+         connect-src 'self'; \
          frame-ancestors 'none'; \
          base-uri 'none'; \
          form-action 'none'; \

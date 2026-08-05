@@ -71,45 +71,15 @@ const MAIN_ROOM_FADE_SECONDS = 1800;
 
 const IDLE_EVICTION_SECONDS = 600;
 
-// The novachannel proof-of-concept room (server: config::NOVA_ROOM). Only
-// this room ever imports /nova.js — every other room's bundle behavior is
-// unchanged (mirrors the roomName === MAIN_ROOM_NAME precedent above).
 const NOVA_ROOM_NAME = 'nova';
 
-// How long an RLN rate-limit epoch lasts (server: config::NOVA_RLN_EPOCH_SECONDS).
-// A second, different anonymous post from the same member inside one epoch
-// recovers their identity secret — that's the mechanism, not a bug.
 const NOVA_RLN_EPOCH_SECONDS = 30;
 
-// Cover traffic (novachannel-dp). Client-only policy — the server has no
-// say in when a dummy fires and never needs to agree on these values, so
-// unlike NOVA_ROOM_NAME/NOVA_RLN_EPOCH_SECONDS there is nothing here for
-// frontend_parity.rs to check against a backend constant.
-//
-// Lower epsilon hides more (higher dummy-send probability) at the cost of
-// more bandwidth; 1.0 sends a dummy in roughly 37% of empty slots
-// (e^-1 ≈ 0.368). Padded to look like a typical short message, since the
-// guarantee is about the decision to transmit, not the content, and is
-// void if a passive observer can tell a dummy from a real send by size.
 const NOVA_DP_EPSILON = 1.0;
 const NOVA_DP_SLOT_MS = 5000;
 const NOVA_DP_PADDING_BYTES = 64;
-// Total epsilon this connection spends before cover traffic stops
-// (novachannel-dp's Budget — a privacy odometer, not a tunable knob: the
-// crate's own doc says composing k slots costs k * epsilon, so a scheduler
-// that ran forever would make no bounded guarantee at all). At 1.0/slot and
-// a 5s slot, 720.0 is one hour of hidden presence before the readout below
-// reads zero and dummy sends stop (real messages are never withheld).
 const NOVA_DP_TOTAL_BUDGET = 720.0;
 
-// A verifiable audit trail for the `nova` room's cryptography, aimed at
-// someone with devtools open who doesn't want to take "it's encrypted" on
-// faith. Every value passed here is either public by construction (a
-// public key, a commitment hash, a Merkle root, a FROST signature share) or
-// a verification *result* (a boolean, a byte count) — nothing secret ever
-// reaches this function, the same boundary session/nova.rs's server-side
-// logs keep. `console.groupCollapsed` keeps the transcript from drowning
-// the room's own messages while still making every step inspectable.
 function novaLog(label, details) {
     console.groupCollapsed(`%cnova%c ${label}`, 'color:#fff;background:#5b21b6;padding:1px 5px;border-radius:3px;font-weight:600', 'color:inherit;font-weight:600');
     if (details) {
@@ -124,19 +94,6 @@ function isTouchDevice() {
     return window.matchMedia('(pointer: coarse)').matches;
 }
 
-// The CSP declares `require-trusted-types-for 'script'` (security/headers.rs)
-// so every `.innerHTML` write in this file has to go through this one policy
-// or the browser throws instead of writing — a second, independent backstop
-// behind the server's own sanitiser (validation.rs: markdown rendered, then
-// ammonia-cleaned) for exactly the failure mode constraint #8 exists to
-// guard: something reaching this file that was never actually sanitised, now
-// or in whatever gets added here later. This policy does not re-sanitise —
-// the server already did that, and is the trust boundary — it only makes
-// "did this go through the one reviewed sink" a browser-enforced fact rather
-// than a convention every future edit has to remember on its own.
-// Falls back to a plain passthrough where Trusted Types is not implemented
-// (an unrecognised CSP directive is simply ignored by the browser), so this
-// changes nothing observable anywhere it is not enforced.
 const trustedHtml = window.trustedTypes && window.trustedTypes.createPolicy
     ? window.trustedTypes.createPolicy('chat-html', { createHTML: (html) => html })
     : { createHTML: (html) => html };
@@ -170,6 +127,7 @@ class ChatApp {
         this.myUserId = null;
         this.connected = false;
         this.reconnectAttempts = 0;
+        this.pageHiding = false;
         this.maxReconnectAttempts = 10;
         this.maxMessages = 500;
         this.typingUsers = new Map();
@@ -290,7 +248,16 @@ class ChatApp {
         });
 
         window.addEventListener('beforeunload', () => this.cleanup());
-        window.addEventListener('pagehide', () => this.cleanup());
+        window.addEventListener('pagehide', () => {
+            this.pageHiding = true;
+            this.cleanup();
+        });
+        window.addEventListener('pageshow', () => {
+            if (!this.pageHiding) return;
+            this.pageHiding = false;
+            this.reconnectAttempts = 0;
+            if (!this.connected && !this.awaitingManualRejoin) this.connect();
+        });
     }
 
     setupEventListeners() {
@@ -309,10 +276,6 @@ class ChatApp {
         }
 
         if (this.novaAnonymousToggle) {
-            // Toggling off anonymous mode has to release the send button
-            // immediately — the cooldown ticker's own 1s interval would
-            // otherwise leave it visibly disabled for up to a second after
-            // switching to a mode the cooldown never applied to.
             this.novaAnonymousToggle.addEventListener('change', () => {
                 this.updateNovaAnonymousCooldown();
             });
@@ -464,7 +427,6 @@ class ChatApp {
 
     updateRoomName() {
         this.roomNameEl.textContent = this.roomName;
-        // No reason to link to the nova demo from inside nova itself.
         if (this.novaLink) {
             this.novaLink.hidden = this.roomName === NOVA_ROOM_NAME;
         }
@@ -514,16 +476,6 @@ class ChatApp {
         if (this.heartbeatTimeoutId) clearTimeout(this.heartbeatTimeoutId);
         this.stopNovaDummyTraffic();
         this.stopNovaAnonymousCooldownTicker();
-        // Both sessions this held — the pairwise ratchet and this
-        // connection's `Group` membership — belong to a `NovaSlot`/leaf the
-        // server has already dropped (session/nova.rs: per-connection, not
-        // per-user); a reconnect gets a fresh one of each. Without this,
-        // `sendEvent`'s `isEstablished()` check keeps reporting `true` from
-        // the old connection until the new handshake replaces this object,
-        // so anything sent in that window (a `Message`, a read receipt)
-        // seals fine client-side and is then silently dropped server-side
-        // with "sealed frame received before the session was established"
-        // — invisible to the sender, who sees no error.
         this.novaClient = null;
         this.connected = false;
         this.updateConnectionStatus('disconnected');
@@ -539,6 +491,8 @@ class ChatApp {
             this.handleSuperseded();
             return;
         }
+
+        if (this.pageHiding) return;
 
         this.tryReconnect();
     }
@@ -742,25 +696,6 @@ class ChatApp {
         }
     }
 
-    // ---- nova room only: two independent handshakes, run side by side --
-    //
-    // Nowhere else in this file branches on room name for anything beyond
-    // the idle-grace-period read at `updateHeartbeat()` — this is the one
-    // other place, and it is entirely self-contained: every method here is
-    // only ever called when `this.roomName === NOVA_ROOM_NAME`.
-    //
-    // The **pairwise** X3DH session (`requestNovaPreKeyBundle`/
-    // `establishNovaSession`) carries sending and single-recipient replies.
-    // X3DH's initiator (this client) completes in one call —
-    // `establishSession` both builds the init message *and* finishes the
-    // session locally.
-    //
-    // The **group** join (`completeNovaGroupJoin`/`applyNovaGroupCommit`)
-    // is unrelated and independent — it's what lets this connection open
-    // `GroupSealed` broadcast content. Both are kicked off together, right
-    // after the WASM module loads; neither waits on the other. See
-    // session/nova.rs's module doc for why both exist rather than just one.
-
     async requestNovaPreKeyBundle() {
         try {
             const mod = await import('/nova.js');
@@ -784,10 +719,6 @@ class ChatApp {
         }
     }
 
-    // Completes this connection's join to the room's shared `Group` from
-    // the server's `NovaWelcome` reply. Independent of the pairwise
-    // session above — `GroupSealed` broadcasts only start decrypting once
-    // this succeeds.
     completeNovaGroupJoin(welcomeB64, commitB64) {
         if (!this.novaClient) return;
         try {
@@ -804,12 +735,6 @@ class ChatApp {
         }
     }
 
-    // Applies a membership-change broadcast (`NovaCommit`) to this
-    // connection's own `Group` state, in the order it arrives. Failure is
-    // logged, not fatal: this connection's *own* admitting commit reaches
-    // it twice — once directly via `NovaWelcome`, once again through this
-    // same broadcast every other member also receives — and re-applying it
-    // here is expected to fail harmlessly the second time.
     applyNovaGroupCommit(commitB64) {
         if (!this.novaClient || !this.novaClient.isGroupJoined()) return;
         try {
@@ -850,14 +775,6 @@ class ChatApp {
         }
     }
 
-    // ---- nova room only: cover traffic (novachannel-dp) --------------------
-    //
-    // A dummy frame is indistinguishable, to anything downstream of the
-    // seal, from a real one — the server discards it before it becomes
-    // content (session/nova.rs::dispatch). Started once, right after the
-    // PQ channel establishes; stopped on disconnect, since a closed socket
-    // has no slots left to hide anything in.
-
     startNovaDummyTraffic() {
         if (!this.novaModule || !this.novaModule.NovaDummyScheduler) return;
         this.novaDummyScheduler = new this.novaModule.NovaDummyScheduler(
@@ -870,12 +787,6 @@ class ChatApp {
         this.novaDummyIntervalId = setInterval(() => {
             const hadReal = this.novaHasRealMessageThisSlot;
             this.novaHasRealMessageThisSlot = false;
-            // Every tick spends one slot of the DP budget, real or empty —
-            // novachannel-dp's own composition doc counts slots watched,
-            // not just the ones a dummy went out in. `decide` always
-            // returns true for a real slot; the send below is skipped then
-            // since the real message already transmitted through its own
-            // path, not through this one.
             const shouldTransmit = this.novaDummyScheduler.decide(hadReal);
             if (shouldTransmit && !hadReal) {
                 this.sendEvent({
@@ -896,17 +807,6 @@ class ChatApp {
             this.novaDpBudgetReadout.hidden = true;
         }
     }
-
-    // ---- nova room only: keeping a normal typing pace from walking into
-    // RLN slashing (session/nova_rln.rs) --------------------------------
-    //
-    // Posting anonymously twice in one `NOVA_RLN_EPOCH_SECONDS` window
-    // recovers the poster's identity secret — the mechanism's whole point,
-    // not a bug (see the module doc there). `sendMessage()`'s own check
-    // against `novaLastAnonymousEpoch` is the actual gate; this ticker is
-    // only the visible half of it, so a user sees a countdown and a
-    // disabled send button instead of silently discovering the rule by
-    // triggering it.
 
     startNovaAnonymousCooldownTicker() {
         if (this.novaAnonymousCooldownIntervalId) return;
@@ -935,9 +835,6 @@ class ChatApp {
     }
 
     updateNovaAnonymousCooldown() {
-        // Irrelevant outside anonymous mode — unchecking the toggle must
-        // release the send button immediately rather than staying disabled
-        // until the epoch this cooldown belongs to rolls over.
         const checked = this.novaAnonymousToggle && this.novaAnonymousToggle.checked;
         const onCooldown = checked && this.novaAnonymousOnCooldown();
 
@@ -952,19 +849,11 @@ class ChatApp {
             }
         }
 
-        // Only this ticker's own condition drives the disable — never force
-        // it false while the connection itself is down, or this would race
-        // handleWebSocketClose's own disabling on every tick.
         if (this.connected && this.sendButton) {
             this.sendButton.disabled = onCooldown;
         }
     }
 
-    // The visible readout for the DP privacy odometer: how much epsilon
-    // this connection has left before cover traffic stops hiding its
-    // send/silent pattern. Updated every slot rather than only near
-    // exhaustion, since "there is a finite budget at all" is itself part
-    // of what this demo panel is meant to show.
     updateNovaDpBudgetReadout() {
         if (!this.novaDummyScheduler) return;
         const remaining = this.novaDummyScheduler.remaining();
@@ -983,16 +872,6 @@ class ChatApp {
             );
         }
     }
-
-    // ---- nova room only: anonymous, rate-limited posting via RLN ----------
-    //
-    // Independent of the PQ channel above: an anonymous post doesn't need
-    // *this connection's* sealed identity, only the room-wide RLN
-    // membership tree (server: session/nova_rln.rs). Registration happens
-    // once, right after the PQ handshake completes; a path is requested
-    // fresh immediately before every anonymous post rather than cached —
-    // see session/nova_rln.rs's module doc for why a cached path goes
-    // stale the moment anyone else registers.
 
     async startNovaRlnRegistration() {
         try {
@@ -1063,10 +942,6 @@ class ChatApp {
         }
     }
 
-    // An RLN-proven message renders with no sender at all — that omission
-    // is the point of the proof, not a gap in the markup. Reuses the
-    // `.message`/`.bubble` classes every other room's messages already
-    // carry (and are already styled), plus one small label of its own.
     renderNovaAnonymousMessage(msg) {
         const row = document.createElement('div');
         row.className = 'message received nova-anonymous';
@@ -1097,9 +972,6 @@ class ChatApp {
         if (!this.novaClient) return;
         try {
             const plaintext = this.novaClient.open(dataB64);
-            // `undefined` is a ratchet-control record with nothing to
-            // deliver (nova-wasm/src/lib.rs's `open` doc) — Phase 1 never
-            // sends one, but the client honors the type regardless.
             if (plaintext === undefined) return;
             const parsed = JSON.parse(plaintext);
             this.novaFramesOpened = (this.novaFramesOpened || 0) + 1;
@@ -1116,11 +988,6 @@ class ChatApp {
         }
     }
 
-    // `GroupSealed` broadcast content — sealed once, server-side
-    // (session/nova.rs::run_seal_loop), and identical for every current
-    // member. A failure here (most likely: this frame arrived before
-    // `completeNovaGroupJoin` finished) is logged and dropped, the same
-    // "a brief, harmless gap" shape `sendEvent`'s pre-handshake window has.
     handleGroupSealedEvent(dataB64) {
         if (!this.novaClient || !this.novaClient.isGroupJoined()) return;
         try {
@@ -1141,34 +1008,12 @@ class ChatApp {
         }
     }
 
-    // Sends `payload` (a plain object, not yet stringified) as this
-    // connection's next frame — sealed first when nova's session is
-    // established, exactly as sent otherwise. Every outgoing
-    // `this.ws.send(...)` in the file goes through this rather than the
-    // socket directly, so nova's transport is a property of *sending*, not
-    // something every call site has to remember.
     sendEvent(payload) {
         if (this.roomName === NOVA_ROOM_NAME) {
             if (payload.type === 'Message' || payload.type === 'RlnMessage') {
-                // A real send counts for *this* slot's cover-traffic decision —
-                // see startNovaDummyTraffic. Typing/read-receipts/reactions/
-                // roster requests don't count: they're not the content the
-                // scheduler exists to hide.
                 this.novaHasRealMessageThisSlot = true;
             }
             if (!this.novaClient || !this.novaClient.isEstablished()) {
-                // Every application frame in `nova` must be sealed
-                // (session/nova.rs::dispatch) — the two bootstrap frames
-                // that establish the session go straight to `this.ws.send`
-                // themselves, bypassing this method entirely, so nothing
-                // reaching here is exempt. Sending anything else unsealed
-                // would just be rejected server-side with a warning and no
-                // reply; dropping it here is the same outcome without the
-                // round trip. This is a narrow, real window — a `Typing`
-                // ping fired by keystrokes in the first moment after
-                // joining, before the X3DH round trip completes — not a
-                // sign of a broken client, so it isn't queued or retried,
-                // the same way a dropped `Dummy` frame isn't.
                 return;
             }
         }

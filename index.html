@@ -770,9 +770,6 @@ body {
     border: 1px solid var(--outline-variant);
     transition: all var(--transition-short);
     -webkit-tap-highlight-color: transparent;
-    /* This class now also lands on `<a href="/nova">` (the "Try nova"
-       link) alongside its original `<button>` uses — without this, the
-       browser's default link underline would leak through. */
     text-decoration: none;
 }
 
@@ -1463,11 +1460,6 @@ body {
     color: var(--on-surface);
 }
 
-/* nova room only: an RLN-proven message, rendered with no sender at all
-   (client.js::renderNovaAnonymousMessage). A dashed border is the only
-   visual difference from an ordinary received bubble — the missing name
-   above it already says "anonymous"; this just makes it easy to spot in
-   a room mixing both kinds of message. */
 .message.nova-anonymous .bubble {
     border: 1px dashed var(--outline, currentColor);
 }
@@ -1479,13 +1471,6 @@ body {
     margin-bottom: 2px;
 }
 
-/* nova room only: a one-line banner below the header naming what this room
-   demonstrates. Shown once the room is confirmed to be `nova`
-   (client.js, the same `ReconnectToken` point every other nova-only call
-   is gated on) — never on `main` or any spawned room, so the labels below
-   the composer ("Post anonymously...", "Run MPC/FROST demo...") that only
-   ever activate here don't show up unexplained. Dismissible per session,
-   same pattern as `.welcome-banner`. */
 .nova-banner {
     display: flex;
     align-items: center;
@@ -1532,15 +1517,6 @@ body {
     height: 14px;
 }
 
-/* nova room only: the "post anonymously" checkbox above the composer.
-   Hidden until RLN registration completes (client.js::startNovaRlnRegistration).
-   §10.9's "a rule that shows something implies a rule that hides it": this
-   rule's own `display: flex` outranks the UA stylesheet's `[hidden] {
-   display: none }` (author styles always beat UA styles, specificity or
-   not), so the `[hidden]` override below is required, not decorative — its
-   absence here for one release cycle is why this label rendered on every
-   room instead of nova alone. Same pattern as `.reaction-bar[hidden]` etc.
-   elsewhere on this page. */
 .nova-anonymous-toggle-label {
     display: flex;
     align-items: center;
@@ -1554,11 +1530,6 @@ body {
     display: none;
 }
 
-/* nova room only: RLN posting twice in one epoch recovers the poster's
-   identity secret (session/nova_rln.rs) — this is client.js's countdown so
-   a normal typing pace doesn't walk into that by accident. Same treatment
-   as the DP budget readout below: a plain text line stating the actual
-   remaining seconds, not a bar standing in for it. */
 .nova-anonymous-cooldown-readout {
     display: block;
     padding: 2px var(--space-md, 16px) 4px;
@@ -1571,10 +1542,6 @@ body {
     display: none;
 }
 
-/* nova room only: triggers session/nova_operator.rs's demo round against a
-   real quorum of separately-run nova-operator processes. Hidden until the
-   PQ channel establishes (client.js::completeNovaHandshake) — same §10.9
-   reasoning as the anonymous-post toggle above. */
 .nova-mpc-demo-button {
     display: block;
     width: calc(100% - 2 * var(--space-md, 16px));
@@ -1596,11 +1563,6 @@ body {
     display: none;
 }
 
-/* nova room only: the DP cover-traffic privacy odometer
-   (client.js::updateNovaDpBudgetReadout). Hidden until cover traffic
-   starts, same §10.9 reasoning as the two elements above — a plain text
-   line rather than a bar or gauge, since the number itself (an epsilon,
-   not a percentage) is the honest unit to show. */
 .nova-dp-budget-readout {
     display: block;
     padding: 2px var(--space-md, 16px) 4px;
@@ -2062,12 +2024,6 @@ body {
     background: color-mix(in srgb, var(--on-surface) 8%, transparent);
 }
 
-/* #novaLink only: hidden while already inside the nova room itself
-   (client.js::updateRoomName). Needed because `.app-bar-actions .nav-link`
-   above sets its own `display`, which — same lesson as
-   `a_class_that_sets_display_never_defeats_its_own_hidden_attribute`
-   exists to catch — silently outranks the `hidden` attribute's UA default
-   unless an explicit override says otherwise. */
 .app-bar-actions .nav-link[hidden] {
     display: none;
 }
