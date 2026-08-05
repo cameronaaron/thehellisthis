@@ -743,6 +743,11 @@ body {
     border-radius: var(--radius-xs);
 }
 
+.welcome-text a {
+    color: var(--imessage-blue);
+    font-weight: 600;
+}
+
 .welcome-actions {
     display: flex;
     flex-wrap: wrap;
@@ -765,6 +770,10 @@ body {
     border: 1px solid var(--outline-variant);
     transition: all var(--transition-short);
     -webkit-tap-highlight-color: transparent;
+    /* This class now also lands on `<a href="/nova">` (the "Try nova"
+       link) alongside its original `<button>` uses — without this, the
+       browser's default link underline would leak through. */
+    text-decoration: none;
 }
 
 .welcome-btn:hover {
@@ -2036,6 +2045,16 @@ body {
     background: color-mix(in srgb, var(--on-surface) 8%, transparent);
 }
 
+/* #novaLink only: hidden while already inside the nova room itself
+   (client.js::updateRoomName). Needed because `.app-bar-actions .nav-link`
+   above sets its own `display`, which — same lesson as
+   `a_class_that_sets_display_never_defeats_its_own_hidden_attribute`
+   exists to catch — silently outranks the `hidden` attribute's UA default
+   unless an explicit override says otherwise. */
+.app-bar-actions .nav-link[hidden] {
+    display: none;
+}
+
 .app-bar-actions .status-chip {
     display: inline-flex;
     align-items: center;
@@ -2241,6 +2260,9 @@ body {
             <span class="status-dot"></span>
             <span id="statusText"></span>
         </div>
+        <a class="nav-link" href="/nova" id="novaLink" title="Try nova — a live post-quantum chat demo" aria-label="Try the nova demo room">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-sparkle"/></svg>
+        </a>
         <a class="nav-link" href="#" id="exploreLink" title="Find another room" aria-label="Find another room">
             <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-explore"/></svg>
         </a>
@@ -2285,7 +2307,7 @@ body {
             Welcome to a social art experiment by Cameron Aaron
         </h2>
         <p class="welcome-text">
-            Chat freely. Anonymous, no tracking, nothing saved forever. Your custom rooms disappear a few minutes after everyone leaves. The main room sticks around, but only if you keep talking—go silent for thirty minutes and it fades too. Keep the conversation alive or watch it vanish. Share the link, use <em>*markdown*</em>, and remember: the longer you talk, the longer it lasts.
+            Chat freely. Anonymous, no tracking, nothing saved forever. Your custom rooms disappear a few minutes after everyone leaves. The main room sticks around, but only if you keep talking—go silent for thirty minutes and it fades too. Keep the conversation alive or watch it vanish. Share the link, use <em>*markdown*</em>, and remember: the longer you talk, the longer it lasts. Curious what's under the hood? <a href="/nova">Visit nova</a> — a live, real post-quantum chat and threshold-cryptography demo, running for real, not simulated.
         </p>
         <div class="welcome-actions">
             <button class="welcome-btn" id="createRoomBtn">
@@ -2296,6 +2318,10 @@ body {
                 <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-share"/></svg>
                 Share Room
             </button>
+            <a class="welcome-btn" href="/nova">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-sparkle"/></svg>
+                Try nova
+            </a>
             <button class="welcome-btn" id="dismissBanner">
                 <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-close"/></svg>
                 Dismiss

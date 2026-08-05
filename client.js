@@ -198,6 +198,7 @@ class ChatApp {
         this.novaBanner = document.getElementById('novaBanner');
         this.novaBannerDismiss = document.getElementById('novaBannerDismiss');
         this.roomNameEl = document.getElementById('roomName');
+        this.novaLink = document.getElementById('novaLink');
         this.welcomeBanner = document.getElementById('welcomeBanner');
         this.createRoomBtn = document.getElementById('createRoomBtn');
         this.roomHeartbeat = document.getElementById('roomHeartbeat');
@@ -417,6 +418,10 @@ class ChatApp {
 
     updateRoomName() {
         this.roomNameEl.textContent = this.roomName;
+        // No reason to link to the nova demo from inside nova itself.
+        if (this.novaLink) {
+            this.novaLink.hidden = this.roomName === NOVA_ROOM_NAME;
+        }
     }
 
     connect() {
