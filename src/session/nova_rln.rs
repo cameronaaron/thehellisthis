@@ -137,7 +137,14 @@ impl NovaRlnGroup {
         let commitment = hex_to_field(commitment_hex)?;
         self.commitments.push(commitment);
         self.tree = MerkleTree::new(DEPTH, &self.commitments);
-        Some(self.commitments.len() - 1)
+        let leaf_index = self.commitments.len() - 1;
+        tracing::info!(
+            leaf_index,
+            room_members = self.commitments.len(),
+            merkle_root = %field_to_hex(self.tree.root()),
+            "nova rln: member registered into the anonymity set"
+        );
+        Some(leaf_index)
     }
 
     /// This leaf's *current* Merkle path — see the module doc on why this
@@ -327,6 +334,11 @@ pub(crate) async fn handle_message(
             return;
         }
         Ok(RlnOutcome::Accepted) => {
+            tracing::info!(
+                nullifier = nullifier_hex,
+                "nova rln: anonymous message accepted — STARK membership proof verified, \
+                 no sender identity was checked or is recoverable from this proof"
+            );
             let rendered = match validate_and_render_message(text) {
                 Ok(html) => html,
                 Err(e) => {

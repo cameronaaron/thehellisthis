@@ -139,9 +139,14 @@ pub(crate) fn resolve_port(raw: Option<&str>) -> u16 {
 }
 
 pub(crate) fn init_tracing() {
-    // Honours RUST_LOG; the container sets it to `info`.
+    // Honours RUST_LOG; the container sets it to `info`. A bare `cargo run`
+    // sets nothing, so it falls back to this crate at `debug` (dependencies
+    // stay at `info` — html5ever/tungstenite/etc. at `debug` is noise, not
+    // signal). The nova ratchet seal/open trail (session/nova.rs) is the
+    // main reason: it's only useful to a developer watching the terminal,
+    // not to production's log volume.
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,infinite_chat=debug"));
 
     // Colour only when a person is watching. Redirected to a file or a
     // container's log collector, ANSI escapes are noise that breaks every

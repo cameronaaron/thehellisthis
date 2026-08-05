@@ -847,6 +847,17 @@ pub(crate) async fn handle_demo_request(state: &Arc<AppState>, room: &str) {
     let signature_valid =
         every_share_verified && verify(&signature, &group_public_key, message.as_bytes());
 
+    info!(
+        quorum = ?quorum,
+        threshold = NOVA_OPERATOR_THRESHOLD,
+        num_operators = NOVA_OPERATOR_COUNT,
+        group_public_key = %wire::point_to_hex(&group_public_key),
+        recovered_key_matches,
+        signature_valid,
+        "nova-operator MPC/FROST demo round complete — this server combined only public \
+         partials and signature shares, never a KeyShare"
+    );
+
     broadcast_event(
         state,
         room,

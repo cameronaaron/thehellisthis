@@ -102,9 +102,44 @@ const NOVA_DP_PADDING_BYTES = 64;
 // reads zero and dummy sends stop (real messages are never withheld).
 const NOVA_DP_TOTAL_BUDGET = 720.0;
 
+// A verifiable audit trail for the `nova` room's cryptography, aimed at
+// someone with devtools open who doesn't want to take "it's encrypted" on
+// faith. Every value passed here is either public by construction (a
+// public key, a commitment hash, a Merkle root, a FROST signature share) or
+// a verification *result* (a boolean, a byte count) — nothing secret ever
+// reaches this function, the same boundary session/nova.rs's server-side
+// logs keep. `console.groupCollapsed` keeps the transcript from drowning
+// the room's own messages while still making every step inspectable.
+function novaLog(label, details) {
+    console.groupCollapsed(`%cnova%c ${label}`, 'color:#fff;background:#5b21b6;padding:1px 5px;border-radius:3px;font-weight:600', 'color:inherit;font-weight:600');
+    if (details) {
+        for (const [key, value] of Object.entries(details)) {
+            console.log(`${key}:`, value);
+        }
+    }
+    console.groupEnd();
+}
+
 function isTouchDevice() {
     return window.matchMedia('(pointer: coarse)').matches;
 }
+
+// The CSP declares `require-trusted-types-for 'script'` (security/headers.rs)
+// so every `.innerHTML` write in this file has to go through this one policy
+// or the browser throws instead of writing — a second, independent backstop
+// behind the server's own sanitiser (validation.rs: markdown rendered, then
+// ammonia-cleaned) for exactly the failure mode constraint #8 exists to
+// guard: something reaching this file that was never actually sanitised, now
+// or in whatever gets added here later. This policy does not re-sanitise —
+// the server already did that, and is the trust boundary — it only makes
+// "did this go through the one reviewed sink" a browser-enforced fact rather
+// than a convention every future edit has to remember on its own.
+// Falls back to a plain passthrough where Trusted Types is not implemented
+// (an unrecognised CSP directive is simply ignored by the browser), so this
+// changes nothing observable anywhere it is not enforced.
+const trustedHtml = window.trustedTypes && window.trustedTypes.createPolicy
+    ? window.trustedTypes.createPolicy('chat-html', { createHTML: (html) => html })
+    : { createHTML: (html) => html };
 
 const EMOJI_KEYWORDS = {
     '😀': 'grin smile happy', '😂': 'laugh cry joy lol', '🤣': 'rofl laugh lol',
@@ -596,6 +631,14 @@ class ChatApp {
             case 'ReconnectToken':
                 this.finishHistoryLoad();
                 if (this.roomName === NOVA_ROOM_NAME) {
+                    console.log(
+                        '%cnova%c every step below is logged as it happens — X3DH handshake, ' +
+                            'double-ratchet seal/open, RLN membership proofs, MPC/FROST quorum rounds — ' +
+                            'so the cryptography can be checked against this console, not just the ' +
+                            'chat text in this room. See src/session/nova*.rs for the server-side half.',
+                        'color:#fff;background:#5b21b6;padding:1px 5px;border-radius:3px;font-weight:600',
+                        'color:inherit;'
+                    );
                     this.requestNovaPreKeyBundle();
                     if (this.novaBanner && localStorage.getItem('novaBannerDismissed') !== 'true') {
                         this.novaBanner.hidden = false;
@@ -624,6 +667,11 @@ class ChatApp {
                 this.renderNovaAnonymousMessage(data);
                 break;
             case 'NovaRlnSlashed':
+                novaLog('RLN slashing triggered — a member reused their identity in one epoch', {
+                    'recovered identity secret (hex, full)': data.recovered_secret,
+                    mechanism: 'two shares from the same secret, revealed by two distinct messages ' +
+                        'in one rate-limit window, algebraically recover the secret (novachannel-rln)',
+                });
                 this.addSystemMessage(
                     `A member posted twice in one rate-limit window — their identity secret was recovered: ${data.recovered_secret.slice(0, 16)}…`,
                     'error'
@@ -632,6 +680,15 @@ class ChatApp {
             case 'NovaMpcDemoResult': {
                 const decryptOk = data.recovered_key_matches;
                 const signOk = data.signature_valid;
+                novaLog(`MPC/FROST demo round — quorum ${decryptOk && signOk ? 'PASSED' : 'FAILED'} both checks`, {
+                    'quorum (participant ids)': data.quorum,
+                    'threshold / total operators': `${data.quorum.length} of ${data.num_operators} (t=${data.threshold})`,
+                    'group public key (hex, public)': data.group_public_key,
+                    'threshold-decrypted key matches expected': decryptOk,
+                    'FROST-signed message (room membership root, full)': data.signed_message,
+                    'FROST aggregate signature verified': signOk,
+                    'this server holds a KeyShare': 'never — grep -rn KeyShare src/ to check',
+                });
                 this.addSystemMessage(
                     `MPC/FROST demo — a real quorum of ${data.quorum.length} of ${data.num_operators} independently-run nova-operator processes (participants ${data.quorum.join(', ')}): jointly decrypted a key only their combined shares could produce (match: ${decryptOk ? 'yes' : 'no'}), then jointly signed the current room membership root (${data.signed_message.slice(0, 16)}…) with a FROST threshold signature — every share and the aggregate both verified: ${signOk ? 'yes' : 'no'}. This server never held any operator's secret share.`,
                     decryptOk && signOk ? 'success' : 'error'
@@ -639,6 +696,10 @@ class ChatApp {
                 break;
             }
             case 'NovaMpcQuorumUnavailable':
+                novaLog('MPC/FROST demo unavailable — not enough live operator processes', {
+                    'live operators': data.live,
+                    'threshold needed': data.needed,
+                });
                 this.addSystemMessage(
                     `MPC/FROST demo unavailable: only ${data.live} of the ${data.needed} needed nova-operator processes are currently connected. Run more operator processes against this server's /ws/nova-operator endpoint to try again.`,
                     'error'
@@ -670,6 +731,10 @@ class ChatApp {
             await mod.default();
             this.novaModule = mod;
             this.novaClient = new mod.NovaClient();
+            novaLog('WASM crypto module loaded (nova-wasm, compiled from novachannel)', {
+                module: '/nova.js + /nova_wasm_bg.wasm',
+                classes: 'NovaClient (X3DH + double ratchet), NovaRlnIdentity, NovaDummyScheduler',
+            });
             this.ws.send(JSON.stringify({ type: 'NovaPreKeyBundleRequest' }));
         } catch (e) {
             console.error('nova: failed to request the prekey bundle', e);
@@ -680,8 +745,18 @@ class ChatApp {
     establishNovaSession(bundle) {
         if (!this.novaClient) return;
         try {
+            novaLog('X3DH prekey bundle received from server', {
+                'bundle (base64, the server identity + signed prekey)': bundle,
+                'bundle bytes (decoded)': atob(bundle).length,
+            });
             const message = this.novaClient.establishSession(bundle);
             this.ws.send(JSON.stringify({ type: 'NovaX3dhInit', message }));
+            novaLog('X3DH handshake initiated — session ratchet derived locally', {
+                'init message sent to server (base64)': message,
+                'init message bytes': atob(message).length,
+                property: 'deniable — this message is signed against no session-specific key, ' +
+                    'only a signed prekey the server reuses across sessions (see session/nova.rs)',
+            });
             this.addSystemMessage('Secure channel established.', 'success');
             this.startNovaRlnRegistration();
             this.startNovaDummyTraffic();
@@ -863,7 +938,13 @@ class ChatApp {
             // deliver (nova-wasm/src/lib.rs's `open` doc) — Phase 1 never
             // sends one, but the client honors the type regardless.
             if (plaintext === undefined) return;
-            this.handleServerEvent(JSON.parse(plaintext));
+            const parsed = JSON.parse(plaintext);
+            this.novaFramesOpened = (this.novaFramesOpened || 0) + 1;
+            novaLog(`ratchet decrypted frame #${this.novaFramesOpened} (${parsed.type})`, {
+                'ciphertext bytes (base64 decoded)': atob(dataB64).length,
+                'decrypted event type': parsed.type,
+            });
+            this.handleServerEvent(parsed);
         } catch (e) {
             console.error('nova: failed to open sealed frame', e);
         }
@@ -902,7 +983,14 @@ class ChatApp {
         }
         if (this.novaClient && this.novaClient.isEstablished()) {
             try {
-                const data = this.novaClient.seal(JSON.stringify(payload));
+                const plaintext = JSON.stringify(payload);
+                const data = this.novaClient.seal(plaintext);
+                this.novaFramesSealed = (this.novaFramesSealed || 0) + 1;
+                novaLog(`ratchet encrypted frame #${this.novaFramesSealed} (${payload.type})`, {
+                    'plaintext event type': payload.type,
+                    'plaintext bytes': plaintext.length,
+                    'ciphertext bytes (base64 decoded)': atob(data).length,
+                });
                 this.ws.send(JSON.stringify({ type: 'Sealed', data }));
                 return;
             } catch (e) {

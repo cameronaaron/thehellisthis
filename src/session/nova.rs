@@ -56,7 +56,7 @@ use novachannel::prekey::{OneTimePreKeyStore, PreKeyBundle};
 use novachannel::ratchet::{Opened, RatchetedSession};
 use novachannel::x3dh::respond;
 use tokio::sync::Mutex;
-use tracing::warn;
+use tracing::{debug, info, warn};
 
 use crate::protocol::{ClientEvent, OutgoingEvent};
 use crate::state::AppState;
@@ -171,7 +171,14 @@ impl NovaSlot {
 
         let record = BASE64.decode(data_b64).ok()?;
         let plaintext = match session.open(&record) {
-            Ok(Opened::Application(bytes)) => bytes,
+            Ok(Opened::Application(bytes)) => {
+                debug!(
+                    ciphertext_bytes = record.len(),
+                    plaintext_bytes = bytes.len(),
+                    "nova: sealed frame opened — ratchet decryption verified"
+                );
+                bytes
+            }
             Ok(Opened::RatchetAdvanced { .. }) => {
                 warn!("nova: unexpected ratchet-control record");
                 return None;
@@ -197,6 +204,11 @@ impl NovaSlot {
         };
 
         let record = session.seal(plaintext_json.as_bytes()).ok()?;
+        debug!(
+            plaintext_bytes = plaintext_json.len(),
+            ciphertext_bytes = record.len(),
+            "nova: outgoing frame sealed — ratchet encryption applied"
+        );
         Some(OutgoingEvent::Sealed {
             data: BASE64.encode(record),
         })
@@ -242,7 +254,14 @@ pub(crate) async fn dispatch(
             Some(NovaSlot::handle_bundle_request(&state.nova_prekey_bundle))
         }
         ClientEvent::NovaX3dhInit { message } => {
-            slot.handle_x3dh_init(state, &message).await;
+            if slot.handle_x3dh_init(state, &message).await {
+                info!(
+                    user_id = %user_id,
+                    room = %room,
+                    "nova: X3DH handshake complete — sealed session established, \
+                     server holds no long-term identity key for this session"
+                );
+            }
             None
         }
         ClientEvent::Sealed { data } => {
