@@ -59,6 +59,25 @@ static CLIENT_JS_VERSION: LazyLock<String> =
 
 static CLIENT_JS_ETAG: LazyLock<String> = LazyLock::new(|| format!("\"{}\"", *CLIENT_JS_VERSION));
 
+/// `nova.js` and `nova_wasm_bg.wasm` can't get `/app.js`'s `immutable`
+/// treatment: `nova_wasm.js`'s own `init()` resolves the `.wasm` URL with
+/// `new URL('nova_wasm_bg.wasm', import.meta.url)`, and relative-URL
+/// resolution drops the base URL's query string — a `?v=` stamp on `/nova.js`
+/// would never reach the `.wasm` fetch it triggers, so the pair can't be
+/// content-addressed together the way the page and its script are. An ETag on
+/// each plus `no-cache` (revalidate every time, cheap 304 when nothing
+/// changed) closes the actual gap instead: a stale `max-age=3600` GET used to
+/// let a browser or the Cloudflare edge cache `nova.js` and
+/// `nova_wasm_bg.wasm` from *different* deploys independently, so a deploy
+/// landing inside that hour could serve a `nova.js` built against a newer
+/// `novachannel` API than the `.wasm` binary sitting next to it in cache —
+/// `wasm.novaclient_myKeyPackage is not a function` is exactly that: JS from
+/// one build calling into WASM from an earlier one.
+static NOVA_JS_ETAG: LazyLock<String> =
+    LazyLock::new(|| format!("\"{:016x}\"", fnv1a(NOVA_JS.as_bytes())));
+static NOVA_WASM_ETAG: LazyLock<String> =
+    LazyLock::new(|| format!("\"{:016x}\"", fnv1a(NOVA_WASM)));
+
 /// The page with the script URL stamped, built once.
 static CLIENT_PAGE: LazyLock<String> = LazyLock::new(|| {
     CLIENT_HTML.replace(
@@ -111,14 +130,27 @@ pub async fn app_js_handler(headers: HeaderMap) -> Response {
 /// Serves `nova`'s WASM glue module. Unlike `/app.js` this is not
 /// content-addressed into the page's own URL — nothing else in `index.html`
 /// references it, `client.js` `fetch`/`import()`s it directly by this fixed
-/// path — so caching is a plain short-lived `max-age` rather than the
-/// `immutable` treatment a stamped URL earns. A demo room's asset, not the
-/// shipped page's own script.
-pub async fn nova_js_handler() -> Response {
+/// path, and its own relative fetch of `nova_wasm_bg.wasm` can't carry a
+/// query-string version stamp (see [`NOVA_JS_ETAG`]'s doc). `no-cache` forces
+/// revalidation on every request instead — a 304 when nothing changed, a full
+/// response the moment either file does — so this and [`nova_wasm_handler`]
+/// can never be served from two different deploys at once.
+pub async fn nova_js_handler(headers: HeaderMap) -> Response {
+    if let Some(if_none_match) = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        && if_none_match
+            .split(',')
+            .any(|tag| tag.trim() == *NOVA_JS_ETAG)
+    {
+        return StatusCode::NOT_MODIFIED.into_response();
+    }
+
     (
         [
             (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
-            (header::CACHE_CONTROL, "public, max-age=3600"),
+            (header::CACHE_CONTROL, "public, no-cache"),
+            (header::ETAG, NOVA_JS_ETAG.as_str()),
         ],
         NOVA_JS,
     )
@@ -128,12 +160,24 @@ pub async fn nova_js_handler() -> Response {
 /// Serves `nova`'s compiled WASM binary. The glue module's own `init()`
 /// fetches this at a URL relative to its own — see `nova-wasm/src/lib.rs`'s
 /// module doc — which is why this route's path must stay a sibling of
-/// wherever `/nova.js` is mounted.
-pub async fn nova_wasm_handler() -> Response {
+/// wherever `/nova.js` is mounted. See [`nova_js_handler`] for why this is
+/// `no-cache` rather than the `immutable` `/app.js` gets.
+pub async fn nova_wasm_handler(headers: HeaderMap) -> Response {
+    if let Some(if_none_match) = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        && if_none_match
+            .split(',')
+            .any(|tag| tag.trim() == *NOVA_WASM_ETAG)
+    {
+        return StatusCode::NOT_MODIFIED.into_response();
+    }
+
     (
         [
             (header::CONTENT_TYPE, "application/wasm"),
-            (header::CACHE_CONTROL, "public, max-age=3600"),
+            (header::CACHE_CONTROL, "public, no-cache"),
+            (header::ETAG, NOVA_WASM_ETAG.as_str()),
         ],
         NOVA_WASM,
     )

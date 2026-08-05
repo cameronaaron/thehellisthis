@@ -195,6 +195,64 @@ async fn app_js_is_immutably_cacheable_and_revalidates() {
     assert_eq!(conditional.status(), StatusCode::NOT_MODIFIED);
 }
 
+/// `/nova.js` and `/nova_wasm_bg.wasm` can't be content-addressed the way
+/// `/app.js` is (`nova_wasm.js`'s own `init()` resolves the `.wasm` URL with
+/// `new URL('nova_wasm_bg.wasm', import.meta.url)`, which drops any query
+/// string on the base), so they must revalidate on every request instead of
+/// tolerating a stale `max-age`. A `max-age`-cached pair let a browser hold
+/// `nova.js` from one deploy and `nova_wasm_bg.wasm` from another — that
+/// mismatch is what `wasm.novaclient_myKeyPackage is not a function` was.
+#[tokio::test]
+async fn nova_assets_revalidate_on_every_request_instead_of_going_stale() {
+    for path in ["/nova.js", "/nova_wasm_bg.wasm"] {
+        let app = build_router(Arc::new(AppState::new()));
+        let response = app
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let cache_control = response
+            .headers()
+            .get("cache-control")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            cache_control.contains("no-cache"),
+            "{path} must force revalidation, not tolerate a stale cache: {cache_control}"
+        );
+
+        let etag = response
+            .headers()
+            .get("etag")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        let app = build_router(Arc::new(AppState::new()));
+        let conditional = app
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .header("if-none-match", &etag)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            conditional.status(),
+            StatusCode::NOT_MODIFIED,
+            "{path} must answer a matching If-None-Match with 304"
+        );
+    }
+}
+
 /// The page must reference the script with its content-hash version, so a
 /// deploy can never leave a browser running the previous script against a new
 /// server.
