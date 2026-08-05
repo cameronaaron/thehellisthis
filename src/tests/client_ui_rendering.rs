@@ -1313,3 +1313,120 @@ fn connected_status_is_green_and_the_chip_is_never_hidden() {
          too, now that it is shown rather than hidden"
     );
 }
+
+/// Splits one HTML tag's inner text (between `<` and `>`) into
+/// whitespace-separated tokens, treating a `"..."` span as one token even if
+/// it contains spaces — `class="a b c"` must stay one token, not three.
+fn tokenize_tag(tag: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    for c in tag.chars() {
+        if c == '"' {
+            in_quotes = !in_quotes;
+            current.push(c);
+            continue;
+        }
+        if c.is_whitespace() && !in_quotes {
+            if !current.is_empty() {
+                tokens.push(std::mem::take(&mut current));
+            }
+        } else {
+            current.push(c);
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
+/// Every class on a markup element that is `hidden` by default — i.e. an
+/// element whose opening tag carries the literal `hidden` attribute, not one
+/// only hidden later by a JS `.hidden = true` assignment.
+fn classes_hidden_by_default_in_markup(html: &str) -> std::collections::HashSet<String> {
+    let mut classes = std::collections::HashSet::new();
+    let mut rest = html;
+    while let Some(start) = rest.find('<') {
+        rest = &rest[start + 1..];
+        if rest.starts_with('/') || rest.starts_with('!') {
+            continue;
+        }
+        let Some(end) = rest.find('>') else { break };
+        let tag = &rest[..end];
+        rest = &rest[end + 1..];
+
+        let tokens = tokenize_tag(tag);
+        let is_hidden = tokens.iter().any(|t| t == "hidden" || t == "hidden/");
+        if !is_hidden {
+            continue;
+        }
+        for token in &tokens {
+            if let Some(rest_attr) = token.strip_prefix("class=\"")
+                && let Some(value) = rest_attr.strip_suffix('"')
+            {
+                classes.extend(value.split_whitespace().map(str::to_string));
+            }
+        }
+    }
+    classes
+}
+
+/// A class that hides an element via the `hidden` attribute must also defeat
+/// its own `display` when that attribute is present.
+///
+/// Author CSS always outranks the UA stylesheet regardless of specificity
+/// (cascade origin is checked before specificity), so a rule like
+/// `.foo { display: flex; }` unconditionally overrides the browser's default
+/// `[hidden] { display: none }` the moment `.foo` sets any `display` at all —
+/// `hidden` stops hiding the element. Every element in this page that starts
+/// hidden and carries a class with its own `display` therefore needs a
+/// sibling `.foo[hidden] { display: none; }` rule (the pattern
+/// `.reaction-bar[hidden]`, `.lightbox[hidden]`, etc. already establish).
+///
+/// `.nova-anonymous-toggle-label`, `.nova-mpc-demo-button` and
+/// `.nova-dp-budget-readout` shipped without this override: their own
+/// `display: flex`/`display: block` rules meant the `hidden` attribute
+/// set in their markup did nothing, and they rendered on every room, not
+/// only `nova`. This sweep is what would have caught it.
+#[test]
+fn a_class_that_sets_display_never_defeats_its_own_hidden_attribute() {
+    let html = embedded_html_without_comments();
+    let hidden_classes = classes_hidden_by_default_in_markup(&html);
+    assert!(
+        !hidden_classes.is_empty(),
+        "expected to find at least one class on a statically-hidden element"
+    );
+
+    let mut missing_override: Vec<String> = Vec::new();
+    for class in &hidden_classes {
+        let Some(body) = css_rule_body(&html, &format!(".{class}")) else {
+            continue;
+        };
+        let sets_visible_display = body
+            .split(';')
+            .filter_map(|decl| decl.split_once(':'))
+            .any(|(prop, value)| prop.trim() == "display" && value.trim() != "none");
+        if !sets_visible_display {
+            continue;
+        }
+
+        let override_body = css_rule_body(&html, &format!(".{class}[hidden]"));
+        let overrides_to_none = override_body.is_some_and(|b| {
+            b.split(';')
+                .filter_map(|decl| decl.split_once(':'))
+                .any(|(prop, value)| prop.trim() == "display" && value.trim() == "none")
+        });
+        if !overrides_to_none {
+            missing_override.push(class.clone());
+        }
+    }
+
+    assert!(
+        missing_override.is_empty(),
+        "these classes set a non-none display and are used on an element \
+         that starts hidden, but have no `.{{class}}[hidden] {{ display: \
+         none; }}` rule to defeat it — the element will render on every \
+         page load: {missing_override:?}"
+    );
+}

@@ -195,6 +195,8 @@ class ChatApp {
         this.novaAnonymousToggleLabel = document.getElementById('novaAnonymousToggleLabel');
         this.novaMpcDemoBtn = document.getElementById('novaMpcDemoBtn');
         this.novaDpBudgetReadout = document.getElementById('novaDpBudgetReadout');
+        this.novaBanner = document.getElementById('novaBanner');
+        this.novaBannerDismiss = document.getElementById('novaBannerDismiss');
         this.roomNameEl = document.getElementById('roomName');
         this.welcomeBanner = document.getElementById('welcomeBanner');
         this.createRoomBtn = document.getElementById('createRoomBtn');
@@ -299,6 +301,13 @@ class ChatApp {
 
         if (localStorage.getItem('bannerDismissed') === 'true') {
             this.welcomeBanner.style.display = 'none';
+        }
+
+        if (this.novaBannerDismiss) {
+            this.novaBannerDismiss.addEventListener('click', () => {
+                this.novaBanner.hidden = true;
+                localStorage.setItem('novaBannerDismissed', 'true');
+            });
         }
 
         this.muteBtn.addEventListener('click', () => this.toggleMute());
@@ -581,7 +590,12 @@ class ChatApp {
                 break;
             case 'ReconnectToken':
                 this.finishHistoryLoad();
-                if (this.roomName === NOVA_ROOM_NAME) this.requestNovaPreKeyBundle();
+                if (this.roomName === NOVA_ROOM_NAME) {
+                    this.requestNovaPreKeyBundle();
+                    if (this.novaBanner && localStorage.getItem('novaBannerDismissed') !== 'true') {
+                        this.novaBanner.hidden = false;
+                    }
+                }
                 break;
             case 'NovaPreKeyBundleResponse':
                 this.establishNovaSession(data.bundle);
