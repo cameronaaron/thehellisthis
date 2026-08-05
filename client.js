@@ -947,7 +947,7 @@ class ChatApp {
                 const secondsLeft =
                     NOVA_RLN_EPOCH_SECONDS - (Math.floor(Date.now() / 1000) % NOVA_RLN_EPOCH_SECONDS);
                 this.novaAnonymousCooldownReadout.textContent =
-                    `Anonymous post sent — ${secondsLeft}s until you can post anonymously again ` +
+                    `Sent without a name shown — ${secondsLeft}s until you can post like that again ` +
                     'without recovering your own identity secret';
             }
         }
@@ -1077,7 +1077,7 @@ class ChatApp {
 
         const label = document.createElement('div');
         label.className = 'nova-anonymous-label';
-        label.textContent = 'Anonymous · RLN-verified';
+        label.textContent = 'No name shown · RLN-verified';
         bubble.appendChild(label);
 
         const content = document.createElement('div');
