@@ -1,7 +1,8 @@
-//! End-to-end proof that the `nova` room's novachannel X3DH session
-//! establishment and sealed transport actually work: two real WebSocket
-//! clients, playing the initiator side themselves (the same steps
-//! `/nova.wasm` will run in a browser), against the real server.
+//! End-to-end proof that the `nova` room's two crypto sessions —
+//! `novachannel`'s pairwise X3DH ratchet and the room's shared `Group` —
+//! actually work: real WebSocket clients, playing the initiator/joiner
+//! side themselves (the same steps `/nova.wasm` will run in a browser),
+//! against the real server.
 //!
 //! Every other room's existing message tests keep passing unmodified
 //! elsewhere in this suite — nothing here touches a non-`nova` code path.
@@ -10,8 +11,11 @@ use super::*;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
+#[cfg(not(debug_assertions))]
+use novachannel::Opened;
+use novachannel::group::{Commit, Group, MyLeafKeyPackage, Welcome};
 use novachannel::x3dh::initiate;
-use novachannel::{DhIdentity, Identity, Opened, PreKeyBundle, RatchetedSession};
+use novachannel::{DhIdentity, Identity, PreKeyBundle, RatchetedSession};
 // RLN's own proving path is exercised only by the release-only test below
 // (see its doc comment for why) — these imports go with it.
 #[cfg(not(debug_assertions))]
@@ -90,7 +94,11 @@ async fn handshake(
 }
 
 /// Reads frames until a `Sealed` one arrives, opens it with `session`, and
-/// returns the `ClientEvent`/`OutgoingEvent` JSON it decrypts to.
+/// returns the `ClientEvent`/`OutgoingEvent` JSON it decrypts to. Only
+/// [`recv_sealed_of_type`] (release-only RLN test) still reaches for
+/// pairwise-sealed content directly — every other test now receives
+/// broadcast content via [`recv_group_sealed`] instead (this module's doc).
+#[cfg(not(debug_assertions))]
 async fn recv_sealed(
     ws: &mut tokio_tungstenite::WebSocketStream<
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
@@ -152,11 +160,114 @@ async fn recv_sealed_of_type(
     }
 }
 
-/// The full round trip: two clients handshake independently, one sends a
-/// sealed message, the other receives it sealed under its *own* ratchet and
-/// recovers the same plaintext — proving the server actually decrypts with
-/// the sender's session and re-encrypts per recipient, not just echoing
-/// bytes through.
+/// Joins the room's shared `Group`, the same steps `nova-wasm`'s
+/// `myKeyPackage`/`completeJoin` run: generates a fresh `MyLeafKeyPackage`,
+/// publishes its public half as `NovaJoinRequest`, and joins from the
+/// server's `NovaWelcome` reply (`welcome` + the admitting `commit`, both
+/// base64). Returns the `Group` a real client would use to open every
+/// broadcast from here on — content no longer arrives sealed under the
+/// pairwise session `handshake` returns (see this module's doc).
+async fn join_group(
+    ws: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+) -> Group {
+    let my_key_package = MyLeafKeyPackage::generate(Identity::generate().public());
+    let key_package_b64 = BASE64.encode(my_key_package.public().to_bytes());
+
+    ws.send(text_frame(
+        serde_json::json!({"type": "NovaJoinRequest", "key_package": key_package_b64}).to_string(),
+    ))
+    .await
+    .expect("send NovaJoinRequest");
+
+    let welcome_event = loop {
+        let event = recv_json_event(ws).await;
+        if event["type"] == "NovaWelcome" {
+            break event;
+        }
+    };
+    let welcome = Welcome::from_bytes(
+        &BASE64
+            .decode(
+                welcome_event["welcome"]
+                    .as_str()
+                    .expect("welcome is a string"),
+            )
+            .expect("welcome is valid base64"),
+    )
+    .expect("welcome deserializes");
+    let commit = Commit::from_bytes(
+        &BASE64
+            .decode(
+                welcome_event["commit"]
+                    .as_str()
+                    .expect("commit is a string"),
+            )
+            .expect("commit is valid base64"),
+    )
+    .expect("commit deserializes");
+
+    Group::join(my_key_package, &welcome, &commit).expect("joins the group")
+}
+
+/// Reads frames until a `GroupSealed` one arrives, opens it with `group`,
+/// and returns the `OutgoingEvent` JSON it decrypts to. A `NovaCommit`
+/// encountered along the way (another client joining, or this
+/// connection's own admitting commit echoed back through the room
+/// broadcast — `session/nova.rs`'s module doc on why the joiner sees it
+/// twice) is applied and ignored if it fails, the same tolerance
+/// `client.js::applyNovaGroupCommit` has.
+async fn recv_group_sealed(
+    ws: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    group: &mut Group,
+) -> JsonValue {
+    loop {
+        let event = recv_json_event(ws).await;
+        if event["type"] == "NovaCommit" {
+            if let Ok(commit_bytes) = BASE64.decode(event["commit"].as_str().unwrap_or_default())
+                && let Ok(commit) = Commit::from_bytes(&commit_bytes)
+            {
+                let _ = group.apply_commit(&commit);
+            }
+            continue;
+        }
+        if event["type"] != "GroupSealed" {
+            continue;
+        }
+        let record = BASE64
+            .decode(event["data"].as_str().expect("data is a string"))
+            .expect("data is valid base64");
+        let (_sender_leaf, plaintext) = group.open(&record).expect("opens under our own group");
+        return serde_json::from_slice(&plaintext).expect("group payload is JSON");
+    }
+}
+
+/// Like [`recv_group_sealed`], but skips any frame whose `type` isn't
+/// `expected` — the same reasoning as [`recv_sealed_of_type`].
+async fn recv_group_sealed_of_type(
+    ws: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    group: &mut Group,
+    expected: &str,
+) -> JsonValue {
+    loop {
+        let event = recv_group_sealed(ws, group).await;
+        if event["type"] == expected {
+            return event;
+        }
+    }
+}
+
+/// The full round trip: two clients handshake and join the group
+/// independently, one sends over its pairwise session, the other receives
+/// it group-sealed and recovers the same plaintext — proving the server
+/// actually decrypts with the sender's pairwise session, renders it, and
+/// seals the broadcast once under the shared group, not just echoing bytes
+/// through.
 #[tokio::test]
 async fn two_clients_handshake_and_exchange_a_sealed_message() {
     let (addr, handle) = start_ws_server().await;
@@ -165,15 +276,15 @@ async fn two_clients_handshake_and_exchange_a_sealed_message() {
     let (mut ws_a, _) = connect_async(&ws_url).await.expect("client A connects");
     drain_preamble(&mut ws_a).await;
     let mut session_a = handshake(&mut ws_a).await;
+    join_group(&mut ws_a).await;
 
     let (mut ws_b, _) = connect_async(&ws_url).await.expect("client B connects");
     drain_preamble(&mut ws_b).await;
-    let mut session_b = handshake(&mut ws_b).await;
+    let _session_b = handshake(&mut ws_b).await;
+    let mut group_b = join_group(&mut ws_b).await;
 
-    // Give B's handshake a moment to actually land server-side before A
-    // sends — `forward_broadcasts` drops a broadcast for any connection
-    // whose handshake has not completed yet (session/nova.rs), which is
-    // exactly the gap this sleep is standing in for.
+    // Give both handshakes a moment to actually land server-side before A
+    // sends.
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let plaintext = serde_json::json!({"type": "Message", "text": "hello from nova"}).to_string();
@@ -184,7 +295,7 @@ async fn two_clients_handshake_and_exchange_a_sealed_message() {
     .await
     .expect("send sealed message");
 
-    let received = recv_sealed(&mut ws_b, &mut session_b).await;
+    let received = recv_group_sealed(&mut ws_b, &mut group_b).await;
     assert_eq!(received["type"], "Message");
     assert!(
         received["message"]["text"]
@@ -192,6 +303,114 @@ async fn two_clients_handshake_and_exchange_a_sealed_message() {
             .expect("message.text is a string")
             .contains("hello from nova"),
         "unexpected payload: {received}"
+    );
+
+    handle.abort();
+}
+
+/// A third client, joining after the first two already have, receives the
+/// `Commit` admitting it and can decrypt a broadcast sent afterward —
+/// proving `Welcome`/`Commit` distribution genuinely works for more than a
+/// single pairwise exchange, and that a mid-session join reaches the same
+/// epoch every other current member does.
+#[tokio::test]
+async fn a_third_client_joining_mid_session_can_decrypt_a_later_broadcast() {
+    let (addr, handle) = start_ws_server().await;
+    let ws_url = format!("ws://{addr}/ws/{NOVA_ROOM}");
+
+    let (mut ws_a, _) = connect_async(&ws_url).await.expect("client A connects");
+    drain_preamble(&mut ws_a).await;
+    let mut session_a = handshake(&mut ws_a).await;
+    join_group(&mut ws_a).await;
+
+    let (mut ws_b, _) = connect_async(&ws_url).await.expect("client B connects");
+    drain_preamble(&mut ws_b).await;
+    let _session_b = handshake(&mut ws_b).await;
+    join_group(&mut ws_b).await;
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // C joins only after A and B are already members.
+    let (mut ws_c, _) = connect_async(&ws_url).await.expect("client C connects");
+    drain_preamble(&mut ws_c).await;
+    let _session_c = handshake(&mut ws_c).await;
+    let mut group_c = join_group(&mut ws_c).await;
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let plaintext =
+        serde_json::json!({"type": "Message", "text": "hello to the whole group, C included"})
+            .to_string();
+    let sealed = session_a.seal(plaintext.as_bytes()).expect("seal");
+    ws_a.send(text_frame(
+        serde_json::json!({"type": "Sealed", "data": BASE64.encode(&sealed)}).to_string(),
+    ))
+    .await
+    .expect("send sealed message");
+
+    let received = recv_group_sealed_of_type(&mut ws_c, &mut group_c, "Message").await;
+    assert!(
+        received["message"]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("hello to the whole group, C included"),
+        "the third, later-joining member must be able to decrypt a broadcast sent after it joined: {received}"
+    );
+
+    handle.abort();
+}
+
+/// Disconnecting a member excludes them cryptographically going forward —
+/// the free security win from wiring `Group::propose_remove` into
+/// connection teardown (`session/lifecycle.rs::run_session`,
+/// `session/nova.rs::remove_member`). Three members join; one disconnects;
+/// a message sent afterward must still reach the two remaining members —
+/// proving the room's `Group` survived the removal and kept working, not
+/// just that the removed member is gone.
+#[tokio::test]
+async fn a_disconnected_member_is_cryptographically_excluded() {
+    let (addr, handle) = start_ws_server().await;
+    let ws_url = format!("ws://{addr}/ws/{NOVA_ROOM}");
+
+    let (mut ws_a, _) = connect_async(&ws_url).await.expect("client A connects");
+    drain_preamble(&mut ws_a).await;
+    let mut session_a = handshake(&mut ws_a).await;
+    join_group(&mut ws_a).await;
+
+    let (mut ws_b, _) = connect_async(&ws_url).await.expect("client B connects");
+    drain_preamble(&mut ws_b).await;
+    let _session_b = handshake(&mut ws_b).await;
+    let mut group_b = join_group(&mut ws_b).await;
+
+    let (ws_c, _) = connect_async(&ws_url).await.expect("client C connects");
+    let mut ws_c = ws_c;
+    drain_preamble(&mut ws_c).await;
+    let _session_c = handshake(&mut ws_c).await;
+    join_group(&mut ws_c).await;
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // C disconnects — `run_session`'s teardown removes its leaf from the
+    // group and broadcasts the resulting `Commit`.
+    drop(ws_c);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let plaintext = serde_json::json!({"type": "Message", "text": "after C left"}).to_string();
+    let sealed = session_a.seal(plaintext.as_bytes()).expect("seal");
+    ws_a.send(text_frame(
+        serde_json::json!({"type": "Sealed", "data": BASE64.encode(&sealed)}).to_string(),
+    ))
+    .await
+    .expect("send sealed message");
+
+    let received = recv_group_sealed_of_type(&mut ws_b, &mut group_b, "Message").await;
+    assert!(
+        received["message"]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("after C left"),
+        "the remaining member must still be able to decrypt a broadcast sent after another \
+         member was removed: {received}"
     );
 
     handle.abort();
@@ -211,10 +430,12 @@ async fn nova_rejects_a_plaintext_message_sent_outside_the_sealed_wrapper() {
     let (mut ws_a, _) = connect_async(&ws_url).await.expect("client A connects");
     drain_preamble(&mut ws_a).await;
     let mut session_a = handshake(&mut ws_a).await;
+    join_group(&mut ws_a).await;
 
     let (mut ws_b, _) = connect_async(&ws_url).await.expect("client B connects");
     drain_preamble(&mut ws_b).await;
-    let mut session_b = handshake(&mut ws_b).await;
+    let _session_b = handshake(&mut ws_b).await;
+    let mut group_b = join_group(&mut ws_b).await;
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -241,7 +462,7 @@ async fn nova_rejects_a_plaintext_message_sent_outside_the_sealed_wrapper() {
     .await
     .expect("send sealed message");
 
-    let received = recv_sealed(&mut ws_b, &mut session_b).await;
+    let received = recv_group_sealed(&mut ws_b, &mut group_b).await;
     assert!(
         received["message"]["text"]
             .as_str()
@@ -347,10 +568,12 @@ async fn nova_rln_anonymous_post_and_double_post_slashing() {
     let (mut ws_a, _) = connect_async(&ws_url).await.expect("client A connects");
     drain_preamble(&mut ws_a).await;
     let mut session_a = handshake(&mut ws_a).await;
+    join_group(&mut ws_a).await;
 
     let (mut ws_b, _) = connect_async(&ws_url).await.expect("client B connects");
     drain_preamble(&mut ws_b).await;
-    let mut session_b = handshake(&mut ws_b).await;
+    let _session_b = handshake(&mut ws_b).await;
+    let mut group_b = join_group(&mut ws_b).await;
 
     // A registers an RLN identity.
     let params = Params::new();
@@ -382,7 +605,7 @@ async fn nova_rln_anonymous_post_and_double_post_slashing() {
     let msg1 = prove_rln_message(rln_identity.sk, path.clone(), epoch, "hello anonymously");
     send_sealed(&mut ws_a, &mut session_a, &msg1).await;
 
-    let received = recv_sealed_of_type(&mut ws_b, &mut session_b, "NovaAnonymousMessage").await;
+    let received = recv_group_sealed_of_type(&mut ws_b, &mut group_b, "NovaAnonymousMessage").await;
     assert!(
         received["text"]
             .as_str()
@@ -410,7 +633,7 @@ async fn nova_rln_anonymous_post_and_double_post_slashing() {
     let msg2 = prove_rln_message(rln_identity.sk, path, epoch, "a second, different message");
     send_sealed(&mut ws_a, &mut session_a, &msg2).await;
 
-    let slashed = recv_sealed_of_type(&mut ws_b, &mut session_b, "NovaRlnSlashed").await;
+    let slashed = recv_group_sealed_of_type(&mut ws_b, &mut group_b, "NovaRlnSlashed").await;
     let recovered = hex_to_field(slashed["recovered_secret"].as_str().expect("hex"));
     assert_eq!(
         recovered, rln_identity.sk,
@@ -435,10 +658,12 @@ async fn nova_dummy_frames_are_discarded_without_a_trace() {
     let (mut ws_a, _) = connect_async(&ws_url).await.expect("client A connects");
     drain_preamble(&mut ws_a).await;
     let mut session_a = handshake(&mut ws_a).await;
+    join_group(&mut ws_a).await;
 
     let (mut ws_b, _) = connect_async(&ws_url).await.expect("client B connects");
     drain_preamble(&mut ws_b).await;
-    let mut session_b = handshake(&mut ws_b).await;
+    let _session_b = handshake(&mut ws_b).await;
+    let mut group_b = join_group(&mut ws_b).await;
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -464,7 +689,7 @@ async fn nova_dummy_frames_are_discarded_without_a_trace() {
     .await
     .expect("send real message");
 
-    let received = recv_sealed(&mut ws_b, &mut session_b).await;
+    let received = recv_group_sealed(&mut ws_b, &mut group_b).await;
     assert_eq!(
         received["type"], "Message",
         "the dummy must produce nothing observable; first arrival should be the real message: {received}"
@@ -629,10 +854,12 @@ async fn nova_mpc_demo_uses_a_real_distributed_operator_quorum() {
     let (mut ws_a, _) = connect_async(&ws_url).await.expect("client A connects");
     drain_preamble(&mut ws_a).await;
     let mut session_a = handshake(&mut ws_a).await;
+    join_group(&mut ws_a).await;
 
     let (mut ws_b, _) = connect_async(&ws_url).await.expect("client B connects");
     drain_preamble(&mut ws_b).await;
-    let mut session_b = handshake(&mut ws_b).await;
+    let _session_b = handshake(&mut ws_b).await;
+    let mut group_b = join_group(&mut ws_b).await;
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -649,7 +876,7 @@ async fn nova_mpc_demo_uses_a_real_distributed_operator_quorum() {
     .await
     .expect("send demo request");
 
-    let received = recv_sealed(&mut ws_b, &mut session_b).await;
+    let received = recv_group_sealed(&mut ws_b, &mut group_b).await;
     assert_eq!(
         received["type"], "NovaMpcDemoResult",
         "expected a real result from the live quorum, got: {received}"

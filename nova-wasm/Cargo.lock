@@ -516,7 +516,7 @@ dependencies = [
 [[package]]
 name = "novachannel"
 version = "0.1.0"
-source = "git+https://github.com/cameronaaron/internet.git?rev=8b40a8a342376cd56ebf66a71a89005f981f5a2a#8b40a8a342376cd56ebf66a71a89005f981f5a2a"
+source = "git+https://github.com/cameronaaron/internet.git?rev=0f0dfbe6daaeddd9e7a31802728b471696a11e6e#0f0dfbe6daaeddd9e7a31802728b471696a11e6e"
 dependencies = [
  "chacha20poly1305",
  "ed25519-dalek",
@@ -536,7 +536,7 @@ dependencies = [
 [[package]]
 name = "novachannel-dp"
 version = "0.1.0"
-source = "git+https://github.com/cameronaaron/internet.git?rev=8b40a8a342376cd56ebf66a71a89005f981f5a2a#8b40a8a342376cd56ebf66a71a89005f981f5a2a"
+source = "git+https://github.com/cameronaaron/internet.git?rev=0f0dfbe6daaeddd9e7a31802728b471696a11e6e#0f0dfbe6daaeddd9e7a31802728b471696a11e6e"
 dependencies = [
  "rand",
 ]
@@ -544,7 +544,7 @@ dependencies = [
 [[package]]
 name = "novachannel-rln"
 version = "0.1.0"
-source = "git+https://github.com/cameronaaron/internet.git?rev=8b40a8a342376cd56ebf66a71a89005f981f5a2a#8b40a8a342376cd56ebf66a71a89005f981f5a2a"
+source = "git+https://github.com/cameronaaron/internet.git?rev=0f0dfbe6daaeddd9e7a31802728b471696a11e6e#0f0dfbe6daaeddd9e7a31802728b471696a11e6e"
 dependencies = [
  "rand",
  "winterfell",

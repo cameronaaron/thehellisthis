@@ -17,7 +17,12 @@ use crate::protocol::OutgoingMessage;
 
 /// Broadcast channel depth. A slow client that falls this far behind is lagged
 /// off the channel rather than allowed to grow the server's memory.
-const BROADCAST_CHANNEL_CAPACITY: usize = 1000;
+///
+/// `pub(crate)`: also the depth `state.rs`'s `nova_sealed_sender` uses — the
+/// `nova` room's second, sealed-frame channel needs the same lag tolerance
+/// as every room's own, since it is the channel nova connections actually
+/// subscribe to (`session/lifecycle.rs::join_room`).
+pub(crate) const BROADCAST_CHANNEL_CAPACITY: usize = 1000;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConnectionState {

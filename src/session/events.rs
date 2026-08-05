@@ -382,6 +382,7 @@ pub async fn apply_client_event_at(
         // there is nothing to do under the room lock.
         ClientEvent::NovaPreKeyBundleRequest
         | ClientEvent::NovaX3dhInit { .. }
+        | ClientEvent::NovaJoinRequest { .. }
         | ClientEvent::Sealed { .. }
         | ClientEvent::RlnRegister { .. }
         | ClientEvent::RlnPathRequest { .. }

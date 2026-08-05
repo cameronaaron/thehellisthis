@@ -13,7 +13,9 @@ use http::{HeaderMap, header};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use crate::config::{MAX_CONCURRENT_CONNECTIONS_PER_IP, MAX_CONCURRENT_USERS, MAX_ROOM_NAME_LEN};
+use crate::config::{
+    MAX_CONCURRENT_CONNECTIONS_PER_IP, MAX_CONCURRENT_USERS, MAX_ROOM_NAME_LEN, NOVA_ROOM,
+};
 use crate::error::ChatError;
 use crate::identity::{OptionalUserCookie, UserCookie, create_user_cookies};
 use crate::limits::RateLimiter;
@@ -222,10 +224,32 @@ pub(crate) async fn admit_user(
     cookie: Option<&UserCookie>,
 ) -> Option<(String, String)> {
     let mut rooms = state.rooms.write().await;
+    let is_new_room = !rooms.contains_key(room);
     let room_state = rooms.entry(room.to_string()).or_insert_with(|| {
         debug!(room = %room, "creating room");
         create_room()
     });
+
+    // `nova` only, and only the first time the room is ever created
+    // (`is_new_room`, checked before the `entry` call above so this can
+    // never fire twice — `nova` is never garbage-collected, so "first
+    // created" and "created at all, ever, this process" are the same
+    // event): spawns the single, order-preserving task that seals every
+    // broadcast once and republishes it to `state.nova_sealed_sender`,
+    // the channel every `nova` connection actually subscribes to
+    // (`session/lifecycle.rs::join_room`). Triggered from here rather
+    // than at process startup so it works identically for every caller —
+    // including the lighter-weight router the test suite's own
+    // `start_ws_server` builds, which never calls `startup::run` at all.
+    // See `session/nova.rs::run_seal_loop`'s doc for why it must be the
+    // only caller of `Group::seal` for broadcast content.
+    if is_new_room && room == NOVA_ROOM {
+        let plaintext_receiver = room_state.sender.subscribe();
+        tokio::spawn(super::nova::run_seal_loop(
+            state.clone(),
+            plaintext_receiver,
+        ));
+    }
 
     // Bound the history a joining user is about to be sent.
     //

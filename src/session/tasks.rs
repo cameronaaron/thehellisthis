@@ -21,7 +21,6 @@ use crate::room::{ConnectionState, user_idle_for_too_long};
 use crate::state::AppState;
 
 use super::Message;
-use super::nova::NovaSlot;
 
 /// A sink this session can write frames to.
 ///
@@ -48,30 +47,24 @@ impl FrameSink for futures::stream::SplitSink<WebSocket, Message> {
 /// the frame's bytes — so the encoding work `encode_broadcast` did at send
 /// time is genuinely shared across every connection reading it, not repeated.
 ///
-/// `nova_slot` is `Some` only for `nova` connections (every other room passes
-/// `None` and pays nothing extra). When present, each broadcast is resealed
-/// under this connection's own ratchet before it goes out — the O(room size)
-/// cost `NOVA_MAX_USERS` exists to bound, paid here per-connection rather
-/// than once under the room lock (see `protocol.rs::OutgoingEvent::Sealed`).
-/// A broadcast that arrives before this connection's handshake has completed
-/// is dropped rather than queued: a brief, documented gap for a demo room
-/// capped at a dozen users, not a case worth a replay buffer for.
+/// No nova-awareness needed here at all: a `nova` connection is handed a
+/// receiver subscribed to `state.nova_sealed_sender`
+/// (`session/lifecycle.rs::join_room`) rather than the room's own plaintext
+/// sender, so the bytes arriving on `receiver` are already exactly what
+/// this connection should relay, sealed or not — see
+/// `session/nova.rs::run_seal_loop` for where that sealing happens (once
+/// per broadcast, not once per recipient).
 pub(crate) async fn forward_broadcasts<S: FrameSink>(
     mut receiver: tokio::sync::broadcast::Receiver<Arc<str>>,
     sink: Arc<Mutex<S>>,
-    nova_slot: Option<Arc<NovaSlot>>,
 ) {
     while let Ok(frame) = receiver.recv().await {
-        let message = match &nova_slot {
-            None => Message::Text(frame.as_ref().into()),
-            Some(slot) => match slot.seal(&frame).await {
-                Some(sealed) => Message::Text(encode_event(&sealed).into()),
-                None => continue,
-            },
-        };
-
         let mut tx = sink.lock().await;
-        if tx.send_frame(message).await.is_err() {
+        if tx
+            .send_frame(Message::Text(frame.as_ref().into()))
+            .await
+            .is_err()
+        {
             break;
         }
     }

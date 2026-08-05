@@ -67,7 +67,17 @@ pub(crate) async fn join_room(
 
     // Subscribe *before* announcing the join, so this user sees their own
     // arrival and no broadcast between the two is missed.
-    let receiver = room_state.sender.subscribe();
+    //
+    // `nova` connections subscribe to the room's *sealed* channel instead
+    // of its plaintext one — `session/nova.rs::run_seal_loop` is the only
+    // task that reads the plaintext channel directly, and it republishes
+    // every frame (this `UserJoined`/`UserCount` announcement included)
+    // here, sealed, for a nova connection to actually receive.
+    let receiver = if room == NOVA_ROOM {
+        state.nova_sealed_sender.subscribe()
+    } else {
+        room_state.sender.subscribe()
+    };
     room_state.broadcast_user_count();
     room_state.broadcast_system_event(SystemEvent::UserJoined {
         user_id: user_id.to_string(),
@@ -177,7 +187,7 @@ pub(crate) async fn run_session<S, R>(
     let nova_slot = (room == NOVA_ROOM).then(|| Arc::new(NovaSlot::new()));
 
     // ---- Task 1: room broadcasts → this client ---------------------------
-    let forward_task = forward_broadcasts(receiver, ws_tx.clone(), nova_slot.clone());
+    let forward_task = forward_broadcasts(receiver, ws_tx.clone());
 
     // ---- Task 2: this client → the room ----------------------------------
     let receive_task = {
@@ -266,5 +276,19 @@ pub(crate) async fn run_session<S, R>(
         _ = receive_task => trace!(user_id = %user_id, "receive task ended"),
         _ = ping_task => trace!(user_id = %user_id, "ping task ended"),
         _ = heartbeat_task => trace!(user_id = %user_id, "heartbeat task ended"),
+    }
+
+    // `nova` only: if this connection ever joined the room's `Group`,
+    // cryptographically exclude it now rather than leaving a dead leaf's
+    // key material live in the tree until the process restarts — the same
+    // "release every reservation on every exit path" principle constraint
+    // #1 already applies to connection slots, extended to `Group`
+    // membership. Done here, not in `teardown.rs::cleanup_user`, because
+    // `nova_slot`'s leaf index is connection-local state that function
+    // never sees.
+    if let Some(slot) = &nova_slot
+        && let Some(leaf) = slot.leaf_index().await
+    {
+        super::nova::remove_member(&state, &room, leaf).await;
     }
 }

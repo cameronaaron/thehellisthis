@@ -18,4 +18,5 @@ mod presence;
 mod reactions;
 mod types;
 
+pub(crate) use types::BROADCAST_CHANNEL_CAPACITY;
 pub use types::{ConnectionState, RoomState, UserData, create_room, user_idle_for_too_long};

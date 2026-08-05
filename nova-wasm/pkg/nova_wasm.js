@@ -12,7 +12,60 @@ export class NovaClient {
         wasm.__wbg_novaclient_free(ptr, 0);
     }
     /**
-     * Establishes a session against the server's prekey bundle
+     * Applies a `{"type":"NovaCommit","commit":...}` broadcast (base64) —
+     * every membership change after this connection's own join, in the
+     * exact order the server produced them. A no-op error (not a panic)
+     * if this connection hasn't joined yet, or if `commit` doesn't apply
+     * against the current epoch — `client.js` logs and continues rather
+     * than treating either as fatal, since the one case where this
+     * legitimately happens (a connection receives its own admitting
+     * commit twice — once directly via `NovaWelcome`, once again via the
+     * room broadcast every other member also gets it through) is
+     * harmless to ignore.
+     * @param {string} commit_b64
+     */
+    applyCommit(commit_b64) {
+        const ptr0 = passStringToWasm0(commit_b64, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.novaclient_applyCommit(this.__wbg_ptr, ptr0, len0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Completes the `Group` join from the server's `NovaWelcome` reply
+     * (`welcome`/`commit`, both base64) — this connection is a full
+     * member from this call onward and [`Self::open_group`] starts
+     * working. `false` if this connection already joined, or if the
+     * welcome/commit don't decrypt/apply against this connection's own
+     * pending key package.
+     * @param {string} welcome_b64
+     * @param {string} commit_b64
+     */
+    completeJoin(welcome_b64, commit_b64) {
+        const ptr0 = passStringToWasm0(welcome_b64, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(commit_b64, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.novaclient_completeJoin(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * This connection's current view of the group's epoch, once joined —
+     * `undefined` before that. Exposed purely for transparency: logged
+     * alongside the server's own `group.epoch()` (`session/nova.rs`) so
+     * a viewer can confirm both sides agree on which epoch they're in,
+     * not just take the decrypted content on faith.
+     * @returns {bigint | undefined}
+     */
+    epoch() {
+        const ret = wasm.novaclient_epoch(this.__wbg_ptr);
+        return ret[0] === 0 ? undefined : BigInt.asUintN(64, ret[1]);
+    }
+    /**
+     * Establishes the pairwise session against the server's prekey bundle
      * (`NovaPreKeyBundleResponse.bundle`, base64) and returns the X3DH
      * init message, base64, to send as
      * `{"type":"NovaX3dhInit","message":...}`. Unlike the old handshake,
@@ -52,10 +105,46 @@ export class NovaClient {
         return ret !== 0;
     }
     /**
-     * A fresh, ephemeral signing identity and a fresh, ephemeral X3DH DH
-     * identity — generated in the browser, held only for this
-     * connection's lifetime. There is nothing to persist: TOFU, same as
-     * the server's own keys (`state.rs::AppState::nova_dh_identity`).
+     * True once [`Self::complete_join`] has succeeded.
+     * @returns {boolean}
+     */
+    isGroupJoined() {
+        const ret = wasm.novaclient_isGroupJoined(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
+     * This connection's public `LeafKeyPackage`
+     * (`novachannel::group::LeafKeyPackage::to_bytes`, base64), to publish
+     * as `{"type":"NovaJoinRequest","key_package":...}`. Safe to call more
+     * than once before joining — it's the same key package every time,
+     * generated once at construction; calling it after `completeJoin` has
+     * already succeeded is a caller error and returns an error rather
+     * than silently generating a second, unrelated leaf.
+     * @returns {string}
+     */
+    myKeyPackage() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.novaclient_myKeyPackage(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Fresh, ephemeral keys for both sessions — generated in the browser,
+     * held only for this connection's lifetime. There is nothing to
+     * persist: TOFU, same as the server's own keys
+     * (`state.rs::AppState::nova_dh_identity`/`nova_identity`).
      */
     constructor() {
         const ret = wasm.novaclient_new();
@@ -64,11 +153,13 @@ export class NovaClient {
         return this;
     }
     /**
-     * Opens a base64 sealed record from `{"type":"Sealed","data":...}`.
-     * Returns the decrypted JSON string, or `undefined` for a
-     * ratchet-control record with nothing to deliver — Phase 1 never sends
-     * one, so `client.js` never actually sees `undefined` here today, but
-     * the type is honest about the case existing in the protocol.
+     * Opens a base64 sealed record from `{"type":"Sealed","data":...}`
+     * (the pairwise channel — for `{"type":"GroupSealed",...}` broadcast
+     * content, use [`Self::open_group`] instead). Returns the decrypted
+     * JSON string, or `undefined` for a ratchet-control record with
+     * nothing to deliver — Phase 1 never sends one, so `client.js` never
+     * actually sees `undefined` here today, but the type is honest about
+     * the case existing in the protocol.
      * @param {string} record_b64
      * @returns {string | undefined}
      */
@@ -85,6 +176,34 @@ export class NovaClient {
             wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
         }
         return v2;
+    }
+    /**
+     * Opens a base64 record from `{"type":"GroupSealed","data":...}` —
+     * broadcast content, sealed once server-side
+     * (`session/nova.rs::run_seal_loop`). Returns the decrypted JSON
+     * string.
+     * @param {string} record_b64
+     * @returns {string}
+     */
+    openGroup(record_b64) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(record_b64, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.novaclient_openGroup(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
     }
     /**
      * Seals `plaintext` (already-JSON-encoded `ClientEvent`) for sending,

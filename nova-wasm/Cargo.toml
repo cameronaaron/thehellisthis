@@ -1,3 +1,11 @@
+[workspace]
+# An empty table, deliberately: this stops Cargo walking up to
+# ../Cargo.toml's `[workspace]` and disagreeing with its own `exclude`
+# entry for this crate about which workspace it belongs to. `nova-wasm` is
+# independent on purpose (see the package description below) — this makes
+# that a fact Cargo agrees with, not just a comment asking someone to
+# remember it.
+
 [package]
 name = "nova-wasm"
 version = "0.1.0"
@@ -13,7 +21,7 @@ crate-type = ["cdylib"]
 # (../Cargo.toml) — client and server must speak the same wire format, and a
 # mismatched pin is exactly the kind of drift `novachannel-watch.yml` exists
 # to catch (it bumps both in the same PR).
-novachannel = { git = "https://github.com/cameronaaron/internet.git", package = "novachannel", rev = "8b40a8a342376cd56ebf66a71a89005f981f5a2a" }
+novachannel = { git = "https://github.com/cameronaaron/internet.git", package = "novachannel", rev = "0f0dfbe6daaeddd9e7a31802728b471696a11e6e" }
 # The RLN prover, for anonymous posting (session/nova_rln.rs is the
 # verifier side). Proving happens here, in the browser, and only here:
 # only the holder of `sk` can ever produce a valid proof, so a server that
@@ -21,13 +29,13 @@ novachannel = { git = "https://github.com/cameronaaron/internet.git", package = 
 # native for this AIR's circuit size (DEPTH=5, 32 members) — comfortably
 # fast even with WASM's overhead, so no separate worker/background-proving
 # machinery was needed.
-novachannel-rln = { git = "https://github.com/cameronaaron/internet.git", package = "novachannel-rln", rev = "8b40a8a342376cd56ebf66a71a89005f981f5a2a" }
+novachannel-rln = { git = "https://github.com/cameronaaron/internet.git", package = "novachannel-rln", rev = "0f0dfbe6daaeddd9e7a31802728b471696a11e6e" }
 # The dummy-traffic scheduler for cover traffic (client.js's periodic
 # "should I send a dummy this slot" tick). The decision has to be made
 # here, not server-side: it exists to hide from a *network*-position
 # observer whether this browser is sending real traffic right now, and the
 # server already sees every real send regardless.
-novachannel-dp = { git = "https://github.com/cameronaaron/internet.git", package = "novachannel-dp", rev = "8b40a8a342376cd56ebf66a71a89005f981f5a2a" }
+novachannel-dp = { git = "https://github.com/cameronaaron/internet.git", package = "novachannel-dp", rev = "0f0dfbe6daaeddd9e7a31802728b471696a11e6e" }
 wasm-bindgen = "0.2"
 # Needed directly (not just transitively via novachannel-rln) to build the
 # `rand::Rng` the DP scheduler's `decide()` is generic over.

@@ -256,20 +256,64 @@ pub enum OutgoingEvent {
     /// prekey bundle (`novachannel::prekey::PreKeyBundle::to_bytes`,
     /// base64), sent to the connection that asked. Reply-to-asker, the
     /// same pattern as [`OutgoingEvent::Roster`] and for the same reason
-    /// (§5.15) — a bundle fetch belongs to one connection, and the room's
-    /// broadcast channel would hand it to everybody. The client calls
-    /// `x3dh::initiate` against this locally and completes its side of the
-    /// session in that one call — X3DH has no second server round trip the
-    /// way the handshake this replaced did.
+    /// (§5.15). This establishes the connection's *pairwise* channel —
+    /// used only for content the room's broadcast doesn't already carry to
+    /// everyone: sending, and a reply owed to one connection alone. See
+    /// [`OutgoingEvent::NovaWelcome`] for the unrelated, second handshake
+    /// that admits this connection to the room's shared `Group` (broadcast
+    /// content only) — a `nova` connection completes both.
     NovaPreKeyBundleResponse {
         bundle: String,
     },
+    /// `nova` room only (`session/nova.rs`): the `Welcome` + `Commit` pair
+    /// that admits a joining member to the room's `Group` — reply-to-asker
+    /// only, for the same reason as [`OutgoingEvent::NovaPreKeyBundleResponse`].
+    /// `welcome` is `novachannel::group::Welcome::to_bytes`, base64, sealed
+    /// to the joiner's own `LeafKeyPackage` — only they can read it.
+    /// `commit` is the same `novachannel::group::Commit::to_bytes` (base64)
+    /// already being broadcast to every existing member as
+    /// [`OutgoingEvent::NovaCommit`]; the joiner needs a copy directly
+    /// since they aren't yet a `Group` member able to receive that
+    /// broadcast when it's sent.
+    NovaWelcome {
+        welcome: String,
+        commit: String,
+    },
+    /// `nova` room only: an admitted membership change (add, remove, or
+    /// self-update) to the room's `Group`, broadcast to every
+    /// already-connected member so they call `apply_commit` and reach the
+    /// new epoch. `commit` is `novachannel::group::Commit::to_bytes`,
+    /// base64 — unsealed, since a `Commit`'s own per-node path-secret
+    /// ciphertexts already ensure only current/incoming members can derive
+    /// anything useful from it.
+    NovaCommit {
+        commit: String,
+    },
     /// `nova` room only: every frame this connection would otherwise have
-    /// received, `novachannel`-sealed under that connection's own ratchet
-    /// and base64-encoded. `data` decrypts to another `OutgoingEvent` —
-    /// this is a transport wrapper, not a new event shape, so nothing about
-    /// `Message`/`System`/etc. changes for `nova` versus any other room.
+    /// received, `novachannel`-sealed under that connection's own pairwise
+    /// ratchet and base64-encoded. `data` decrypts to another
+    /// `OutgoingEvent` — a transport wrapper, not a new event shape. Used
+    /// only for a reply owed to one connection alone (never a broadcast —
+    /// see [`OutgoingEvent::GroupSealed`] for that), because a group
+    /// ratchet's per-sender chain has no notion of "this one ciphertext is
+    /// only for one recipient": sealing a single-recipient reply under it
+    /// would silently desync every *other* member's expected sequence
+    /// number for the server's leaf, since they'd never receive the bytes
+    /// needed to advance past it (`session/nova.rs`'s module doc).
     Sealed {
+        data: String,
+    },
+    /// `nova` room only: every frame the room would otherwise have
+    /// broadcast in plaintext, sealed **once** under the room's shared
+    /// `Group` (`session/nova.rs::run_seal_loop`) and base64-encoded.
+    /// `data` decrypts to another `OutgoingEvent`. Every nova connection
+    /// receives the identical bytes — `session/tasks.rs::forward_broadcasts`
+    /// relays them verbatim, the same as every other room relays its own
+    /// plaintext — because every current `Group` member can independently
+    /// derive the same per-sender chain from the shared epoch secret. This
+    /// is the whole point of the migration off the old pairwise-per-connection
+    /// reseal: one seal, not one per recipient.
+    GroupSealed {
         data: String,
     },
     /// `nova` room only (`session/nova_rln.rs`): this connection's leaf
@@ -373,23 +417,34 @@ pub enum ClientEvent {
     RequestRoster,
     /// `nova` room only: asks for the server's X3DH prekey bundle, sent by
     /// the client immediately after receiving `Welcome`. No payload — the
-    /// server has exactly one bundle to offer.
+    /// server has exactly one bundle to offer. Establishes this
+    /// connection's *pairwise* channel (sending, and single-recipient
+    /// replies) — see `OutgoingEvent::NovaPreKeyBundleResponse`'s doc for
+    /// how that differs from the unrelated `Group`-join handshake below.
     #[serde(rename = "NovaPreKeyBundleRequest")]
     NovaPreKeyBundleRequest,
     /// `nova` room only: the X3DH init message
     /// (`novachannel::x3dh::InitMessage::bytes`, base64) produced by the
     /// client's local `x3dh::initiate` call against
-    /// `NovaPreKeyBundleResponse`. Completes the session server-side in
-    /// one step — unlike the synchronous handshake this replaced, there is
-    /// no further reply the client waits for; it already has its own
-    /// session the moment it built this message.
+    /// `NovaPreKeyBundleResponse`. Completes the pairwise session
+    /// server-side in one step — there is no further reply the client
+    /// waits for; it already has its own session the moment it built this
+    /// message.
     #[serde(rename = "NovaX3dhInit")]
     NovaX3dhInit { message: String },
+    /// `nova` room only: asks to join the room's `Group` — the *separate*
+    /// handshake that lets this connection receive broadcast content
+    /// (`OutgoingEvent::GroupSealed`), sent independently of the pairwise
+    /// one above. `key_package` is this connection's freshly-generated
+    /// `novachannel::group::LeafKeyPackage::to_bytes` (its public half —
+    /// the private `MyLeafKeyPackage` never leaves the browser), base64.
+    #[serde(rename = "NovaJoinRequest")]
+    NovaJoinRequest { key_package: String },
     /// `nova` room only: a `novachannel`-sealed, base64-encoded
-    /// `ClientEvent` — the client-to-server mirror of
-    /// [`OutgoingEvent::Sealed`]. `data` decrypts to another `ClientEvent`,
-    /// dispatched exactly as if it had arrived unsealed; every other room
-    /// never sends this variant.
+    /// `ClientEvent`, under this connection's own *pairwise* ratchet — the
+    /// client-to-server mirror of [`OutgoingEvent::Sealed`]. `data`
+    /// decrypts to another `ClientEvent`, dispatched exactly as if it had
+    /// arrived unsealed; every other room never sends this variant.
     #[serde(rename = "Sealed")]
     Sealed { data: String },
     /// `nova` room only: registers this connection's RLN identity

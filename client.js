@@ -514,15 +514,16 @@ class ChatApp {
         if (this.heartbeatTimeoutId) clearTimeout(this.heartbeatTimeoutId);
         this.stopNovaDummyTraffic();
         this.stopNovaAnonymousCooldownTicker();
-        // The ratchet session this held is for a `NovaSlot` the server has
-        // already dropped (session/nova.rs: per-connection, not per-user) —
-        // a reconnect gets a fresh `NovaSlot` in `AwaitingSession`. Without
-        // this, `sendEvent`'s `isEstablished()` check keeps reporting `true`
-        // from the old connection until the new handshake replaces this
-        // object, so anything sent in that window (a `Message`, a read
-        // receipt) seals fine client-side and is then silently dropped
-        // server-side with "sealed frame received before the session was
-        // established" — invisible to the sender, who sees no error.
+        // Both sessions this held — the pairwise ratchet and this
+        // connection's `Group` membership — belong to a `NovaSlot`/leaf the
+        // server has already dropped (session/nova.rs: per-connection, not
+        // per-user); a reconnect gets a fresh one of each. Without this,
+        // `sendEvent`'s `isEstablished()` check keeps reporting `true` from
+        // the old connection until the new handshake replaces this object,
+        // so anything sent in that window (a `Message`, a read receipt)
+        // seals fine client-side and is then silently dropped server-side
+        // with "sealed frame received before the session was established"
+        // — invisible to the sender, who sees no error.
         this.novaClient = null;
         this.connected = false;
         this.updateConnectionStatus('disconnected');
@@ -670,8 +671,17 @@ class ChatApp {
             case 'NovaPreKeyBundleResponse':
                 this.establishNovaSession(data.bundle);
                 break;
+            case 'NovaWelcome':
+                this.completeNovaGroupJoin(data.welcome, data.commit);
+                break;
+            case 'NovaCommit':
+                this.applyNovaGroupCommit(data.commit);
+                break;
             case 'Sealed':
                 this.handleSealedEvent(data.data);
+                break;
+            case 'GroupSealed':
+                this.handleGroupSealedEvent(data.data);
                 break;
             case 'RlnRegistered':
                 if (this.pendingRlnRegisterResolve) {
@@ -732,20 +742,24 @@ class ChatApp {
         }
     }
 
-    // ---- nova room only: novachannel X3DH session establishment and
-    // sealed transport ---------------------------------------------------
+    // ---- nova room only: two independent handshakes, run side by side --
     //
     // Nowhere else in this file branches on room name for anything beyond
     // the idle-grace-period read at `updateHeartbeat()` — this is the one
     // other place, and it is entirely self-contained: every method here is
     // only ever called when `this.roomName === NOVA_ROOM_NAME`.
     //
+    // The **pairwise** X3DH session (`requestNovaPreKeyBundle`/
+    // `establishNovaSession`) carries sending and single-recipient replies.
     // X3DH's initiator (this client) completes in one call —
-    // `establishSession` below both builds the init message *and*
-    // finishes the session locally, unlike the old synchronous handshake
-    // this replaced, which needed a second server round trip
-    // (`NovaHandshakeResponse`) before either side was done. See
-    // session/nova.rs's module doc for why X3DH replaced it.
+    // `establishSession` both builds the init message *and* finishes the
+    // session locally.
+    //
+    // The **group** join (`completeNovaGroupJoin`/`applyNovaGroupCommit`)
+    // is unrelated and independent — it's what lets this connection open
+    // `GroupSealed` broadcast content. Both are kicked off together, right
+    // after the WASM module loads; neither waits on the other. See
+    // session/nova.rs's module doc for why both exist rather than just one.
 
     async requestNovaPreKeyBundle() {
         try {
@@ -755,12 +769,57 @@ class ChatApp {
             this.novaClient = new mod.NovaClient();
             novaLog('WASM crypto module loaded (nova-wasm, compiled from novachannel)', {
                 module: '/nova.js + /nova_wasm_bg.wasm',
-                classes: 'NovaClient (X3DH + double ratchet), NovaRlnIdentity, NovaDummyScheduler',
+                classes: 'NovaClient (X3DH + ratchet + group), NovaRlnIdentity, NovaDummyScheduler',
             });
             this.ws.send(JSON.stringify({ type: 'NovaPreKeyBundleRequest' }));
+
+            const keyPackage = this.novaClient.myKeyPackage();
+            novaLog('group leaf key package generated locally', {
+                'key package (base64, public)': keyPackage,
+            });
+            this.ws.send(JSON.stringify({ type: 'NovaJoinRequest', key_package: keyPackage }));
         } catch (e) {
-            console.error('nova: failed to request the prekey bundle', e);
+            console.error('nova: failed to start the handshakes', e);
             this.addSystemMessage('Secure channel setup failed.', 'error');
+        }
+    }
+
+    // Completes this connection's join to the room's shared `Group` from
+    // the server's `NovaWelcome` reply. Independent of the pairwise
+    // session above — `GroupSealed` broadcasts only start decrypting once
+    // this succeeds.
+    completeNovaGroupJoin(welcomeB64, commitB64) {
+        if (!this.novaClient) return;
+        try {
+            this.novaClient.completeJoin(welcomeB64, commitB64);
+            novaLog('joined the room group — broadcast content now decryptable', {
+                'welcome (base64)': welcomeB64,
+                'admitting commit (base64)': commitB64,
+                'this connection’s epoch now': this.novaClient.epoch(),
+                'compare against': 'the server terminal’s "group commit produced" line for this same commit — the epoch field must match',
+            });
+        } catch (e) {
+            console.error('nova: group join failed', e);
+            this.addSystemMessage('Joining the room’s group failed.', 'error');
+        }
+    }
+
+    // Applies a membership-change broadcast (`NovaCommit`) to this
+    // connection's own `Group` state, in the order it arrives. Failure is
+    // logged, not fatal: this connection's *own* admitting commit reaches
+    // it twice — once directly via `NovaWelcome`, once again through this
+    // same broadcast every other member also receives — and re-applying it
+    // here is expected to fail harmlessly the second time.
+    applyNovaGroupCommit(commitB64) {
+        if (!this.novaClient || !this.novaClient.isGroupJoined()) return;
+        try {
+            this.novaClient.applyCommit(commitB64);
+            novaLog('group commit applied — membership/epoch advanced', {
+                'commit (base64)': commitB64,
+                'this connection’s epoch now': this.novaClient.epoch(),
+            });
+        } catch (e) {
+            console.debug('nova: group commit not applied (likely this connection’s own join, already handled)', e);
         }
     }
 
@@ -779,7 +838,7 @@ class ChatApp {
                 property: 'deniable — this message is signed against no session-specific key, ' +
                     'only a signed prekey the server reuses across sessions (see session/nova.rs)',
             });
-            this.addSystemMessage('Secure channel established.', 'success');
+            this.addSystemMessage('Encrypted channel to this server established (not end-to-end — see the nova banner).', 'success');
             this.startNovaRlnRegistration();
             this.startNovaDummyTraffic();
             if (this.novaMpcDemoBtn) {
@@ -982,6 +1041,7 @@ class ChatApp {
             );
             const { proof, y, nullifier } = JSON.parse(proofJson);
             novaLog('RLN membership proof generated for this anonymous post', {
+                'STARK proof (base64) — same value the server’s terminal logs as proof_base64 once verified': proof,
                 'STARK proof bytes (base64 decoded)': atob(proof).length,
                 'nullifier (hex, public — ties this post to this epoch+identity without revealing which)': nullifier,
                 'y (hex, public — the proof-claimed share value)': y,
@@ -1043,13 +1103,41 @@ class ChatApp {
             if (plaintext === undefined) return;
             const parsed = JSON.parse(plaintext);
             this.novaFramesOpened = (this.novaFramesOpened || 0) + 1;
-            novaLog(`ratchet decrypted frame #${this.novaFramesOpened} (${parsed.type})`, {
+            novaLog(`pairwise-decrypted frame #${this.novaFramesOpened} (${parsed.type})`, {
+                'ciphertext (base64, exactly as received — diff this against the server’s terminal log for the same frame)': dataB64,
                 'ciphertext bytes (base64 decoded)': atob(dataB64).length,
+                'AEAD tag': 'verified locally by novachannel::ratchet — open() throws on any tampering, this call did not throw',
+                'decrypted plaintext (this browser’s own eyes, not a re-encoded copy)': plaintext,
                 'decrypted event type': parsed.type,
             });
             this.handleServerEvent(parsed);
         } catch (e) {
             console.error('nova: failed to open sealed frame', e);
+        }
+    }
+
+    // `GroupSealed` broadcast content — sealed once, server-side
+    // (session/nova.rs::run_seal_loop), and identical for every current
+    // member. A failure here (most likely: this frame arrived before
+    // `completeNovaGroupJoin` finished) is logged and dropped, the same
+    // "a brief, harmless gap" shape `sendEvent`'s pre-handshake window has.
+    handleGroupSealedEvent(dataB64) {
+        if (!this.novaClient || !this.novaClient.isGroupJoined()) return;
+        try {
+            const plaintext = this.novaClient.openGroup(dataB64);
+            const parsed = JSON.parse(plaintext);
+            this.novaGroupFramesOpened = (this.novaGroupFramesOpened || 0) + 1;
+            novaLog(`group-decrypted broadcast #${this.novaGroupFramesOpened} (${parsed.type})`, {
+                'ciphertext (base64, exactly as received — diff this against the server’s terminal log for the same broadcast)': dataB64,
+                'ciphertext bytes (base64 decoded)': atob(dataB64).length,
+                'AEAD tag': 'verified locally by novachannel::group — open() throws on any tampering, this call did not throw',
+                'decrypted plaintext': plaintext,
+                'decrypted event type': parsed.type,
+                note: 'every other current member of the room just decrypted this exact same ciphertext with their own Group state — nothing here is per-recipient',
+            });
+            this.handleServerEvent(parsed);
+        } catch (e) {
+            console.error('nova: failed to open group-sealed frame', e);
         }
     }
 
@@ -1090,8 +1178,9 @@ class ChatApp {
                 const data = this.novaClient.seal(plaintext);
                 this.novaFramesSealed = (this.novaFramesSealed || 0) + 1;
                 novaLog(`ratchet encrypted frame #${this.novaFramesSealed} (${payload.type})`, {
-                    'plaintext event type': payload.type,
+                    'plaintext (exactly what this browser is about to encrypt)': plaintext,
                     'plaintext bytes': plaintext.length,
+                    'ciphertext (base64) about to be sent — compare this against the server’s terminal log for the matching "pairwise reply sealed"/"pairwise frame opened" line': data,
                     'ciphertext bytes (base64 decoded)': atob(data).length,
                 });
                 this.ws.send(JSON.stringify({ type: 'Sealed', data }));

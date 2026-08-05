@@ -5,7 +5,37 @@ export class NovaClient {
     free(): void;
     [Symbol.dispose](): void;
     /**
-     * Establishes a session against the server's prekey bundle
+     * Applies a `{"type":"NovaCommit","commit":...}` broadcast (base64) —
+     * every membership change after this connection's own join, in the
+     * exact order the server produced them. A no-op error (not a panic)
+     * if this connection hasn't joined yet, or if `commit` doesn't apply
+     * against the current epoch — `client.js` logs and continues rather
+     * than treating either as fatal, since the one case where this
+     * legitimately happens (a connection receives its own admitting
+     * commit twice — once directly via `NovaWelcome`, once again via the
+     * room broadcast every other member also gets it through) is
+     * harmless to ignore.
+     */
+    applyCommit(commit_b64: string): void;
+    /**
+     * Completes the `Group` join from the server's `NovaWelcome` reply
+     * (`welcome`/`commit`, both base64) — this connection is a full
+     * member from this call onward and [`Self::open_group`] starts
+     * working. `false` if this connection already joined, or if the
+     * welcome/commit don't decrypt/apply against this connection's own
+     * pending key package.
+     */
+    completeJoin(welcome_b64: string, commit_b64: string): void;
+    /**
+     * This connection's current view of the group's epoch, once joined —
+     * `undefined` before that. Exposed purely for transparency: logged
+     * alongside the server's own `group.epoch()` (`session/nova.rs`) so
+     * a viewer can confirm both sides agree on which epoch they're in,
+     * not just take the decrypted content on faith.
+     */
+    epoch(): bigint | undefined;
+    /**
+     * Establishes the pairwise session against the server's prekey bundle
      * (`NovaPreKeyBundleResponse.bundle`, base64) and returns the X3DH
      * init message, base64, to send as
      * `{"type":"NovaX3dhInit","message":...}`. Unlike the old handshake,
@@ -20,20 +50,43 @@ export class NovaClient {
      */
     isEstablished(): boolean;
     /**
-     * A fresh, ephemeral signing identity and a fresh, ephemeral X3DH DH
-     * identity — generated in the browser, held only for this
-     * connection's lifetime. There is nothing to persist: TOFU, same as
-     * the server's own keys (`state.rs::AppState::nova_dh_identity`).
+     * True once [`Self::complete_join`] has succeeded.
+     */
+    isGroupJoined(): boolean;
+    /**
+     * This connection's public `LeafKeyPackage`
+     * (`novachannel::group::LeafKeyPackage::to_bytes`, base64), to publish
+     * as `{"type":"NovaJoinRequest","key_package":...}`. Safe to call more
+     * than once before joining — it's the same key package every time,
+     * generated once at construction; calling it after `completeJoin` has
+     * already succeeded is a caller error and returns an error rather
+     * than silently generating a second, unrelated leaf.
+     */
+    myKeyPackage(): string;
+    /**
+     * Fresh, ephemeral keys for both sessions — generated in the browser,
+     * held only for this connection's lifetime. There is nothing to
+     * persist: TOFU, same as the server's own keys
+     * (`state.rs::AppState::nova_dh_identity`/`nova_identity`).
      */
     constructor();
     /**
-     * Opens a base64 sealed record from `{"type":"Sealed","data":...}`.
-     * Returns the decrypted JSON string, or `undefined` for a
-     * ratchet-control record with nothing to deliver — Phase 1 never sends
-     * one, so `client.js` never actually sees `undefined` here today, but
-     * the type is honest about the case existing in the protocol.
+     * Opens a base64 sealed record from `{"type":"Sealed","data":...}`
+     * (the pairwise channel — for `{"type":"GroupSealed",...}` broadcast
+     * content, use [`Self::open_group`] instead). Returns the decrypted
+     * JSON string, or `undefined` for a ratchet-control record with
+     * nothing to deliver — Phase 1 never sends one, so `client.js` never
+     * actually sees `undefined` here today, but the type is honest about
+     * the case existing in the protocol.
      */
     open(record_b64: string): string | undefined;
+    /**
+     * Opens a base64 record from `{"type":"GroupSealed","data":...}` —
+     * broadcast content, sealed once server-side
+     * (`session/nova.rs::run_seal_loop`). Returns the decrypted JSON
+     * string.
+     */
+    openGroup(record_b64: string): string;
     /**
      * Seals `plaintext` (already-JSON-encoded `ClientEvent`) for sending,
      * returning base64 for `{"type":"Sealed","data":...}`.
@@ -137,10 +190,16 @@ export interface InitOutput {
     readonly __wbg_novaclient_free: (a: number, b: number) => void;
     readonly __wbg_novadummyscheduler_free: (a: number, b: number) => void;
     readonly __wbg_novarlnidentity_free: (a: number, b: number) => void;
+    readonly novaclient_applyCommit: (a: number, b: number, c: number) => [number, number];
+    readonly novaclient_completeJoin: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+    readonly novaclient_epoch: (a: number) => [number, bigint];
     readonly novaclient_establishSession: (a: number, b: number, c: number) => [number, number, number, number];
     readonly novaclient_isEstablished: (a: number) => number;
+    readonly novaclient_isGroupJoined: (a: number) => number;
+    readonly novaclient_myKeyPackage: (a: number) => [number, number, number, number];
     readonly novaclient_new: () => number;
     readonly novaclient_open: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly novaclient_openGroup: (a: number, b: number, c: number) => [number, number, number, number];
     readonly novaclient_seal: (a: number, b: number, c: number) => [number, number, number, number];
     readonly novadummyscheduler_decide: (a: number, b: number) => number;
     readonly novadummyscheduler_isExhausted: (a: number) => number;

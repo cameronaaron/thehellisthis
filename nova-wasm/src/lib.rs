@@ -1,17 +1,26 @@
-//! Browser bindings for `novachannel`'s core PQ channel: the initiator side
-//! of the X3DH exchange `src/session/nova.rs` runs as the responder.
+//! Browser bindings for `novachannel`'s core PQ channel and group ratchet.
 //!
-//! One object, one session — `client.js`'s `nova`-only branch constructs one
-//! `NovaClient` per connection and drives it through `establishSession`
-//! (one call — X3DH's initiator completes locally, unlike the old
-//! synchronous handshake this replaced, which needed a second server round
-//! trip). There is no group ratchet here (`novachannel` is pairwise): this
-//! client talks to the server, and only the server, which is what "the
-//! server reseals each broadcast once per recipient" (`session/nova.rs`,
-//! `session/tasks.rs::forward_broadcasts`) is the other half of.
+//! Two independent sessions, mirroring `src/session/nova.rs`'s server side:
+//!
+//! - The **pairwise** X3DH session (`establishSession`/`seal`/`open`) — the
+//!   initiator side of the exchange `session/nova.rs` runs as the
+//!   responder. Used for sending and for any reply owed to this connection
+//!   alone (RLN register/path replies, the generic fallback reply).
+//! - The room's shared **`Group`** (`myKeyPackage`/`completeJoin`/
+//!   `applyCommit`/`openGroup`) — a TreeKEM-inspired group ratchet this
+//!   connection joins once, then only ever *opens* with: every broadcast
+//!   is sealed exactly once, server-side, so no browser ever calls
+//!   `Group::seal` itself (`session/nova.rs`'s module doc explains why a
+//!   `Group`'s shared send chain can't safely be sealed by more than one
+//!   party without every recipient agreeing on the order).
+//!
+//! One `NovaClient` per connection, driven through both handshakes
+//! independently — `client.js`'s `nova`-only branch runs them side by side,
+//! not in sequence.
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
+use novachannel::group::{Commit, Group, MyLeafKeyPackage, Welcome};
 use novachannel::prekey::{DhIdentity, PreKeyBundle};
 use novachannel::ratchet::{Opened, RatchetedSession};
 use novachannel::x3dh::initiate;
@@ -22,11 +31,22 @@ fn js_err(e: impl std::fmt::Display) -> JsValue {
     JsValue::from_str(&e.to_string())
 }
 
+/// Whether this connection has joined the room's `Group` yet. Two states,
+/// like the pairwise session's own: a `LeafKeyPackage` is generated
+/// up front (so it's ready to publish the moment the connection wants to
+/// join) and the actual `Group` only exists once `completeJoin` has
+/// processed the server's `Welcome`/`Commit` reply.
+enum GroupState {
+    AwaitingJoin(MyLeafKeyPackage),
+    Joined(Group),
+}
+
 #[wasm_bindgen]
 pub struct NovaClient {
     identity: Identity,
     dh_identity: DhIdentity,
     session: Option<RatchetedSession>,
+    group: GroupState,
 }
 
 impl Default for NovaClient {
@@ -37,20 +57,25 @@ impl Default for NovaClient {
 
 #[wasm_bindgen]
 impl NovaClient {
-    /// A fresh, ephemeral signing identity and a fresh, ephemeral X3DH DH
-    /// identity — generated in the browser, held only for this
-    /// connection's lifetime. There is nothing to persist: TOFU, same as
-    /// the server's own keys (`state.rs::AppState::nova_dh_identity`).
+    /// Fresh, ephemeral keys for both sessions — generated in the browser,
+    /// held only for this connection's lifetime. There is nothing to
+    /// persist: TOFU, same as the server's own keys
+    /// (`state.rs::AppState::nova_dh_identity`/`nova_identity`).
     #[wasm_bindgen(constructor)]
     pub fn new() -> NovaClient {
+        let identity = Identity::generate();
+        let my_key_package = MyLeafKeyPackage::generate(identity.public());
         NovaClient {
-            identity: Identity::generate(),
+            identity,
             dh_identity: DhIdentity::generate(),
             session: None,
+            group: GroupState::AwaitingJoin(my_key_package),
         }
     }
 
-    /// Establishes a session against the server's prekey bundle
+    // ---- Pairwise session (sending, single-recipient replies) ------------
+
+    /// Establishes the pairwise session against the server's prekey bundle
     /// (`NovaPreKeyBundleResponse.bundle`, base64) and returns the X3DH
     /// init message, base64, to send as
     /// `{"type":"NovaX3dhInit","message":...}`. Unlike the old handshake,
@@ -93,11 +118,13 @@ impl NovaClient {
         Ok(BASE64.encode(record))
     }
 
-    /// Opens a base64 sealed record from `{"type":"Sealed","data":...}`.
-    /// Returns the decrypted JSON string, or `undefined` for a
-    /// ratchet-control record with nothing to deliver — Phase 1 never sends
-    /// one, so `client.js` never actually sees `undefined` here today, but
-    /// the type is honest about the case existing in the protocol.
+    /// Opens a base64 sealed record from `{"type":"Sealed","data":...}`
+    /// (the pairwise channel — for `{"type":"GroupSealed",...}` broadcast
+    /// content, use [`Self::open_group`] instead). Returns the decrypted
+    /// JSON string, or `undefined` for a ratchet-control record with
+    /// nothing to deliver — Phase 1 never sends one, so `client.js` never
+    /// actually sees `undefined` here today, but the type is honest about
+    /// the case existing in the protocol.
     pub fn open(&mut self, record_b64: &str) -> Result<Option<String>, JsValue> {
         let session = self
             .session
@@ -109,6 +136,117 @@ impl NovaClient {
             Opened::RatchetAdvanced { .. } => Ok(None),
         }
     }
+
+    // ---- Group (broadcast content only) -----------------------------------
+
+    /// This connection's public `LeafKeyPackage`
+    /// (`novachannel::group::LeafKeyPackage::to_bytes`, base64), to publish
+    /// as `{"type":"NovaJoinRequest","key_package":...}`. Safe to call more
+    /// than once before joining — it's the same key package every time,
+    /// generated once at construction; calling it after `completeJoin` has
+    /// already succeeded is a caller error and returns an error rather
+    /// than silently generating a second, unrelated leaf.
+    #[wasm_bindgen(js_name = myKeyPackage)]
+    pub fn my_key_package(&self) -> Result<String, JsValue> {
+        match &self.group {
+            GroupState::AwaitingJoin(my_key_package) => {
+                Ok(BASE64.encode(my_key_package.public().to_bytes()))
+            }
+            GroupState::Joined(_) => Err(js_err("already joined the group")),
+        }
+    }
+
+    /// Completes the `Group` join from the server's `NovaWelcome` reply
+    /// (`welcome`/`commit`, both base64) — this connection is a full
+    /// member from this call onward and [`Self::open_group`] starts
+    /// working. `false` if this connection already joined, or if the
+    /// welcome/commit don't decrypt/apply against this connection's own
+    /// pending key package.
+    #[wasm_bindgen(js_name = completeJoin)]
+    pub fn complete_join(&mut self, welcome_b64: &str, commit_b64: &str) -> Result<(), JsValue> {
+        let GroupState::AwaitingJoin(_) = &self.group else {
+            return Err(js_err("already joined the group"));
+        };
+        // Taken by replacing with a throwaway value only long enough to
+        // move the owned `MyLeafKeyPackage` out — `Group::join` consumes
+        // it by value, and there is no join-in-place API since a member's
+        // private leaf keys aren't `Clone` (module doc: they're meant to
+        // exist in exactly one place).
+        let GroupState::AwaitingJoin(my_key_package) =
+            std::mem::replace(&mut self.group, GroupState::AwaitingJoin(dummy_key_package()))
+        else {
+            unreachable!("matched AwaitingJoin above");
+        };
+
+        let welcome = Welcome::from_bytes(&BASE64.decode(welcome_b64).map_err(js_err)?)
+            .map_err(js_err)?;
+        let commit =
+            Commit::from_bytes(&BASE64.decode(commit_b64).map_err(js_err)?).map_err(js_err)?;
+        let group = Group::join(my_key_package, &welcome, &commit).map_err(js_err)?;
+        self.group = GroupState::Joined(group);
+        Ok(())
+    }
+
+    /// True once [`Self::complete_join`] has succeeded.
+    #[wasm_bindgen(js_name = isGroupJoined)]
+    pub fn is_group_joined(&self) -> bool {
+        matches!(self.group, GroupState::Joined(_))
+    }
+
+    /// This connection's current view of the group's epoch, once joined —
+    /// `undefined` before that. Exposed purely for transparency: logged
+    /// alongside the server's own `group.epoch()` (`session/nova.rs`) so
+    /// a viewer can confirm both sides agree on which epoch they're in,
+    /// not just take the decrypted content on faith.
+    pub fn epoch(&self) -> Option<u64> {
+        match &self.group {
+            GroupState::Joined(group) => Some(group.epoch()),
+            GroupState::AwaitingJoin(_) => None,
+        }
+    }
+
+    /// Applies a `{"type":"NovaCommit","commit":...}` broadcast (base64) —
+    /// every membership change after this connection's own join, in the
+    /// exact order the server produced them. A no-op error (not a panic)
+    /// if this connection hasn't joined yet, or if `commit` doesn't apply
+    /// against the current epoch — `client.js` logs and continues rather
+    /// than treating either as fatal, since the one case where this
+    /// legitimately happens (a connection receives its own admitting
+    /// commit twice — once directly via `NovaWelcome`, once again via the
+    /// room broadcast every other member also gets it through) is
+    /// harmless to ignore.
+    #[wasm_bindgen(js_name = applyCommit)]
+    pub fn apply_commit(&mut self, commit_b64: &str) -> Result<(), JsValue> {
+        let GroupState::Joined(group) = &mut self.group else {
+            return Err(js_err("group not joined yet"));
+        };
+        let commit =
+            Commit::from_bytes(&BASE64.decode(commit_b64).map_err(js_err)?).map_err(js_err)?;
+        group.apply_commit(&commit).map_err(js_err)
+    }
+
+    /// Opens a base64 record from `{"type":"GroupSealed","data":...}` —
+    /// broadcast content, sealed once server-side
+    /// (`session/nova.rs::run_seal_loop`). Returns the decrypted JSON
+    /// string.
+    #[wasm_bindgen(js_name = openGroup)]
+    pub fn open_group(&mut self, record_b64: &str) -> Result<String, JsValue> {
+        let GroupState::Joined(group) = &mut self.group else {
+            return Err(js_err("group not joined yet"));
+        };
+        let record = BASE64.decode(record_b64).map_err(js_err)?;
+        let (_sender_leaf, plaintext) = group.open(&record).map_err(js_err)?;
+        String::from_utf8(plaintext).map_err(js_err)
+    }
+}
+
+/// A throwaway `MyLeafKeyPackage` used only as `std::mem::replace`'s filler
+/// value for the instant between taking the real one out of `GroupState`
+/// and writing `Joined(..)` in — never observed by any caller, since
+/// [`NovaClient::complete_join`] only reaches that line once, guarded by
+/// the `AwaitingJoin` match above it.
+fn dummy_key_package() -> MyLeafKeyPackage {
+    MyLeafKeyPackage::generate(Identity::generate().public())
 }
 
 /// One step of an RLN Merkle path, exactly as `RlnPathResponse.path`

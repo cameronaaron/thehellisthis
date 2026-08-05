@@ -39,13 +39,25 @@ pub(crate) const MAX_USERS_PER_ROOM: usize = 100;
 /// every other room.
 pub(crate) const NOVA_ROOM: &str = "nova";
 
-/// Connected users allowed in [`NOVA_ROOM`] — far below
-/// [`MAX_USERS_PER_ROOM`], because nova's message path is not O(1) the way
-/// every other room's is: `novachannel` is a pairwise channel, not a group
-/// one, so the server reseals each outgoing message once per connected
-/// recipient (`session/nova.rs::forward_sealed`). That cost is paid only by
-/// this one room, and only up to this ceiling.
-pub(crate) const NOVA_MAX_USERS: usize = 12;
+/// Connected users allowed in [`NOVA_ROOM`] — still below
+/// [`MAX_USERS_PER_ROOM`], but no longer for the reason it once was: nova's
+/// message path used to reseal each outgoing message once per connected
+/// recipient (a pairwise `novachannel` ratchet per connection), which made
+/// per-message cost `O(room size)`. It now uses `novachannel::group::Group`,
+/// a TreeKEM-inspired group ratchet — the server seals a broadcast once,
+/// and every connection relays the same bytes, so per-message cost is
+/// `O(1)` again. The real constraint now is [`NOVA_GROUP_CAPACITY`]: a
+/// `Group`'s leaf count is fixed at creation and cannot grow, so this must
+/// not exceed it.
+pub(crate) const NOVA_MAX_USERS: usize = 60;
+
+/// The `nova` room's `Group` tree capacity (`session/nova.rs`), fixed for
+/// the process's lifetime at [`Group::create`](novachannel::group::Group::create)
+/// time — must be a power of two, and [`NOVA_MAX_USERS`] must not exceed it.
+/// Set a few leaves above `NOVA_MAX_USERS` rather than exactly at the next
+/// power of two above it, purely so the two constants don't have to be
+/// derived from each other by a reader doing mental arithmetic.
+pub(crate) const NOVA_GROUP_CAPACITY: usize = 64;
 
 /// How long an RLN rate-limit epoch lasts (`session/nova_rln.rs`). A member
 /// who posts a second *different* anonymous message inside one epoch leaks

@@ -5,15 +5,17 @@
 //! because lock duration — not CPU — is this server's scaling limit.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use tokio::sync::RwLock;
+use novachannel::group::Group;
+use tokio::sync::{Mutex, RwLock, broadcast};
 use tracing::{debug, info};
 
-use crate::config::{MAX_ROOMS, MAX_TOTAL_ROOMS_MEMORY};
+use crate::config::{MAX_ROOMS, MAX_TOTAL_ROOMS_MEMORY, NOVA_GROUP_CAPACITY};
 use crate::limits::{ConnectionPool, MemoryTracker, ResourceMonitor, SecurityManager};
 use crate::protocol::{OutgoingEvent, SystemEvent, encode_broadcast};
-use crate::room::RoomState;
+use crate::room::{BROADCAST_CHANNEL_CAPACITY, RoomState};
 use crate::session::{NovaOperatorRegistry, NovaRlnGroup};
 
 pub struct AppState {
@@ -22,18 +24,28 @@ pub struct AppState {
     pub memory_tracker: MemoryTracker,
     pub connection_pool: ConnectionPool,
     pub security_manager: SecurityManager,
+    /// The signing identity the server uses as the `nova` room's founding
+    /// `Group` member (leaf 0) — it proposes every add/remove/update commit,
+    /// so unlike the old per-connection X3DH keys it must live for the
+    /// process's whole lifetime, not just at construction. Generated fresh
+    /// every process start, the same TOFU reasoning constraint #20 already
+    /// applies to animal names one layer up: there is no database to persist
+    /// a long-term key in, and a restart simply looks like a new session to
+    /// every connected `nova` client, not an error.
+    pub nova_identity: novachannel::Identity,
     /// The DH-capable identity X3DH's `DH1` term uses
-    /// (`novachannel::prekey::DhIdentity`). Generated fresh every process
-    /// start, the same way `ConnectionPool`'s address hashing is keyed
-    /// per-process (§5.6) — there is no database to persist a long-term
-    /// key in, and every `nova` client trusts it on first connection
-    /// (TOFU) rather than pinning it out of band, so a restart simply
-    /// looks like a new session, not an error. The signing
-    /// `novachannel::Identity` that signs `nova_signed_prekey` below and
-    /// is embedded in `nova_prekey_bundle` is *not* stored here — it's
-    /// only ever needed once, at construction, to build those two.
+    /// (`novachannel::prekey::DhIdentity`) — the *pairwise*, per-connection
+    /// channel's long-term key, unrelated to `nova_identity` above (the
+    /// `Group`'s founding-member signing key). Generated fresh every
+    /// process start, the same TOFU reasoning `nova_identity` already
+    /// carries. See `session/nova.rs`'s module doc for why both a pairwise
+    /// channel and a `Group` coexist: broadcasts go through the `Group`
+    /// (one seal, not one per recipient); sending and single-recipient
+    /// replies go through this pairwise channel instead, since a `Group`'s
+    /// shared per-sender chain has no way to seal for one recipient
+    /// without desyncing every other member's sequence number.
     pub nova_dh_identity: novachannel::prekey::DhIdentity,
-    /// The medium-term signed prekey `session/nova.rs::handle_x3dh_init`
+    /// The medium-term signed prekey `session/nova.rs`'s pairwise handshake
     /// DHs/decapsulates against. No one-time prekeys
     /// (`novachannel::prekey::OneTimePreKeyStore`) — every `nova` bundle's
     /// `one_time_prekey` is `None`; the extra forward-secrecy term they'd
@@ -48,6 +60,24 @@ pub struct AppState {
     /// per connection, since nothing in it ever changes for the life of
     /// the process.
     pub nova_prekey_bundle: novachannel::prekey::PreKeyBundle,
+    /// The `nova` room's shared `Group` state (`session/nova.rs`,
+    /// `novachannel::group`) — one TreeKEM-inspired tree for the whole room,
+    /// not one ratchet per connection. Guarded by its own mutex (not the
+    /// room lock): committing a membership change or sealing a broadcast is
+    /// pure crypto against this state, no room data needed. Capacity is
+    /// fixed at [`NOVA_GROUP_CAPACITY`] for the process's lifetime — see
+    /// that constant's doc for why.
+    pub nova_group: Mutex<Group>,
+    /// The `nova` room's *sealed* broadcast channel — what
+    /// `session/lifecycle.rs::join_room` actually subscribes a `nova`
+    /// connection to, instead of the room's own plaintext
+    /// `RoomState::sender`. `session/nova.rs::run_seal_loop` is the single,
+    /// order-preserving task that reads the plaintext channel and republishes
+    /// each frame here, sealed once under `nova_group` — see that function's
+    /// doc for why it must be the *only* caller of `Group::seal` for content,
+    /// and why that requires a dedicated channel rather than sealing
+    /// per-connection the way the old pairwise ratchet did.
+    pub nova_sealed_sender: broadcast::Sender<Arc<str>>,
     /// `nova`'s RLN membership tree and nullifier set
     /// (`session/nova_rln.rs`). Singleton state for the one room that has
     /// it, the same precedent as `nova_dh_identity` — not a field every
@@ -68,10 +98,16 @@ impl Default for AppState {
 impl AppState {
     pub fn new() -> Self {
         let nova_identity = novachannel::Identity::generate();
+        let nova_group = Group::create(&nova_identity, NOVA_GROUP_CAPACITY)
+            .expect("NOVA_GROUP_CAPACITY is a fixed power of two >= 2");
+        let (nova_sealed_sender, _) = broadcast::channel(BROADCAST_CHANNEL_CAPACITY);
+
+        let nova_pairwise_identity = novachannel::Identity::generate();
         let nova_dh_identity = novachannel::prekey::DhIdentity::generate();
-        let nova_signed_prekey = novachannel::prekey::SignedPreKey::generate(&nova_identity);
+        let nova_signed_prekey =
+            novachannel::prekey::SignedPreKey::generate(&nova_pairwise_identity);
         let nova_prekey_bundle = novachannel::prekey::PreKeyBundle::build(
-            nova_identity.public(),
+            nova_pairwise_identity.public(),
             &nova_dh_identity,
             &nova_signed_prekey,
             None,
@@ -85,9 +121,12 @@ impl AppState {
             memory_tracker: MemoryTracker::new(),
             connection_pool: ConnectionPool::new(),
             security_manager: SecurityManager::new(),
+            nova_identity,
             nova_dh_identity,
             nova_signed_prekey,
             nova_prekey_bundle,
+            nova_group: Mutex::new(nova_group),
+            nova_sealed_sender,
             nova_rln_group: RwLock::new(NovaRlnGroup::new()),
             nova_operator_registry: RwLock::new(NovaOperatorRegistry::default()),
         }
