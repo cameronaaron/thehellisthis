@@ -56,6 +56,7 @@ concrete, executable version of "obsessive engineering quality." Concretely:
 | §9.3 Docs are part of the artifact | `every_section_reference_resolves` |
 | §8 Naming | `animal_roster_is_sorted_unique_and_well_formed`, `the_roster_is_larger_than_a_room_can_ever_be`, `reaction_roster_is_sorted_unique_and_actually_emoji` |
 | §9 Shipped artifact | `router_mounts_every_public_route`, `page_references_the_versioned_script_url`, `every_element_the_client_looks_up_exists_in_the_page`, `the_client_declares_every_screaming_case_constant_it_uses` |
+| §9.1b Co-dependent assets can't cache independently | `nova_assets_revalidate_on_every_request_instead_of_going_stale`, `app_js_is_immutably_cacheable_and_revalidates` |
 | §6.10 Removal is a decision | `the_shipped_client_still_contains_everything_it_did`, `the_servers_public_surface_still_exists` |
 | §10.10 The roster is asked for | `the_client_asks_for_the_roster_rather_than_being_sent_it`, `the_navigation_bar_keeps_what_the_client_drives`, `the_roster_names_everyone_connected_in_a_stable_order`, `requesting_the_roster_answers_with_the_current_names`, `roster_requests_are_throttled` |
 | §10.9 Show implies hide | `every_conditional_display_rule_has_a_base_that_hides_it` |
@@ -1638,6 +1639,64 @@ compiled, not what is in the working tree — a rebuild is the only thing that
 makes an `index.html` edit real. Tests that assert on the client assert over
 `EMBEDDED_HTML`, the same constant the server serves, for exactly this reason.
 
+### 9.1a A successful deploy is not proof the running instance changed
+
+`include_str!` makes the *compiled binary* the artifact (§9.1); the container
+platform adds one more layer between that binary and what a visitor actually
+gets. This server runs as a single long-lived Cloudflare Containers instance
+(`max_instances: 1`, correctness — §9.4 — not just cost) holding open
+WebSocket connections that never idle out. A `wrangler deploy` — whether
+triggered by Cloudflare's Git integration on push, or `./deploy.sh` run
+out-of-band — can build and push a new image successfully while the
+already-running instance, busy serving live connections, is not yet the one
+answering requests.
+
+Worse, two deploys landing seconds apart (the automatic Git-integration build
+queued from an earlier push, plus a manual redeploy) can race: whichever
+image gets applied to the container application's config *last* wins,
+non-deterministically, regardless of which was built first or which commit is
+newer. `wrangler deployments list` timestamps and a `0` exit code prove an
+image was built and uploaded — neither proves which image the singleton
+instance is currently running.
+
+Caught in production (Aug 2026): a wording fix (`6b68f25`) showed a
+successful, correctly-timed deployment log entry, but the live site kept
+serving the old string for minutes afterward — the run currently serving
+traffic hadn't cycled onto the new image yet. The only actual proof is
+fetching the live served bytes and diffing or hashing them against the
+committed source, the same standard §9.1 already applies to the compiled
+artifact, extended one layer further to the deployed one:
+
+```bash
+curl -s https://thehellisthis.com/app.js?v=<hash> | grep -c '<the changed string>'
+shasum -a256 <(curl -s https://thehellisthis.com/nova_wasm_bg.wasm) nova-wasm/pkg/nova_wasm_bg.wasm
+```
+
+### 9.1b Two files a client fetches independently must not cache independently
+
+`/nova.js`'s own `init()` resolves its `.wasm` sibling with
+`new URL('nova_wasm_bg.wasm', import.meta.url)` — relative-URL resolution
+drops the base URL's query string, so unlike `/app.js` (§7.5-adjacent,
+content-hashed into an `immutable` URL) these two can't be versioned together
+that way: a `?v=` stamp on `/nova.js` would never reach the `.wasm` fetch it
+triggers. They were instead served with a plain `max-age=3600`, cached
+independently by the browser and the Cloudflare edge.
+
+That let a deploy landing inside that hour leave a visitor with `nova.js`
+from the new build paired with `nova_wasm_bg.wasm` still cached from the old
+one (or vice versa) — surfacing as `wasm.novaclient_myKeyPackage is not a
+function`, JS calling into a WASM export the paired binary didn't have yet.
+Fixed with an ETag plus `no-cache` on both: forces revalidation on every
+request, a cheap `304` when nothing changed, the correct pair the instant
+either file does.
+
+**General rule**: any two client-fetched artifacts with a runtime dependency
+on each other — one imports or fetches the other, one's glue code assumes the
+other's shape — must either share one version stamp (when the reference can
+carry it) or both force revalidation (when it cannot, as here). Independent
+cache TTLs let them drift out of sync exactly when a deploy is in flight,
+which is exactly when nobody is watching for it.
+
 ### 9.2 Test the route table that ships
 
 `router_mounts_every_public_route` builds the router with `build_router` — the
@@ -1681,6 +1740,7 @@ lore.
 | 100% line coverage | **Reached, and now the floor** — 100.00%, with the same number whether or not the `#[ignore]`d tests run. Two whole-file exemptions remain and both are structural: `tests.rs` is the suite, `main.rs` is an entry point a test can never call. Previously read: **Now the target, with a reasoned exemption list** — 98.18%, every module at 100% except `session.rs` (352/373). `main.rs` was reduced to an entry point and `startup.rs` split out of it so the exclusion is honest rather than a hiding place; the test file is excluded the way `*.test.ts` is on cameronaaron.com. The 21 remaining lines are listed individually in scripts/coverage-exemptions.toml | Reopens for any of those 21 that becomes reachable — the registry's line count is asserted, so it fails if the number moves either way. The old entry read: **Not the target** — the floor is 95% and ratchets. The remainder is the process shell (`main`, signal handling) and socket-failure paths inside the four connection tasks, which need a socket to fail at an exact instant | Reopens for any *reachable* branch: those are gaps, not exclusions. Chasing the rest would mean flaky timing tests, which §6.4 rules out as worse than none. |
 | Edge-caching the room pages | **Rejected** — the page is per-room and sets identity cookies, so a shared cache would serve one visitor's `Set-Cookie` to another | Reopens only if identity moves entirely to the socket and the page becomes byte-identical for all visitors. |
 | `Cross-Origin-Embedder-Policy: require-corp` | **Rejected, unmeasured against production** — tried alongside the `Cross-Origin-Resource-Policy: same-origin` this project does carry, for the same cross-origin-isolation hardening. Broke the WebSocket connection in local testing (`net::ERR_BLOCKED_BY_LOCAL_NETWORK_ACCESS_CHECKS`), a Chrome Private Network Access interaction. Not shippable on that alone: the connection this server exists to serve is not a trade worth making without verifying against the real deployed origin first, and no safe way to do that exists from here | Reopens with a way to test against the real `thehellisthis.com` origin before shipping — `wss://`, not `ws://localhost`, since PNA classifies by address space and localhost may be triggering a check production traffic never would |
+| Cloudflare's own Web Analytics beacon (`static.cloudflareinsights.com/beacon.min.js`) | **Observed in production, not yet resolved** — the CSP already blocks it (`script-src 'self' 'wasm-unsafe-eval'`, no third-party origin named — §5.7), so nothing is actually disclosed, but its presence at all means Cloudflare's edge is injecting a `<script>` tag into every HTML response for this zone that nothing in this repository put there. Not in `index.html`, `client.js`, or any Worker source — `grep -rn cloudflareinsights` finds nothing. Almost certainly the zone's Speed → Web Analytics/Browser Insights toggle, which auto-injects independently of what the origin serves | Reopens closed once the zone setting is turned off in the Cloudflare dashboard (not a `wrangler.jsonc`-controllable setting) and the console warning is confirmed gone on a fresh load |
 
 ---
 
