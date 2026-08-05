@@ -502,6 +502,16 @@ class ChatApp {
         console.log('WebSocket disconnected', event && event.code);
         if (this.heartbeatTimeoutId) clearTimeout(this.heartbeatTimeoutId);
         this.stopNovaDummyTraffic();
+        // The ratchet session this held is for a `NovaSlot` the server has
+        // already dropped (session/nova.rs: per-connection, not per-user) —
+        // a reconnect gets a fresh `NovaSlot` in `AwaitingSession`. Without
+        // this, `sendEvent`'s `isEstablished()` check keeps reporting `true`
+        // from the old connection until the new handshake replaces this
+        // object, so anything sent in that window (a `Message`, a read
+        // receipt) seals fine client-side and is then silently dropped
+        // server-side with "sealed frame received before the session was
+        // established" — invisible to the sender, who sees no error.
+        this.novaClient = null;
         this.connected = false;
         this.updateConnectionStatus('disconnected');
         this.sendButton.disabled = true;
