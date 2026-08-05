@@ -929,7 +929,7 @@ class ChatApp {
 
         const content = document.createElement('div');
         content.className = 'message-content';
-        content.innerHTML = msg.text;
+        content.innerHTML = trustedHtml.createHTML(msg.text);
         bubble.appendChild(content);
 
         row.appendChild(bubble);
@@ -1085,10 +1085,10 @@ class ChatApp {
         if (msg.reply_to) {
             const repliedTo = document.createElement('div');
             repliedTo.className = 'replied-to';
-            repliedTo.innerHTML = `
+            repliedTo.innerHTML = trustedHtml.createHTML(`
                 <div class="replied-to-author">${this.escapeHtml(msg.reply_to.author_name || 'Unknown')}</div>
                 <div class="replied-to-text">${this.escapeHtml(msg.reply_to.preview_text || '')}</div>
-            `;
+            `);
             repliedTo.addEventListener('click', () => this.scrollToMessage(msg.reply_to.message_id));
             stack.appendChild(repliedTo);
         }
@@ -1100,7 +1100,7 @@ class ChatApp {
         if (msg.text.trim()) {
             const content = document.createElement('div');
             content.className = 'message-content';
-            content.innerHTML = msg.text;
+            content.innerHTML = trustedHtml.createHTML(msg.text);
             bubble.appendChild(content);
         }
 
@@ -1138,7 +1138,7 @@ class ChatApp {
         const replyBtn = document.createElement('button');
         replyBtn.className = 'reply-btn';
         replyBtn.setAttribute('aria-label', `Reply to ${msg.animal_name}`);
-        replyBtn.innerHTML = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-reply"/></svg>';
+        replyBtn.innerHTML = trustedHtml.createHTML('<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-reply"/></svg>');
         replyBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             this.startReply(msg.message_id, msg.animal_name, msg.text);
@@ -1406,7 +1406,7 @@ class ChatApp {
             wrap.style.cursor = 'default';
             const note = document.createElement('div');
             note.className = 'message-image-faded';
-            note.innerHTML = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-broken-image"/></svg>';
+            note.innerHTML = trustedHtml.createHTML('<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-broken-image"/></svg>');
             const label = document.createElement('span');
             label.textContent = 'Image faded';
             note.appendChild(label);
@@ -1519,7 +1519,7 @@ class ChatApp {
 
         const more = document.createElement('button');
         more.type = 'button';
-        more.innerHTML = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-add-reaction"/></svg>';
+        more.innerHTML = trustedHtml.createHTML('<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-add-reaction"/></svg>');
         more.setAttribute('aria-label', 'More reactions');
         more.addEventListener('click', (e) => {
             e.stopPropagation();
@@ -2209,7 +2209,9 @@ class ChatApp {
         const message = isMain
             ? "main's older messages are fading... say something to keep them!"
             : "you've gone quiet... say something or you'll be moved along";
-        warning.innerHTML = `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-hourglass"/></svg>${message}`;
+        warning.innerHTML = trustedHtml.createHTML(
+            `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-hourglass"/></svg>${message}`
+        );
         document.body.appendChild(warning);
 
         setTimeout(() => {

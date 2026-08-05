@@ -95,6 +95,19 @@ static STYLE_BLOCK_HASH: LazyLock<String> = LazyLock::new(|| {
 /// and text uses the system stack, so `font-src 'none'` is achievable rather
 /// than aspirational — the browser is told, in the policy itself, that this
 /// page has no business talking to anyone else.
+///
+/// `require-trusted-types-for 'script'` + `trusted-types chat-html` is a
+/// second, independent backstop behind the same thing `script-src` already
+/// guards: `client.js` calls `.innerHTML =` at seven sites, all through the
+/// one `trustedHtml` policy it creates at module load. A browser that
+/// enforces this directive throws on any assignment that did not go through
+/// that policy — including a future call site added without remembering the
+/// convention, or a hijacked reference to a sink these directives don't
+/// otherwise reach. It does not re-sanitise anything itself; the server
+/// already did that (constraint #8), and stays the trust boundary. A browser
+/// that does not implement Trusted Types ignores the directive as
+/// unrecognised, so this changes nothing observable anywhere it is not
+/// enforced — see `client.js`'s `trustedHtml` for the fallback.
 static CONTENT_SECURITY_POLICY: LazyLock<String> = LazyLock::new(|| {
     format!(
         "default-src 'self'; \
@@ -106,7 +119,9 @@ static CONTENT_SECURITY_POLICY: LazyLock<String> = LazyLock::new(|| {
          frame-ancestors 'none'; \
          base-uri 'none'; \
          form-action 'none'; \
-         object-src 'none'",
+         object-src 'none'; \
+         require-trusted-types-for 'script'; \
+         trusted-types chat-html",
         *STYLE_BLOCK_HASH
     )
 });

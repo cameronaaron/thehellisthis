@@ -46,6 +46,40 @@
 //! every process start (state.rs), for the matching reason — nothing here
 //! is meant to be a long-term pinned host key, only a session's own
 //! authentication.
+//!
+//! # What this does not, and cannot, defend against
+//!
+//! Every operation this module performs completes inside the browser that
+//! holds the room open — `nova-wasm` runs the X3DH/ratchet math in WASM
+//! linear memory, in the same JS execution context as the page's own DOM.
+//! That means the whole scheme above assumes an honest browser, and stops
+//! being true the moment that assumption fails:
+//!
+//! - **A malicious or compromised browser extension** with page-access
+//!   permissions can read WASM linear memory, hook `NovaClient.seal`/`open`,
+//!   or read plaintext after this module's server-side counterpart already
+//!   decrypted it — before or after the fact, not in transit. No CSP
+//!   directive constrains an already-installed extension's content script;
+//!   `script-src`/`trusted-types` (`security/headers.rs`) raise the bar
+//!   against *this page's own* code being hijacked (a bypassed sanitiser, a
+//!   sink some future edit adds), not against privileged code the browser
+//!   already grants a different trust level.
+//! - **A compromised OS or physical access to the device** sees plaintext
+//!   the instant it's decrypted, in this browser tab or any other program
+//!   running alongside it — moving the crypto into a native process or
+//!   extension changes which sandbox holds the keys, not whether an
+//!   already-compromised endpoint can read them.
+//!
+//! Nothing here claims otherwise. This module (and `nova_rln.rs`,
+//! `nova_operator.rs`) is real, checkable cryptography — the client-side
+//! console logging described in each `novaLog(...)` call in `client.js`
+//! exists so that claim can be verified against actual wire values rather
+//! than taken on faith — but "real cryptography" and "defends against a
+//! compromised endpoint" are different claims, and only the first one is
+//! made here. TOFU peer auth and ephemeral, non-pinned server keys (above)
+//! are the same kind of admission: this is what a from-scratch demo running
+//! in a browser can honestly promise, not a claim that endpoint compromise
+//! is out of scope for an attacker to consider.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
