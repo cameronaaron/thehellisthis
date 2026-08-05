@@ -238,6 +238,7 @@ dependencies = [
  "cipher",
  "cpufeatures 0.3.0",
  "rand_core 0.10.1",
+ "zeroize",
 ]
 
 [[package]]
@@ -250,6 +251,7 @@ dependencies = [
  "chacha20",
  "cipher",
  "poly1305",
+ "zeroize",
 ]
 
 [[package]]
@@ -798,6 +800,7 @@ checksum = "818356c5132c1fede50f837ca96afbe78ff42413047f4abb886217845e1b6c8c"
 dependencies = [
  "ctutils",
  "typenum",
+ "zeroize",
 ]
 
 [[package]]
@@ -1154,6 +1157,7 @@ dependencies = [
  "pkcs8",
  "shake",
  "signature",
+ "zeroize",
 ]
 
 [[package]]
@@ -1168,6 +1172,7 @@ dependencies = [
  "pkcs8",
  "rand_core 0.10.1",
  "sha3 0.11.0",
+ "zeroize",
 ]
 
 [[package]]
@@ -1179,6 +1184,7 @@ dependencies = [
  "ctutils",
  "hybrid-array",
  "num-traits",
+ "zeroize",
 ]
 
 [[package]]
@@ -1210,7 +1216,7 @@ dependencies = [
 [[package]]
 name = "novachannel"
 version = "0.1.0"
-source = "git+https://github.com/cameronaaron/internet.git?rev=0f0dfbe6daaeddd9e7a31802728b471696a11e6e#0f0dfbe6daaeddd9e7a31802728b471696a11e6e"
+source = "git+https://github.com/cameronaaron/internet.git?rev=03d955e4b8b0b5733d37e20f5a17e968690fff2a#03d955e4b8b0b5733d37e20f5a17e968690fff2a"
 dependencies = [
  "chacha20poly1305",
  "ed25519-dalek",
@@ -1230,7 +1236,7 @@ dependencies = [
 [[package]]
 name = "novachannel-mpc"
 version = "0.1.0"
-source = "git+https://github.com/cameronaaron/internet.git?rev=0f0dfbe6daaeddd9e7a31802728b471696a11e6e#0f0dfbe6daaeddd9e7a31802728b471696a11e6e"
+source = "git+https://github.com/cameronaaron/internet.git?rev=03d955e4b8b0b5733d37e20f5a17e968690fff2a#03d955e4b8b0b5733d37e20f5a17e968690fff2a"
 dependencies = [
  "curve25519-dalek",
  "getrandom 0.4.3",
@@ -1242,7 +1248,7 @@ dependencies = [
 [[package]]
 name = "novachannel-oram"
 version = "0.1.0"
-source = "git+https://github.com/cameronaaron/internet.git?rev=0f0dfbe6daaeddd9e7a31802728b471696a11e6e#0f0dfbe6daaeddd9e7a31802728b471696a11e6e"
+source = "git+https://github.com/cameronaaron/internet.git?rev=03d955e4b8b0b5733d37e20f5a17e968690fff2a#03d955e4b8b0b5733d37e20f5a17e968690fff2a"
 dependencies = [
  "rand 0.10.2",
  "sha2 0.11.0",
@@ -1251,7 +1257,7 @@ dependencies = [
 [[package]]
 name = "novachannel-rln"
 version = "0.1.0"
-source = "git+https://github.com/cameronaaron/internet.git?rev=0f0dfbe6daaeddd9e7a31802728b471696a11e6e#0f0dfbe6daaeddd9e7a31802728b471696a11e6e"
+source = "git+https://github.com/cameronaaron/internet.git?rev=03d955e4b8b0b5733d37e20f5a17e968690fff2a#03d955e4b8b0b5733d37e20f5a17e968690fff2a"
 dependencies = [
  "rand 0.10.2",
  "winterfell",

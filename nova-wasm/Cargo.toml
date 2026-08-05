@@ -21,7 +21,7 @@ crate-type = ["cdylib"]
 # (../Cargo.toml) — client and server must speak the same wire format, and a
 # mismatched pin is exactly the kind of drift `novachannel-watch.yml` exists
 # to catch (it bumps both in the same PR).
-novachannel = { git = "https://github.com/cameronaaron/internet.git", package = "novachannel", rev = "0f0dfbe6daaeddd9e7a31802728b471696a11e6e" }
+novachannel = { git = "https://github.com/cameronaaron/internet.git", package = "novachannel", rev = "03d955e4b8b0b5733d37e20f5a17e968690fff2a" }
 # The RLN prover, for anonymous posting (session/nova_rln.rs is the
 # verifier side). Proving happens here, in the browser, and only here:
 # only the holder of `sk` can ever produce a valid proof, so a server that
@@ -29,13 +29,13 @@ novachannel = { git = "https://github.com/cameronaaron/internet.git", package = 
 # native for this AIR's circuit size (DEPTH=5, 32 members) — comfortably
 # fast even with WASM's overhead, so no separate worker/background-proving
 # machinery was needed.
-novachannel-rln = { git = "https://github.com/cameronaaron/internet.git", package = "novachannel-rln", rev = "0f0dfbe6daaeddd9e7a31802728b471696a11e6e" }
+novachannel-rln = { git = "https://github.com/cameronaaron/internet.git", package = "novachannel-rln", rev = "03d955e4b8b0b5733d37e20f5a17e968690fff2a" }
 # The dummy-traffic scheduler for cover traffic (client.js's periodic
 # "should I send a dummy this slot" tick). The decision has to be made
 # here, not server-side: it exists to hide from a *network*-position
 # observer whether this browser is sending real traffic right now, and the
 # server already sees every real send regardless.
-novachannel-dp = { git = "https://github.com/cameronaaron/internet.git", package = "novachannel-dp", rev = "0f0dfbe6daaeddd9e7a31802728b471696a11e6e" }
+novachannel-dp = { git = "https://github.com/cameronaaron/internet.git", package = "novachannel-dp", rev = "03d955e4b8b0b5733d37e20f5a17e968690fff2a" }
 wasm-bindgen = "0.2"
 # Needed directly (not just transitively via novachannel-rln) to build the
 # `rand::Rng` the DP scheduler's `decide()` is generic over.

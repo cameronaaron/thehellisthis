@@ -106,6 +106,7 @@ dependencies = [
  "cipher",
  "cpufeatures 0.3.0",
  "rand_core",
+ "zeroize",
 ]
 
 [[package]]
@@ -118,6 +119,7 @@ dependencies = [
  "chacha20",
  "cipher",
  "poly1305",
+ "zeroize",
 ]
 
 [[package]]
@@ -380,6 +382,7 @@ checksum = "707114b52a152fa7bdb290cd7cd5912d9467273b6d74e21b8d81aca1f8533f6b"
 dependencies = [
  "ctutils",
  "typenum",
+ "zeroize",
 ]
 
 [[package]]
@@ -469,6 +472,7 @@ dependencies = [
  "pkcs8",
  "shake",
  "signature",
+ "zeroize",
 ]
 
 [[package]]
@@ -483,6 +487,7 @@ dependencies = [
  "pkcs8",
  "rand_core",
  "sha3 0.11.0",
+ "zeroize",
 ]
 
 [[package]]
@@ -494,6 +499,7 @@ dependencies = [
  "ctutils",
  "hybrid-array",
  "num-traits",
+ "zeroize",
 ]
 
 [[package]]
@@ -516,7 +522,7 @@ dependencies = [
 [[package]]
 name = "novachannel"
 version = "0.1.0"
-source = "git+https://github.com/cameronaaron/internet.git?rev=0f0dfbe6daaeddd9e7a31802728b471696a11e6e#0f0dfbe6daaeddd9e7a31802728b471696a11e6e"
+source = "git+https://github.com/cameronaaron/internet.git?rev=03d955e4b8b0b5733d37e20f5a17e968690fff2a#03d955e4b8b0b5733d37e20f5a17e968690fff2a"
 dependencies = [
  "chacha20poly1305",
  "ed25519-dalek",
@@ -536,7 +542,7 @@ dependencies = [
 [[package]]
 name = "novachannel-dp"
 version = "0.1.0"
-source = "git+https://github.com/cameronaaron/internet.git?rev=0f0dfbe6daaeddd9e7a31802728b471696a11e6e#0f0dfbe6daaeddd9e7a31802728b471696a11e6e"
+source = "git+https://github.com/cameronaaron/internet.git?rev=03d955e4b8b0b5733d37e20f5a17e968690fff2a#03d955e4b8b0b5733d37e20f5a17e968690fff2a"
 dependencies = [
  "rand",
 ]
@@ -544,7 +550,7 @@ dependencies = [
 [[package]]
 name = "novachannel-rln"
 version = "0.1.0"
-source = "git+https://github.com/cameronaaron/internet.git?rev=0f0dfbe6daaeddd9e7a31802728b471696a11e6e#0f0dfbe6daaeddd9e7a31802728b471696a11e6e"
+source = "git+https://github.com/cameronaaron/internet.git?rev=03d955e4b8b0b5733d37e20f5a17e968690fff2a#03d955e4b8b0b5733d37e20f5a17e968690fff2a"
 dependencies = [
  "rand",
  "winterfell",

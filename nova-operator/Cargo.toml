@@ -20,7 +20,7 @@ path = "src/main.rs"
 # makes drift between the two impossible rather than a comment asking
 # someone to remember, the way `nova-wasm/Cargo.toml` has to for the wasm
 # build (which can't share this lockfile — different target).
-novachannel-mpc = { git = "https://github.com/cameronaaron/internet.git", package = "novachannel-mpc", rev = "0f0dfbe6daaeddd9e7a31802728b471696a11e6e" }
+novachannel-mpc = { git = "https://github.com/cameronaaron/internet.git", package = "novachannel-mpc", rev = "03d955e4b8b0b5733d37e20f5a17e968690fff2a" }
 curve25519-dalek = { version = "5", features = ["rand_core"] }
 # Point-to-point sealing of one DKG share to its recipient's static key, so
 # the chat server (which relays every ceremony message) can forward this
