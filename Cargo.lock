@@ -958,8 +958,10 @@ dependencies = [
  "base64",
  "bytes",
  "comrak",
+ "curve25519-dalek",
  "futures",
  "http",
+ "nova-operator",
  "novachannel",
  "novachannel-mpc",
  "novachannel-oram",
@@ -1183,6 +1185,26 @@ name = "new_debug_unreachable"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
+
+[[package]]
+name = "nova-operator"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "chacha20poly1305",
+ "curve25519-dalek",
+ "futures-util",
+ "getrandom 0.4.3",
+ "hkdf",
+ "novachannel-mpc",
+ "rand_core 0.10.1",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tokio",
+ "tokio-tungstenite 0.30.0",
+ "x25519-dalek",
+]
 
 [[package]]
 name = "novachannel"

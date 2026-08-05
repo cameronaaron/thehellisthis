@@ -296,6 +296,11 @@ fn every_declared_dependency_is_used() {
             "codegen-units",
             "strip",
             "panic",
+            // `[workspace]` table key (`members = [".", "nova-operator"]`) —
+            // a list of workspace member paths, not a crate name, but it
+            // matches this scan's "contains `=` and `"`" heuristic same as
+            // any dependency line does.
+            "members",
         ]
         .contains(&name)
         {

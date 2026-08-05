@@ -14,7 +14,7 @@ use crate::config::{MAX_ROOMS, MAX_TOTAL_ROOMS_MEMORY};
 use crate::limits::{ConnectionPool, MemoryTracker, ResourceMonitor, SecurityManager};
 use crate::protocol::{OutgoingEvent, SystemEvent, encode_broadcast};
 use crate::room::RoomState;
-use crate::session::NovaRlnGroup;
+use crate::session::{NovaOperatorRegistry, NovaRlnGroup};
 
 pub struct AppState {
     pub rooms: RwLock<HashMap<String, RoomState>>,
@@ -53,6 +53,10 @@ pub struct AppState {
     /// it, the same precedent as `nova_dh_identity` — not a field every
     /// other room's `RoomState` would carry for nothing.
     pub nova_rln_group: RwLock<NovaRlnGroup>,
+    /// The live `nova-operator` connections and DKG ceremony state
+    /// (`session/nova_operator.rs`) — genuinely separate processes, not
+    /// simulated ones; this server never holds any of their secret shares.
+    pub(crate) nova_operator_registry: RwLock<NovaOperatorRegistry>,
 }
 
 impl Default for AppState {
@@ -85,6 +89,7 @@ impl AppState {
             nova_signed_prekey,
             nova_prekey_bundle,
             nova_rln_group: RwLock::new(NovaRlnGroup::new()),
+            nova_operator_registry: RwLock::new(NovaOperatorRegistry::default()),
         }
     }
 

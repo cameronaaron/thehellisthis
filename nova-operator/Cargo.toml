@@ -1,0 +1,51 @@
+[package]
+name = "nova-operator"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "A standalone FROST/threshold-decryption operator for the nova room's MPC demo. Run one of these per participant, on genuinely separate machines/processes, so the chat server never holds every share — see the plan this implements: ~/.claude/plans/vectorized-growing-bonbon.md at the time this was written, and src/session/nova_operator.rs's module doc in the main crate."
+
+[lib]
+name = "nova_operator"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nova-operator"
+path = "src/main.rs"
+
+[dependencies]
+# The DKG/FROST primitives this binary actually runs. Pinned to the exact
+# same commit as the main crate's own `novachannel-mpc` dependency — a
+# shared workspace `Cargo.lock` (see the root `Cargo.toml`'s `[workspace]`)
+# makes drift between the two impossible rather than a comment asking
+# someone to remember, the way `nova-wasm/Cargo.toml` has to for the wasm
+# build (which can't share this lockfile — different target).
+novachannel-mpc = { git = "https://github.com/cameronaaron/internet.git", package = "novachannel-mpc", rev = "8b40a8a342376cd56ebf66a71a89005f981f5a2a" }
+curve25519-dalek = { version = "5", features = ["rand_core"] }
+# Point-to-point sealing of one DKG share to its recipient's static key, so
+# the chat server (which relays every ceremony message) can forward this
+# one but never read it. A one-shot sealed-box, not a session — see
+# `crypto.rs`'s doc comment for why that's the right amount of machinery
+# here rather than a full `novachannel` X3DH session.
+x25519-dalek = { version = "3", features = ["static_secrets"] }
+# `chacha20poly1305`/`hkdf` here are built on the `digest 0.11` ecosystem,
+# not `0.10` — `sha2 = "0.11"` (not "0.10", which the main crate uses) is
+# what actually satisfies their trait bounds; picking the 0.10 line here
+# produced two incompatible `digest` majors in one build and a wall of
+# trait-bound errors pointing at `Hkdf::new` until this was corrected.
+chacha20poly1305 = "0.11"
+hkdf = "0.13"
+sha2 = "0.11"
+# Same construction `novachannel-mpc::csprng()` uses: `getrandom`'s
+# `SysRng` only implements the fallible `TryCryptoRng`, so `UnwrapErr`
+# wraps it to the infallible `CryptoRng` x25519-dalek's key generation
+# wants — matching the sibling crate's own pattern rather than pulling in
+# a second, differently-shaped RNG source.
+rand_core = "0.10"
+getrandom = { version = "0.4", features = ["sys_rng"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal", "io-util"] }
+tokio-tungstenite = "0.30.0"
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"

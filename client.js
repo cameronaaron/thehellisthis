@@ -628,11 +628,17 @@ class ChatApp {
                 const decryptOk = data.recovered_key_matches;
                 const signOk = data.signature_valid;
                 this.addSystemMessage(
-                    `MPC/FROST demo (protocol demonstration, not real distributed trust — every operator ran in this one server process): ${data.quorum.length} of ${data.num_operators} simulated operators jointly decrypted a key only their combined shares could produce (match: ${decryptOk ? 'yes' : 'no'}), then jointly signed the current room membership root (${data.signed_message.slice(0, 16)}…) with a FROST threshold signature — every share and the aggregate both verified: ${signOk ? 'yes' : 'no'}.`,
+                    `MPC/FROST demo — a real quorum of ${data.quorum.length} of ${data.num_operators} independently-run nova-operator processes (participants ${data.quorum.join(', ')}): jointly decrypted a key only their combined shares could produce (match: ${decryptOk ? 'yes' : 'no'}), then jointly signed the current room membership root (${data.signed_message.slice(0, 16)}…) with a FROST threshold signature — every share and the aggregate both verified: ${signOk ? 'yes' : 'no'}. This server never held any operator's secret share.`,
                     decryptOk && signOk ? 'success' : 'error'
                 );
                 break;
             }
+            case 'NovaMpcQuorumUnavailable':
+                this.addSystemMessage(
+                    `MPC/FROST demo unavailable: only ${data.live} of the ${data.needed} needed nova-operator processes are currently connected. Run more operator processes against this server's /ws/nova-operator endpoint to try again.`,
+                    'error'
+                );
+                break;
             default:
                 console.warn('Unknown event type:', data.type);
         }

@@ -16,7 +16,7 @@ mod admission;
 mod events;
 mod lifecycle;
 mod nova;
-mod nova_mpc;
+mod nova_operator;
 mod nova_rln;
 mod tasks;
 mod teardown;
@@ -28,6 +28,7 @@ pub use admission::ws_handler;
 pub(crate) use admission::{admit_user, attach_cookies, check_admission};
 
 pub(crate) use crate::protocol::encode_event;
+pub(crate) use nova_operator::{NovaOperatorRegistry, nova_operator_ws_handler};
 pub(crate) use nova_rln::NovaRlnGroup;
 pub(crate) use tasks::{
     FrameSink, beat_and_evict_idle, forward_broadcasts, send_history, send_pings,

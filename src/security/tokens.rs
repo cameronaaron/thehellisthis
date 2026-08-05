@@ -44,6 +44,22 @@ pub fn is_authorized_for_metrics(headers: &axum::http::HeaderMap) -> bool {
     })
 }
 
+/// Whether a `/ws/nova-operator` upgrade may proceed.
+///
+/// A real `nova-operator` process holds a genuine DKG secret share once it
+/// joins a ceremony — a far higher-value credential than anything
+/// `/metrics`/`/admin` gate, so this fails closed exactly the same way: no
+/// `NOVA_OPERATOR_TOKEN` set means every connection is refused, not silently
+/// admitted. One shared token to start (every configured operator uses the
+/// same value); per-operator tokens are a natural follow-up if individually
+/// revocable credentials are ever needed, but add real state (which token
+/// belongs to which participant) this proof-of-concept doesn't need yet.
+pub fn is_authorized_for_nova_operator(headers: &axum::http::HeaderMap) -> bool {
+    is_authorized_by_env_token(headers, "NOVA_OPERATOR_TOKEN", |v| {
+        v.strip_prefix("Bearer ").map(str::to_string)
+    })
+}
+
 /// The shape both token checks share: read the expected value from `env_var`,
 /// pull whatever credential the request actually sent out of its
 /// `Authorization` header via `extract`, compare in constant time. Fails

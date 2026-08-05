@@ -61,9 +61,9 @@ use tracing::warn;
 use crate::protocol::{ClientEvent, OutgoingEvent};
 use crate::state::AppState;
 
-use super::{apply_client_event, encode_event, nova_mpc, nova_rln};
+use super::{apply_client_event, encode_event, nova_operator, nova_rln};
 
-/// How often one connection may trigger the MPC demo (`session/nova_mpc.rs`).
+/// How often one connection may trigger the MPC demo (`session/nova_operator.rs`).
 /// The demo is cheap CPU, not a resource worth rationing for its own sake —
 /// this exists so a bored click doesn't flood the room with repeats of the
 /// same broadcast, the same reasoning as the reaction/roster throttles in
@@ -289,7 +289,7 @@ pub(crate) async fn dispatch(
                     if !slot.check_mpc_demo_throttle(Instant::now()).await {
                         return None;
                     }
-                    nova_mpc::handle_demo_request(state, room).await;
+                    nova_operator::handle_demo_request(state, room).await;
                     None
                 }
                 inner => {

@@ -1,3 +1,15 @@
+[workspace]
+# `nova-operator` shares this workspace (and therefore this `Cargo.lock`)
+# with the main crate so the two can never drift on which `novachannel-mpc`
+# commit they're pinned to — a shared lockfile makes that impossible rather
+# than a comment asking someone to remember, the way `nova-wasm/Cargo.toml`
+# has to (different target, so it can't join this workspace; it stays a
+# fully independent crate, built by `scripts/build-nova-wasm.sh`, exactly
+# as before). `"."` is this package itself — a workspace with a root
+# package is an ordinary, supported Cargo shape, not a restructuring of
+# this crate.
+members = [".", "nova-operator"]
+
 [package]
 name = "infinite-chat"
 version = "0.1.0"
@@ -102,14 +114,22 @@ novachannel-oram = { git = "https://github.com/cameronaaron/internet.git", packa
 # novachannel-rln itself depends on (its Cargo.toml, not a rev — this is a
 # normal crates.io dependency, not the private fork).
 winterfell = "0.13"
-# `nova` room, Phase 4: a labeled protocol-demonstration panel (not real
-# distributed trust — see session/nova_mpc.rs's module doc for why, and
-# the nova room plan's Context section for the product decision behind
-# showing it as a demo rather than gating anything real). Entirely
-# server-side: there's no reason to push simulated-operator math to the
-# browser when the whole point is that one process holding every share is
-# what the demo is honest about *not* being secure distributed trust.
+# `nova` room's MPC/FROST demo (`session/nova_operator.rs`): the *public*
+# half of the DKG/FROST math — combining partial decryptions, verifying
+# signature shares, aggregating a signature. The secret `KeyShare` type
+# this crate also exposes is never constructed anywhere in this server's
+# own code (see that module's doc); it belongs only to `nova-operator/`,
+# a genuinely separate process.
 novachannel-mpc = { git = "https://github.com/cameronaaron/internet.git", package = "novachannel-mpc", rev = "8b40a8a342376cd56ebf66a71a89005f981f5a2a" }
+# The same curve type `novachannel-mpc`'s public API is built on
+# (`RistrettoPoint`/`Scalar`) — needed directly to decode the hex-encoded
+# values `nova-operator`'s wire protocol carries.
+curve25519-dalek = { version = "5", features = ["rand_core"] }
+# `nova-operator`'s shared protocol/crypto types (`nova_operator::protocol`,
+# `nova_operator::wire`) — a workspace path dependency, not a copy, so the
+# coordinator and every operator process can never independently drift on
+# what a `Reveal` or a `Round2Request` looks like on the wire.
+nova-operator = { path = "nova-operator" }
 [dev-dependencies]
 # `test-util` gives tests simulated time, so the housekeeping loops can be
 # asserted to actually run on their 60-second intervals without a test that

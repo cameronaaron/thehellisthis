@@ -479,16 +479,96 @@ async fn nova_dummy_frames_are_discarded_without_a_trace() {
     handle.abort();
 }
 
-/// One client requests the MPC/FROST demo; the *other* connection receives
-/// the broadcast result too (module doc in session/nova_mpc.rs: nothing in
-/// it is per-asker), with `recovered_key_matches: true` — a real DKG and
-/// threshold decryption actually ran and actually agreed, not a canned
-/// response.
-#[tokio::test]
-async fn nova_mpc_demo_broadcasts_a_real_result_to_the_whole_room() {
-    let (addr, handle) = start_ws_server().await;
-    let ws_url = format!("ws://{addr}/ws/{NOVA_ROOM}");
+/// Spawns [`config::NOVA_OPERATOR_COUNT`] real, separate `nova-operator`
+/// processes, waits for them to complete a real DKG ceremony with the
+/// server (never sharing a secret share with it — `session/nova_operator.rs`'s
+/// whole point), then drives the room's demo button and asserts the result
+/// came from that live quorum: `recovered_key_matches` and
+/// `signature_valid` both real cryptographic checks, not canned. One client
+/// requests the demo; the *other* connection receives the broadcast result
+/// too (nothing in it is per-asker).
+///
+/// Builds `nova-operator`'s binary first if it isn't already there —
+/// harmless if it is, `cargo build` no-ops on an unchanged target.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn nova_mpc_demo_uses_a_real_distributed_operator_quorum() {
+    use std::io::{BufRead, BufReader};
+    use std::sync::atomic::{AtomicU32, Ordering};
 
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let build_status = std::process::Command::new(&cargo)
+        .args(["build", "-p", "nova-operator", "--bin", "nova-operator"])
+        .status()
+        .expect("run cargo build for nova-operator");
+    assert!(build_status.success(), "nova-operator must build");
+
+    let operator_bin = format!("{}/target/debug/nova-operator", env!("CARGO_MANIFEST_DIR"));
+
+    let token = format!("test-operator-token-{}", std::process::id());
+    unsafe { std::env::set_var("NOVA_OPERATOR_TOKEN", &token) };
+
+    // `start_ws_server()` mounts only `/ws/{room}` — not the real router,
+    // so `/ws/nova-operator` would silently be swallowed by that room
+    // wildcard instead of reaching `nova_operator_ws_handler`.
+    // `start_ws_server_with_state()` uses the actual `build_router`.
+    let (addr, _app_state, handle) = start_ws_server_with_state().await;
+    let operator_url = format!("ws://{addr}/ws/nova-operator");
+
+    // `tokio::process` is deliberately not a dependency here — this crate's
+    // own dependency lists document leaving `fs`/`process` off tokio on
+    // purpose (`Cargo.toml`'s dev-dependency comment). A plain
+    // `std::process::Command` plus a blocking reader thread per child does
+    // the same job without adding either feature.
+    let ready = std::sync::Arc::new(AtomicU32::new(0));
+    let mut children = Vec::new();
+    for i in 0..crate::config::NOVA_OPERATOR_COUNT {
+        let identity_path =
+            std::env::temp_dir().join(format!("nova-operator-test-{}-{i}.key", std::process::id()));
+        let _ = std::fs::remove_file(&identity_path);
+
+        let mut child = std::process::Command::new(&operator_bin)
+            .args([
+                "--server",
+                &operator_url,
+                "--token",
+                &token,
+                "--identity",
+                identity_path.to_str().expect("temp path is valid UTF-8"),
+            ])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn nova-operator");
+
+        let stdout = child.stdout.take().expect("stdout is piped");
+        let ready = ready.clone();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if line.contains("ceremony complete") {
+                    ready.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        });
+
+        children.push(child);
+    }
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        if ready.load(Ordering::SeqCst) >= crate::config::NOVA_OPERATOR_COUNT {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!(
+                "only {} of {} nova-operator processes completed the ceremony in time",
+                ready.load(Ordering::SeqCst),
+                crate::config::NOVA_OPERATOR_COUNT
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let ws_url = format!("ws://{addr}/ws/{NOVA_ROOM}");
     let (mut ws_a, _) = connect_async(&ws_url).await.expect("client A connects");
     drain_preamble(&mut ws_a).await;
     let mut session_a = handshake(&mut ws_a).await;
@@ -513,10 +593,13 @@ async fn nova_mpc_demo_broadcasts_a_real_result_to_the_whole_room() {
     .expect("send demo request");
 
     let received = recv_sealed(&mut ws_b, &mut session_b).await;
-    assert_eq!(received["type"], "NovaMpcDemoResult");
+    assert_eq!(
+        received["type"], "NovaMpcDemoResult",
+        "expected a real result from the live quorum, got: {received}"
+    );
     assert!(
         received["recovered_key_matches"].as_bool().unwrap_or(false),
-        "a real quorum must recover the real encapsulated key: {received}"
+        "the real, separate operator processes must recover the real encapsulated key: {received}"
     );
     assert_eq!(
         received["quorum"].as_array().unwrap().len() as u64,
@@ -530,12 +613,16 @@ async fn nova_mpc_demo_broadcasts_a_real_result_to_the_whole_room() {
     );
     assert!(
         received["signature_valid"].as_bool().unwrap_or(false),
-        "every FROST share and the aggregate must verify: {received}"
+        "every FROST share, computed by a genuinely separate process, and the aggregate must verify: {received}"
     );
     assert!(
         !received["signed_message"].as_str().unwrap_or("").is_empty(),
         "the quorum must have signed the room's real RLN root: {received}"
     );
 
+    for mut child in children {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
     handle.abort();
 }

@@ -1545,11 +1545,10 @@ body {
     display: none;
 }
 
-/* nova room only: triggers session/nova_mpc.rs's demo round. Hidden until
-   the PQ channel establishes (client.js::completeNovaHandshake) — same
-   §10.9 reasoning as the anonymous-post toggle above. The disclaimer is
-   in the button's own label, not a tooltip or a separate line, so it
-   cannot be missed by not hovering. */
+/* nova room only: triggers session/nova_operator.rs's demo round against a
+   real quorum of separately-run nova-operator processes. Hidden until the
+   PQ channel establishes (client.js::completeNovaHandshake) — same §10.9
+   reasoning as the anonymous-post toggle above. */
 .nova-mpc-demo-button {
     display: block;
     width: calc(100% - 2 * var(--space-md, 16px));
@@ -2352,7 +2351,7 @@ body {
     Post anonymously (RLN-verified, rate-limited)
 </label>
 <button id="novaMpcDemoBtn" class="nova-mpc-demo-button" type="button" hidden>
-    Run MPC/FROST demo (protocol demonstration, not real distributed trust)
+    Run MPC/FROST demo (real quorum of separately-run operator processes)
 </button>
 <div id="novaDpBudgetReadout" class="nova-dp-budget-readout" hidden></div>
 <footer class="input-container">

@@ -56,6 +56,24 @@ pub(crate) const NOVA_MAX_USERS: usize = 12;
 /// short that a genuinely single anonymous post per member feels cramped.
 pub(crate) const NOVA_RLN_EPOCH_SECONDS: u64 = 30;
 
+/// Total participants in the `nova` MPC/FROST DKG (`session/nova_operator.rs`)
+/// — matches the size the earlier in-process simulation used, so the only
+/// thing that changed when it became genuinely distributed is *where* the
+/// math runs, not what it demonstrates.
+pub(crate) const NOVA_OPERATOR_COUNT: u32 = 5;
+
+/// How many of [`NOVA_OPERATOR_COUNT`] live operators are needed for a
+/// ceremony or a demo round.
+pub(crate) const NOVA_OPERATOR_THRESHOLD: u32 = 3;
+
+/// How long the coordinator waits for one operator's reply to a
+/// decrypt/sign request before treating the quorum as unavailable
+/// (`session/nova_operator.rs::request_reply`) — generous for a real
+/// network round trip to a process that might be on someone's home
+/// connection, but bounded so one silent operator cannot hang a demo
+/// request forever.
+pub(crate) const NOVA_OPERATOR_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// The connected-user ceiling for `room`. Every room uses
 /// [`MAX_USERS_PER_ROOM`] except [`NOVA_ROOM`], which is far lower — see
 /// [`NOVA_MAX_USERS`] for why.

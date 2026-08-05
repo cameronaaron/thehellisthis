@@ -302,13 +302,12 @@ pub enum OutgoingEvent {
     NovaRlnSlashed {
         recovered_secret: String,
     },
-    /// `nova` room only (`session/nova_mpc.rs`): the result of one DKG +
-    /// threshold-decryption + FROST-signing demonstration round.
-    /// `client.js` labels this a protocol demonstration, not real
-    /// distributed trust — see that module's doc comment for why (every
-    /// simulated operator lives in this one process). Broadcast to the
-    /// whole room, since nothing in it is per-connection state or a secret
-    /// belonging to whoever asked.
+    /// `nova` room only (`session/nova_operator.rs`): the result of one
+    /// DKG, threshold-decryption, and FROST-signing round against a real,
+    /// currently-connected quorum of `nova-operator` processes — the
+    /// coordinator (this server) never held any of their secret shares.
+    /// Broadcast to the whole room, since nothing in it is per-connection
+    /// state or a secret belonging to whoever asked.
     NovaMpcDemoResult {
         num_operators: u32,
         threshold: u32,
@@ -319,6 +318,14 @@ pub enum OutgoingEvent {
         /// current RLN membership root at the moment this ran.
         signed_message: String,
         signature_valid: bool,
+    },
+    /// `nova` room only (`session/nova_operator.rs`): fewer than
+    /// `needed` real `nova-operator` processes are currently connected to
+    /// run a demo round. Distinct from silently falling back to a
+    /// simulation — there is no simulation to fall back to any more.
+    NovaMpcQuorumUnavailable {
+        live: u32,
+        needed: u32,
     },
 }
 

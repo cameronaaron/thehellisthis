@@ -24,7 +24,7 @@ use crate::routes::{
     nova_js_handler, nova_wasm_handler, robots_txt_handler, room_handler, root_redirect,
 };
 use crate::security::security_header_layers;
-use crate::session::ws_handler;
+use crate::session::{nova_operator_ws_handler, ws_handler};
 use crate::state::AppState;
 
 pub(crate) const DEFAULT_PORT: u16 = 3000;
@@ -84,6 +84,13 @@ pub(crate) fn build_router(state: Arc<AppState>) -> Router {
         .route("/metrics", get(metrics_handler).layer(no_store()))
         .route("/admin", get(admin_dashboard_handler).layer(no_store()))
         .route("/robots.txt", get(robots_txt_handler))
+        // Registered before the room wildcard below: `/ws/nova-operator` is a
+        // real route, not a room name, the same reasoning `config::
+        // RESERVED_ROOM_NAMES` uses for `/{room}` itself — axum's router
+        // resolves an exact literal segment ahead of a `{room}` capture
+        // regardless of registration order, but ordering it here first keeps
+        // that fact from being load-bearing.
+        .route("/ws/nova-operator", get(nova_operator_ws_handler))
         .route("/ws/{room}", get(ws_handler))
         // Last: every other single segment is a room name.
         .route("/{room}", get(room_handler).layer(no_store()));

@@ -15,4 +15,6 @@ mod tokens;
 
 pub use headers::security_header_layers;
 pub use origin::is_allowed_origin;
-pub use tokens::{is_authorized_for_admin, is_authorized_for_metrics};
+pub use tokens::{
+    is_authorized_for_admin, is_authorized_for_metrics, is_authorized_for_nova_operator,
+};

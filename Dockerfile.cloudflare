@@ -23,13 +23,25 @@ COPY client.js ./client.js
 # include_str!/include_bytes!, so it must be in the build context or
 # `cargo build` fails looking for a file that exists in the repo but not here.
 COPY nova-wasm/pkg ./nova-wasm/pkg
+# nova-operator/ is a workspace member the main crate depends on as a path
+# dependency (protocol/crypto types shared with the standalone operator
+# binary — session/nova_operator.rs's module doc) — `Cargo.toml`/
+# `Cargo.lock` reference it, so `cargo build` needs it present in this
+# build context even though the built image never runs that binary itself
+# (operators run on their own machines, never inside this container).
+COPY nova-operator ./nova-operator
 
 # No build-dependency install here: nothing in the dependency tree links
 # OpenSSL (`grep openssl Cargo.lock` finds nothing — the server does no
 # outbound TLS of its own; Cloudflare terminates it), so the `pkg-config`/
 # `libssl-dev` this used to install were dead weight in the one stage that
 # still runs `apt-get`.
-RUN cargo build --release
+#
+# `--bin infinite-chat`, not a bare `cargo build --release`: the workspace
+# also contains `nova-operator`'s own binary target, which this image has no
+# use for (it runs on operators' own machines) and which would otherwise be
+# built and discarded here for nothing.
+RUN cargo build --release --bin infinite-chat
 
 # distroless, not a general-purpose OS: no shell, no package manager, no `ls`,
 # no `cat` — nothing a container-escape or a dependency RCE could use once it
