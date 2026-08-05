@@ -29,7 +29,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
+use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use nova_operator::protocol::{
     CoordinatorMessage, OperatorMessage, RevealPayload, SigningCommitmentWire,
@@ -37,25 +39,25 @@ use nova_operator::protocol::{
 use nova_operator::{crypto, wire};
 use novachannel_mpc::frost::{SecretNonces, round1_commit, round2_sign};
 use novachannel_mpc::{Dealer, KeyShare, ParticipantId, finalize_key_share, verify_share};
+use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use x25519_dalek::{PublicKey, StaticSecret};
 
-/// Recomputes `Dealer::commitment_hash()` from a *received* commitment
-/// vector, so a dealer's `Reveal` can be checked against the hash it
-/// committed to earlier. Must match that method's own byte layout exactly
-/// (SHA-256 over each commitment's compressed bytes, concatenated, in
-/// order) — verified against it directly by
-/// `dealer_reveal_hash_matches_recomputed_hash` below.
-fn commitment_hash(commitments: &[curve25519_dalek::ristretto::RistrettoPoint]) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    for c in commitments {
-        hasher.update(c.compress().as_bytes());
-    }
-    hasher.finalize().into()
-}
+type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
+type WsWrite = SplitSink<WsStream, WsMessage>;
+type WsRead = SplitStream<WsStream>;
+
+/// Starting backoff, and the ceiling it doubles up to, for reconnect
+/// attempts after the ceremony has completed (module doc, "Reconnecting
+/// after the ceremony completes"). Only reached after the *initial*
+/// connection already succeeded once — a persistent unreachable coordinator
+/// after that point is exactly the case worth backing off from rather than
+/// hammering.
+const RECONNECT_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
+const RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(30);
 
 fn parse_args() -> (String, String, PathBuf) {
     let mut server = None;
@@ -127,23 +129,91 @@ fn load_or_create_identity(path: &Path) -> StaticSecret {
     }
 }
 
+/// Opens one WebSocket connection to the coordinator, with the bearer
+/// token attached. A `Result`, not a panic — the initial connection in
+/// `main` still treats failure as fatal (`.expect`), but reconnect attempts
+/// after the ceremony completes need to try again rather than exit.
+async fn connect_ws(server: &str, token: &str) -> Result<WsStream, String> {
+    let mut request = server
+        .into_client_request()
+        .map_err(|e| format!("invalid --server URL: {e}"))?;
+    request.headers_mut().insert(
+        "Authorization",
+        HeaderValue::from_str(&format!("Bearer {token}")).map_err(|e| e.to_string())?,
+    );
+    let (ws_stream, _) = tokio_tungstenite::connect_async(request)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(ws_stream)
+}
+
+/// Reconnects after the ceremony has already completed, retrying with
+/// capped exponential backoff until the coordinator confirms this operator
+/// back as `my_id` (`CoordinatorMessage::Reconnected`) — see the module doc
+/// section "Reconnecting after the ceremony completes". This function does
+/// not return until it succeeds; a coordinator that is down for a while is
+/// exactly the case worth waiting out rather than exiting over.
+async fn reconnect_until_confirmed(
+    server: &str,
+    token: &str,
+    my_static_public: &PublicKey,
+    my_id: ParticipantId,
+) -> (WsWrite, WsRead) {
+    let mut backoff = RECONNECT_INITIAL_BACKOFF;
+    loop {
+        let stream = match connect_ws(server, token).await {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("reconnect failed: {e}; retrying in {backoff:?}");
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(RECONNECT_MAX_BACKOFF);
+                continue;
+            }
+        };
+        let (mut write, mut read) = stream.split();
+        send(
+            &mut write,
+            &OperatorMessage::Hello {
+                static_public_key: wire::hex_encode(my_static_public.as_bytes()),
+            },
+        )
+        .await;
+
+        let confirmed = loop {
+            match next_coordinator_message(&mut read).await {
+                Some(CoordinatorMessage::Reconnected { participant_id }) => {
+                    break Some(participant_id);
+                }
+                Some(_) => continue,
+                None => break None,
+            }
+        };
+
+        match confirmed {
+            Some(id) if id == my_id => {
+                println!("reconnected as participant {my_id}");
+                return (write, read);
+            }
+            Some(other) => eprintln!(
+                "coordinator confirmed the wrong participant id ({other}, expected {my_id}) \
+                 — retrying"
+            ),
+            None => {
+                eprintln!("coordinator closed the connection during reconnect — retrying");
+            }
+        }
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(RECONNECT_MAX_BACKOFF);
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let (server, token, identity_path) = parse_args();
     let identity = load_or_create_identity(&identity_path);
     let my_static_public = PublicKey::from(&identity);
 
-    let mut request = server
-        .as_str()
-        .into_client_request()
-        .expect("--server must be a valid ws(s):// URL");
-    request.headers_mut().insert(
-        "Authorization",
-        HeaderValue::from_str(&format!("Bearer {token}"))
-            .expect("token must be a valid header value"),
-    );
-
-    let (ws_stream, _) = tokio_tungstenite::connect_async(request)
+    let ws_stream = connect_ws(&server, &token)
         .await
         .expect("connect to coordinator");
     let (mut write, mut read) = ws_stream.split();
@@ -162,13 +232,33 @@ async fn main() {
             eprintln!("coordinator closed the connection before sending a roster");
             std::process::exit(1);
         };
-        if let CoordinatorMessage::Welcome {
-            participant_id,
-            threshold,
-            roster,
-        } = msg
-        {
-            break (participant_id, threshold, roster);
+        match msg {
+            CoordinatorMessage::Welcome {
+                participant_id,
+                threshold,
+                roster,
+            } => break (participant_id, threshold, roster),
+            // The coordinator recognized this identity as a returning
+            // participant from an *already-completed* ceremony — but this
+            // is a cold start (we just sent our first-ever `Hello`), so
+            // there is no `KeyShare` in memory to serve as that
+            // participant. Only `reconnect_until_confirmed` (used after
+            // *this process* already derived a share) is a valid place to
+            // receive `Reconnected`; seeing it here means the identity
+            // file survived a process restart but the share did not
+            // (module doc, "Reconnecting after the ceremony completes") —
+            // fail clearly rather than hang forever waiting for a
+            // `Welcome` that will never come.
+            CoordinatorMessage::Reconnected { participant_id } => {
+                eprintln!(
+                    "the coordinator recognized this identity as participant {participant_id} \
+                     from an already-completed ceremony, but this process has no KeyShare in \
+                     memory to serve as that participant — the whole server needs restarting \
+                     for a fresh ceremony"
+                );
+                std::process::exit(1);
+            }
+            _ => continue,
         }
     };
     let n = roster.len() as u32;
@@ -230,124 +320,212 @@ async fn main() {
     )
     .await;
 
-    // ---- Collect every dealer's reveal, verify, finalize -----------------
+    // ---- Collect every dealer's reveal, checking hash + share as each
+    // arrives. A hash mismatch is silently excluded — both the commit-round
+    // hash and the revealed commitments are already public, so every
+    // honest party (and this server) reaches the same exclusion
+    // independently, no message needed. A bad share can only be detected
+    // by its recipient, so it becomes a `Complaint` instead, revealing just
+    // that one share so everyone else can verify the claim themselves
+    // rather than trust it (module doc, "Malicious-dealer exclusion, two
+    // kinds"). ------------------------------------------------------------
     let mut dealer_c0s: BTreeMap<ParticipantId, curve25519_dalek::ristretto::RistrettoPoint> =
         BTreeMap::new();
-    let mut my_verified_shares: BTreeMap<ParticipantId, curve25519_dalek::scalar::Scalar> =
+    let mut my_shares_by_dealer: BTreeMap<ParticipantId, curve25519_dalek::scalar::Scalar> =
         BTreeMap::new();
+    let mut excluded_dealers: std::collections::BTreeSet<ParticipantId> =
+        std::collections::BTreeSet::new();
+    let mut received: std::collections::BTreeSet<ParticipantId> = std::collections::BTreeSet::new();
 
-    while my_verified_shares.len() < n as usize {
+    while (received.len() as u32) < n {
         let Some(msg) = next_coordinator_message(&mut read).await else {
             eprintln!("coordinator closed the connection during the reveal round");
             std::process::exit(1);
         };
-        let CoordinatorMessage::RevealBroadcast { from, payload } = msg else {
-            if let CoordinatorMessage::CeremonyFailed { reason } = msg {
+        match msg {
+            CoordinatorMessage::RevealBroadcast { from, payload } => {
+                if !received.insert(from) {
+                    continue;
+                }
+
+                let Some(commitments) = payload
+                    .commitments
+                    .iter()
+                    .map(|h| wire::point_from_hex(h))
+                    .collect::<Option<Vec<_>>>()
+                else {
+                    report_failure(
+                        &mut write,
+                        format!("dealer {from}'s reveal had a malformed commitment"),
+                    )
+                    .await;
+                    std::process::exit(1);
+                };
+
+                // The whole point of the commit-then-reveal ordering
+                // (module doc, `Dealer`'s own docs): a dealer who picked
+                // coefficients *after* seeing everyone else's would have
+                // to also fabricate a matching hash before anyone else
+                // committed. Both sides of this check are already public,
+                // so excluding is silent — nothing to broadcast, nothing
+                // to trust.
+                let actual_hash = wire::hex_encode(&wire::commitment_hash(&commitments));
+                let expected_hash = expected_hashes.get(&from.to_string());
+                if expected_hash != Some(&actual_hash) {
+                    eprintln!(
+                        "dealer {from}'s revealed commitments do not match its earlier \
+                         committed hash — excluding (possible rushing-bias attempt)"
+                    );
+                    excluded_dealers.insert(from);
+                    continue;
+                }
+
+                let Some(sealed_b64) = payload.sealed_shares.get(&my_id.to_string()) else {
+                    report_failure(
+                        &mut write,
+                        format!("dealer {from} sent no share for participant {my_id}"),
+                    )
+                    .await;
+                    std::process::exit(1);
+                };
+                let Some(sealed_bytes) = base64_decode(sealed_b64) else {
+                    report_failure(
+                        &mut write,
+                        format!("dealer {from}'s sealed share for me was not valid base64"),
+                    )
+                    .await;
+                    std::process::exit(1);
+                };
+                let Some(opened) = crypto::open(&identity, &sealed_bytes) else {
+                    report_failure(
+                        &mut write,
+                        format!(
+                            "could not open dealer {from}'s sealed share — wrong key or tampered"
+                        ),
+                    )
+                    .await;
+                    std::process::exit(1);
+                };
+                let Ok(share_bytes) = <[u8; 32]>::try_from(opened.as_slice()) else {
+                    report_failure(
+                        &mut write,
+                        format!("dealer {from}'s opened share was not 32 bytes"),
+                    )
+                    .await;
+                    std::process::exit(1);
+                };
+                let Some(share) =
+                    curve25519_dalek::scalar::Scalar::from_canonical_bytes(share_bytes)
+                        .into_option()
+                else {
+                    report_failure(
+                        &mut write,
+                        format!("dealer {from}'s share did not decode to a canonical scalar"),
+                    )
+                    .await;
+                    std::process::exit(1);
+                };
+
+                if !verify_share(&commitments, my_id, &share) {
+                    eprintln!(
+                        "dealer {from} sent me a share that fails Feldman verification — \
+                         complaining and excluding"
+                    );
+                    excluded_dealers.insert(from);
+                    send(
+                        &mut write,
+                        &OperatorMessage::Complaint {
+                            against_dealer: from,
+                            disputed_share: wire::scalar_to_hex(&share),
+                        },
+                    )
+                    .await;
+                    continue;
+                }
+
+                dealer_c0s.insert(from, commitments[0]);
+                my_shares_by_dealer.insert(from, share);
+            }
+            CoordinatorMessage::ComplaintBroadcast { against_dealer, .. } => {
+                excluded_dealers.insert(against_dealer);
+            }
+            CoordinatorMessage::CeremonyFailed { reason } => {
                 eprintln!("ceremony failed during reveal: {reason}");
                 std::process::exit(1);
             }
-            continue;
-        };
-        if my_verified_shares.contains_key(&from) {
-            continue;
+            _ => continue,
         }
-
-        let commitments: Vec<curve25519_dalek::ristretto::RistrettoPoint> = payload
-            .commitments
-            .iter()
-            .map(|h| wire::point_from_hex(h).expect("dealer commitment must be a valid point"))
-            .collect();
-
-        // The whole point of the commit-then-reveal ordering (module doc,
-        // `Dealer`'s own docs): a dealer who picked coefficients *after*
-        // seeing everyone else's would have to also fabricate a matching
-        // hash before anyone else committed — this is where that gets
-        // checked, not merely trusted because the coordinator relayed it.
-        let actual_hash = wire::hex_encode(&commitment_hash(&commitments));
-        let expected_hash = expected_hashes.get(&from.to_string());
-        if expected_hash != Some(&actual_hash) {
-            report_failure(
-                &mut write,
-                format!(
-                    "dealer {from}'s revealed commitments do not match its earlier committed hash \
-                     — possible rushing-bias attempt"
-                ),
-            )
-            .await;
-            std::process::exit(1);
-        }
-
-        let Some(sealed_b64) = payload.sealed_shares.get(&my_id.to_string()) else {
-            report_failure(
-                &mut write,
-                format!("dealer {from} sent no share for participant {my_id}"),
-            )
-            .await;
-            std::process::exit(1);
-        };
-        let sealed_bytes = base64_decode(sealed_b64).unwrap_or_else(|| {
-            eprintln!("dealer {from}'s sealed share for me was not valid base64");
-            std::process::exit(1);
-        });
-        let Some(opened) = crypto::open(&identity, &sealed_bytes) else {
-            report_failure(
-                &mut write,
-                format!("could not open dealer {from}'s sealed share — wrong key or tampered"),
-            )
-            .await;
-            std::process::exit(1);
-        };
-        let share_bytes: [u8; 32] = opened.as_slice().try_into().unwrap_or_else(|_| {
-            eprintln!("dealer {from}'s opened share was not 32 bytes");
-            std::process::exit(1);
-        });
-        let Some(share) =
-            curve25519_dalek::scalar::Scalar::from_canonical_bytes(share_bytes).into_option()
-        else {
-            report_failure(
-                &mut write,
-                format!("dealer {from}'s share did not decode to a canonical scalar"),
-            )
-            .await;
-            std::process::exit(1);
-        };
-
-        if !verify_share(&commitments, my_id, &share) {
-            report_failure(
-                &mut write,
-                format!("dealer {from} sent me a share that fails Feldman verification"),
-            )
-            .await;
-            std::process::exit(1);
-        }
-
-        dealer_c0s.insert(from, commitments[0]);
-        my_verified_shares.insert(from, share);
     }
 
-    let secret_share = my_verified_shares
-        .values()
+    send(&mut write, &OperatorMessage::NoMoreComplaints).await;
+
+    // Every participant sends `NoMoreComplaints` after processing every
+    // reveal — waiting for the coordinator to confirm the window closed
+    // (rather than just proceeding once *this* operator is done) is what
+    // guarantees every late-arriving complaint from someone else is
+    // accounted for before anyone finalizes.
+    loop {
+        match next_coordinator_message(&mut read).await {
+            Some(CoordinatorMessage::ComplaintBroadcast { against_dealer, .. }) => {
+                excluded_dealers.insert(against_dealer);
+            }
+            Some(CoordinatorMessage::ComplaintWindowClosed) => break,
+            Some(CoordinatorMessage::CeremonyFailed { reason }) => {
+                eprintln!("ceremony failed: {reason}");
+                std::process::exit(1);
+            }
+            Some(_) => continue,
+            None => {
+                eprintln!(
+                    "coordinator closed the connection while waiting for the complaint \
+                     window to close"
+                );
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if !excluded_dealers.is_empty() {
+        println!(
+            "excluding {} dealer(s) from the group key: {excluded_dealers:?}",
+            excluded_dealers.len()
+        );
+    }
+
+    let secret_share = my_shares_by_dealer
+        .iter()
+        .filter(|(id, _)| !excluded_dealers.contains(id))
+        .map(|(_, s)| *s)
         .fold(curve25519_dalek::scalar::Scalar::ZERO, |acc, s| acc + s);
-    let group_public_key = dealer_c0s.values().fold(
-        curve25519_dalek::ristretto::RistrettoPoint::default(),
-        |acc, c| acc + c,
-    );
+    let group_public_key = dealer_c0s
+        .iter()
+        .filter(|(id, _)| !excluded_dealers.contains(id))
+        .map(|(_, c)| *c)
+        .fold(
+            curve25519_dalek::ristretto::RistrettoPoint::default(),
+            |acc, c| acc + c,
+        );
     let key_share = KeyShare {
         participant_id: my_id,
         secret_share,
         group_public_key,
     };
-    // Cross-check against the library's own summation to catch a mistake in
-    // the manual folds above rather than trust them silently.
-    debug_assert_eq!(
-        finalize_key_share(
-            my_id,
-            &my_verified_shares.values().copied().collect::<Vec<_>>(),
-            &dealer_c0s.values().copied().collect::<Vec<_>>(),
-        )
-        .group_public_key,
-        key_share.group_public_key
-    );
+    // Cross-check against the library's own summation (only meaningful
+    // when nothing was excluded — `finalize_key_share` has no exclusion
+    // parameter, unlike `finalize_key_share_excluding_faulty`, which needs
+    // the full per-dealer share *matrix* this operator never has, see
+    // `session/nova_operator.rs`'s module doc).
+    if excluded_dealers.is_empty() {
+        debug_assert_eq!(
+            finalize_key_share(
+                my_id,
+                &my_shares_by_dealer.values().copied().collect::<Vec<_>>(),
+                &dealer_c0s.values().copied().collect::<Vec<_>>(),
+            )
+            .group_public_key,
+            key_share.group_public_key
+        );
+    }
 
     send(
         &mut write,
@@ -388,16 +566,40 @@ async fn main() {
         wire::point_to_hex(&key_share.group_public_key)
     );
 
-    // ---- Steady state: answer decrypt/sign requests ------------------------
+    // ---- Steady state, with reconnect on a dropped connection --------------
+    // The ceremony itself only ever runs once — this loop is what makes a
+    // transient network blip *after* completion not need a full restart
+    // (module doc, "Reconnecting after the ceremony completes"): the
+    // `KeyShare` stays right here in this stack frame regardless of how
+    // many times the underlying connection drops and reconnects.
+    loop {
+        run_steady_state(&mut write, &mut read, &key_share, my_id).await;
+        println!("connection to coordinator lost; attempting to reconnect...");
+        let (w, r) = reconnect_until_confirmed(&server, &token, &my_static_public, my_id).await;
+        write = w;
+        read = r;
+    }
+}
+
+/// Answers decrypt/sign requests until the connection drops. Returns
+/// (rather than exiting the process) so `main`'s reconnect loop can try
+/// again — this operator still holds `key_share` regardless of how the
+/// connection came and went.
+async fn run_steady_state(
+    write: &mut WsWrite,
+    read: &mut WsRead,
+    key_share: &KeyShare,
+    my_id: ParticipantId,
+) {
     let mut pending_nonces: Option<SecretNonces> = None;
-    while let Some(msg) = next_coordinator_message(&mut read).await {
+    while let Some(msg) = next_coordinator_message(read).await {
         match msg {
             CoordinatorMessage::PartialDecryptRequest { ephemeral_point } => {
                 let point =
                     wire::point_from_hex(&ephemeral_point).expect("ephemeral point must be valid");
-                let partial = novachannel_mpc::partial_decrypt(&key_share, &point);
+                let partial = novachannel_mpc::partial_decrypt(key_share, &point);
                 send(
-                    &mut write,
+                    write,
                     &OperatorMessage::PartialDecryptResponse {
                         point: wire::point_to_hex(&partial),
                     },
@@ -408,7 +610,7 @@ async fn main() {
                 let (nonces, commitment) = round1_commit(my_id);
                 pending_nonces = Some(nonces);
                 send(
-                    &mut write,
+                    write,
                     &OperatorMessage::Round1Response(SigningCommitmentWire {
                         participant_id: commitment.participant_id,
                         hiding: wire::point_to_hex(&commitment.hiding),
@@ -439,14 +641,14 @@ async fn main() {
                     })
                     .collect();
                 let z = round2_sign(
-                    &key_share,
+                    key_share,
                     nonces,
                     message.as_bytes(),
                     &signer_ids,
                     &commitments,
                 );
                 send(
-                    &mut write,
+                    write,
                     &OperatorMessage::Round2Response {
                         z: wire::scalar_to_hex(&z),
                     },
@@ -459,8 +661,6 @@ async fn main() {
             _ => {}
         }
     }
-
-    println!("coordinator connection closed; exiting");
 }
 
 async fn report_failure<S>(write: &mut S, reason: String)
@@ -535,7 +735,7 @@ mod tests {
         let dealer = Dealer::new(3, 5);
         let expected = dealer.commitment_hash();
         let (commitments, _shares) = dealer.reveal();
-        assert_eq!(commitment_hash(&commitments), expected);
+        assert_eq!(wire::commitment_hash(&commitments), expected);
     }
 
     #[test]
@@ -544,6 +744,6 @@ mod tests {
         let expected = dealer.commitment_hash();
         let (mut commitments, _shares) = dealer.reveal();
         commitments[0] += curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT;
-        assert_ne!(commitment_hash(&commitments), expected);
+        assert_ne!(wire::commitment_hash(&commitments), expected);
     }
 }

@@ -41,6 +41,26 @@ pub fn scalar_from_hex(s: &str) -> Option<Scalar> {
     Scalar::from_canonical_bytes(arr).into_option()
 }
 
+/// Recomputes `novachannel_mpc::Dealer::commitment_hash()` from a
+/// *received* commitment vector, so a dealer's `Reveal` can be checked
+/// against the hash it committed to earlier — by the recipient operator,
+/// and by the coordinator, both needing the identical byte layout that
+/// method uses internally (SHA-256 over each commitment's compressed
+/// bytes, concatenated, in order). Verified against the real
+/// `Dealer::commitment_hash()` by
+/// `dealer_reveal_hash_matches_recomputed_hash` in `main.rs`'s own tests
+/// (that crate depends on `novachannel-mpc` directly; this one doesn't, to
+/// keep the coordinator's dependency on this crate to just the wire
+/// format).
+pub fn commitment_hash(commitments: &[RistrettoPoint]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    for c in commitments {
+        hasher.update(c.compress().as_bytes());
+    }
+    hasher.finalize().into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

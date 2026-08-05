@@ -70,13 +70,31 @@ pub enum OperatorMessage {
     CeremonyAck {
         group_public_key: String,
     },
-    /// This operator could not complete the ceremony (e.g. a share failed
-    /// `verify_share` against its dealer's own published commitments) —
-    /// see `session/nova_operator.rs`'s module doc for why Milestone A
-    /// aborts here rather than running the crate's fault-exclusion path.
+    /// This operator's real, unrecoverable failure to complete the
+    /// ceremony — a malformed frame, an I/O error, anything that isn't a
+    /// single dealer's bad share (that has its own, recoverable path:
+    /// [`OperatorMessage::Complaint`]).
     CeremonyFailed {
         reason: String,
     },
+    /// One of this operator's own received shares failed `verify_share`
+    /// against `against_dealer`'s published commitments. `disputed_share`
+    /// is that one share, hex-encoded — safe to reveal, since it's a
+    /// share this operator alone was ever meant to hold, and revealing it
+    /// lets every other operator (and the coordinator) independently
+    /// recompute the same `verify_share` check against the already-public
+    /// commitments rather than taking this operator's word for it. See
+    /// `session/nova_operator.rs`'s module doc for the full complaint
+    /// round.
+    Complaint {
+        against_dealer: ParticipantId,
+        disputed_share: String,
+    },
+    /// This operator has checked every one of its received shares and
+    /// sent every complaint it has (zero or more) — the signal the
+    /// coordinator waits for from all participants before closing the
+    /// complaint window and letting everyone finalize.
+    NoMoreComplaints,
     PartialDecryptResponse {
         point: String,
     },
@@ -110,16 +128,50 @@ pub enum CoordinatorMessage {
         hashes: BTreeMap<String, String>,
     },
     /// One operator's `Reveal`, relayed verbatim to every operator
-    /// (including the sender, who can treat it as a no-op self-check).
+    /// (including the sender, who can treat it as a no-op self-check). Each
+    /// recipient checks it immediately: first that it hashes to what the
+    /// sender committed to earlier (silent, local, no message needed —
+    /// [`OperatorMessage::CommitmentHash`]'s hash and this payload's
+    /// commitments are both already public, so every party reaches the
+    /// same answer independently), then that its own share verifies
+    /// (`verify_share`) — a failure there becomes a
+    /// [`OperatorMessage::Complaint`], since only the recipient can detect
+    /// a bad share addressed to itself. Once every dealer's `Reveal` has
+    /// been checked this way, the operator sends
+    /// [`OperatorMessage::NoMoreComplaints`] whether or not it found one.
     RevealBroadcast {
         from: ParticipantId,
         payload: RevealPayload,
     },
+    /// A complaint the coordinator independently verified (its own
+    /// `verify_share` check against the accused dealer's public
+    /// commitments actually failed) before relaying — a spam/garbage
+    /// filter, not the authoritative check. Every operator still verifies
+    /// it again itself; a coordinator that let a false complaint through
+    /// would be caught the moment an honest operator's own recomputation
+    /// disagreed and excluded nothing.
+    ComplaintBroadcast {
+        from: ParticipantId,
+        against_dealer: ParticipantId,
+        disputed_share: String,
+    },
+    /// Every participant has sent [`OperatorMessage::NoMoreComplaints`] —
+    /// safe to finalize the key share now, excluding any dealer named in a
+    /// verified complaint.
+    ComplaintWindowClosed,
     CeremonyComplete {
         group_public_key: String,
     },
     CeremonyFailed {
         reason: String,
+    },
+    /// This operator's WebSocket connection dropped after the ceremony
+    /// completed and it has now reconnected — recognized by its static
+    /// public key matching a participant from the completed ceremony's
+    /// roster, so no new DKG is needed. Confirms the `participant_id` it
+    /// already holds a `KeyShare` under.
+    Reconnected {
+        participant_id: ParticipantId,
     },
     /// A demo round needs this operator's partial decryption of
     /// `ephemeral_point`.

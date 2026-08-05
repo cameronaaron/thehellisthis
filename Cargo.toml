@@ -152,6 +152,13 @@ tokio = { version = "1.53.1", features = [
 tokio-tungstenite = "0.30.0"
 tower = { version = "0.5.3", features = ["util"] }
 url = "2.5.8"
+# Test-only: reads a `nova-operator` identity file's raw secret bytes and
+# derives the matching public key, so the reconnect-admission tests
+# (`tests/session_nova.rs`) can present a real operator's identity to a raw
+# WebSocket client without depending on `nova-operator`'s own binary for
+# that half of the check. Same version `nova-operator/Cargo.toml` pins,
+# resolved to one entry via this shared workspace `Cargo.lock`.
+x25519-dalek = { version = "3", features = ["static_secrets"] }
 
 [profile.release]
 # The binary ships inside a Cloudflare Container: a smaller image is a faster

@@ -23,8 +23,8 @@ use crate::routes::{
 };
 use crate::security::is_allowed_origin;
 use crate::session::{
-    admit_user, apply_client_event, apply_client_event_at, cleanup_user, render_off_thread,
-    resolve_render, within_throttle, ws_handler,
+    admit_user, apply_client_event, apply_client_event_at, cleanup_user, complaint_is_valid,
+    render_off_thread, resolve_render, within_throttle, ws_handler,
 };
 use crate::startup::{
     DEFAULT_PORT, build_router, generate_random_room_name, init_tracing, resolve_port, serve,

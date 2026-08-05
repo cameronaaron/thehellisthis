@@ -29,30 +29,52 @@
 //! to this server, over one outbound WebSocket connection each; there is
 //! no operator-to-operator networking to stand up.
 //!
-//! # Milestone A's known limitations (see the plan this implements)
+//! # Malicious-dealer exclusion, two kinds
 //!
-//! - **No malicious-dealer exclusion.** `novachannel_mpc::identify_faulty_
-//!   dealers` needs every share in the clear to run, which is exactly what
-//!   this design refuses to give any single party. Each operator instead
-//!   verifies only the one share addressed to it (`verify_share`, entirely
-//!   local) and aborts the whole ceremony on failure, rather than excluding
-//!   just the bad dealer and continuing. Acceptable for "you run every
-//!   operator yourself"; a real complaint-broadcast protocol (reveal just
-//!   the one disputed share, verifiable by anyone against the already-public
-//!   commitment) is the natural follow-up if this ever needs to tolerate an
-//!   actually adversarial operator.
-//! - **No reconnect story.** The ceremony runs once per server process
-//!   lifetime, starting the moment [`NOVA_OPERATOR_COUNT`] operators have
-//!   said hello. An operator whose *connection* drops after the ceremony
-//!   completes is simply excluded from the live set for future demo rounds
-//!   (real `t`-of-`n` resilience — the demo still works with any live
-//!   quorum of at least [`NOVA_OPERATOR_THRESHOLD`]); an operator whose
-//!   *process* restarts has lost its `KeyShare` and cannot rejoin — the
-//!   whole server needs restarting for a fresh ceremony, the same
-//!   regenerate-on-restart posture `state.rs`'s `nova_dh_identity` already
-//!   has.
+//! `novachannel_mpc::identify_faulty_dealers` needs every share in the
+//! clear to run, which is exactly what this design refuses to give any
+//! single party — so it is never called here. Two failure modes, two
+//! resolutions, neither trusting a single party's say-so:
+//!
+//! - **A dealer's `Reveal` doesn't hash to what it committed to earlier**
+//!   (the rushing-bias attack the commit round exists to catch). Both
+//!   pieces of data — the commit-round hash and the revealed commitments —
+//!   are already public the moment the `Reveal` is relayed, so every
+//!   operator *and this server* independently recompute the same check and
+//!   silently exclude that dealer. No message needed: nobody's word is
+//!   taken for anything, so there's nothing to broadcast.
+//! - **One operator's own share from a dealer fails `verify_share`.** Only
+//!   the recipient can detect this — nobody else has that share. It
+//!   becomes a [`OperatorMessage::Complaint`] that reveals the one
+//!   disputed share: safe, because it was only ever meant for the
+//!   complaining operator, and it lets every other party (including this
+//!   server) independently recompute the identical `verify_share` check
+//!   against data that was already public otherwise. A complaint that
+//!   doesn't actually reproduce is simply ignored, not trusted.
+//!
+//! Every honest operator (and this server) converges on the same
+//! excluded-dealer set either way, because both checks are deterministic
+//! functions of public information — the same "identify, don't just abort"
+//! property `identify_faulty_dealers` gives the single-process case,
+//! realized here without needing global visibility into anyone's shares.
+//!
+//! # Reconnecting after the ceremony completes
+//!
+//! The DKG ceremony itself still runs once — a connection dropping
+//! *during* it still aborts that run (replaying a half-finished Feldman
+//! reveal isn't a problem this module solves). But once
+//! [`CeremonyState::Complete`], an operator whose *connection* merely drops
+//! (not its process — it still holds its `KeyShare` in memory) can
+//! reconnect: it sends the same `Hello` with the same static public key,
+//! this server recognizes it against the completed ceremony's roster, and
+//! hands back its original `participant_id` via
+//! [`CoordinatorMessage::Reconnected`] rather than rejecting it or forcing
+//! a whole new ceremony. An operator whose *process* restarts has genuinely
+//! lost its share and cannot rejoin under any id — the whole server still
+//! needs restarting for a fresh ceremony then, the same regenerate-on-
+//! restart posture `state.rs`'s `nova_dh_identity` already has.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket};
@@ -66,7 +88,9 @@ use nova_operator::wire;
 use novachannel_mpc::frost::{
     SigningCommitment, aggregate, public_verification_share, verify, verify_signature_share,
 };
-use novachannel_mpc::{ParticipantId, combine_partials, derive_symmetric_key, encapsulate};
+use novachannel_mpc::{
+    ParticipantId, combine_partials, derive_symmetric_key, encapsulate, verify_share,
+};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 
@@ -97,11 +121,31 @@ enum CeremonyState {
         /// (`public_verification_share`) — safe for this server to hold,
         /// unlike the shares themselves.
         dealer_commitments: BTreeMap<ParticipantId, Vec<RistrettoPoint>>,
+        /// Every complaint this server independently verified as real
+        /// (`from`'s claimed `disputed_share` genuinely fails
+        /// `verify_share` against `against_dealer`'s commitments) —
+        /// participant ids of the excluded dealers, deduplicated.
+        excluded_dealers: BTreeSet<ParticipantId>,
+        /// Who has sent `NoMoreComplaints` — once this reaches every
+        /// connected operator, the complaint window closes.
+        complaints_done: BTreeSet<ParticipantId>,
         acks: BTreeMap<ParticipantId, RistrettoPoint>,
     },
     Complete {
         dealer_commitments: Vec<Vec<RistrettoPoint>>,
+        /// 0-based indices into `dealer_commitments` — the dealers a
+        /// verified complaint excluded. Passed to
+        /// `public_verification_share` so this server's own FROST-share
+        /// verification agrees with what the (equally) excluding operators
+        /// actually signed with.
+        excluded_dealer_indices: Vec<usize>,
         group_public_key: RistrettoPoint,
+        /// Every original participant's static public key, kept after the
+        /// roster otherwise stops mattering — this is what lets a
+        /// reconnecting operator be recognized as the same participant
+        /// instead of rejected (module doc, "Reconnecting after the
+        /// ceremony completes").
+        roster: BTreeMap<ParticipantId, String>,
     },
     /// The reason is logged at the point of failure (`fail_ceremony`), not
     /// carried here — nothing downstream needs to read it back out of the
@@ -172,28 +216,82 @@ async fn handle_operator_connection(state: Arc<AppState>, socket: WebSocket) {
 
     let (tx, mut rx) = mpsc::unbounded_channel::<CoordinatorMessage>();
 
-    let participant_id = {
-        let mut registry = state.nova_operator_registry.write().await;
-        let ceremony_open = matches!(registry.ceremony, CeremonyState::WaitingForRoster);
-        if !ceremony_open || registry.connections.len() as u32 >= NOVA_OPERATOR_COUNT {
-            warn!("nova-operator connection rejected: ceremony already running or roster full");
-            let _ = ws_sink.close().await;
-            return;
-        }
-        let id = registry.next_id;
-        registry.next_id += 1;
-        registry.connections.insert(
-            id,
-            OperatorConnection {
-                sender: tx,
-                static_public_key_hex,
-            },
-        );
-        id
-    };
-    info!(participant_id, "nova-operator connected");
+    enum Admission {
+        Fresh,
+        Reconnected,
+    }
 
-    maybe_start_ceremony(&state).await;
+    let (participant_id, admission) = {
+        let mut registry = state.nova_operator_registry.write().await;
+        match &registry.ceremony {
+            CeremonyState::WaitingForRoster => {
+                if registry.connections.len() as u32 >= NOVA_OPERATOR_COUNT {
+                    warn!("nova-operator connection rejected: roster already full");
+                    let _ = ws_sink.close().await;
+                    return;
+                }
+                let id = registry.next_id;
+                registry.next_id += 1;
+                registry.connections.insert(
+                    id,
+                    OperatorConnection {
+                        sender: tx,
+                        static_public_key_hex,
+                    },
+                );
+                (id, Admission::Fresh)
+            }
+            // Reconnecting after the ceremony completed: recognized by its
+            // static public key matching a participant from the original
+            // roster who isn't currently connected (module doc). Not a new
+            // DKG — this operator still holds the `KeyShare` it derived the
+            // first time, in its own process's memory.
+            CeremonyState::Complete { roster, .. } => {
+                let returning_id = roster
+                    .iter()
+                    .find(|(id, pubkey)| {
+                        **pubkey == static_public_key_hex && !registry.connections.contains_key(id)
+                    })
+                    .map(|(id, _)| *id);
+                let Some(id) = returning_id else {
+                    warn!(
+                        "nova-operator connection rejected: not a recognized participant from the completed ceremony, or already connected"
+                    );
+                    let _ = ws_sink.close().await;
+                    return;
+                };
+                registry.connections.insert(
+                    id,
+                    OperatorConnection {
+                        sender: tx,
+                        static_public_key_hex,
+                    },
+                );
+                (id, Admission::Reconnected)
+            }
+            CeremonyState::Started { .. } | CeremonyState::Failed => {
+                warn!("nova-operator connection rejected: ceremony already running or failed");
+                let _ = ws_sink.close().await;
+                return;
+            }
+        }
+    };
+
+    match admission {
+        Admission::Fresh => {
+            info!(participant_id, "nova-operator connected");
+            maybe_start_ceremony(&state).await;
+        }
+        Admission::Reconnected => {
+            info!(participant_id, "nova-operator reconnected");
+            let registry = state.nova_operator_registry.read().await;
+            if let Some(conn) = registry.connections.get(&participant_id) {
+                let _ = conn
+                    .sender
+                    .send(CoordinatorMessage::Reconnected { participant_id });
+            }
+        }
+    }
 
     let forward_task = tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
@@ -238,6 +336,11 @@ async fn handle_operator_message(state: &Arc<AppState>, from: ParticipantId, msg
         OperatorMessage::Hello { .. } => {}
         OperatorMessage::CommitmentHash { hash } => on_commitment_hash(state, from, hash).await,
         OperatorMessage::Reveal(payload) => on_reveal(state, from, payload).await,
+        OperatorMessage::Complaint {
+            against_dealer,
+            disputed_share,
+        } => on_complaint(state, from, against_dealer, disputed_share).await,
+        OperatorMessage::NoMoreComplaints => on_no_more_complaints(state, from).await,
         OperatorMessage::CeremonyAck { group_public_key } => {
             on_ceremony_ack(state, from, group_public_key).await
         }
@@ -281,6 +384,8 @@ async fn maybe_start_ceremony(state: &Arc<AppState>) {
     registry.ceremony = CeremonyState::Started {
         hashes: BTreeMap::new(),
         dealer_commitments: BTreeMap::new(),
+        excluded_dealers: BTreeSet::new(),
+        complaints_done: BTreeSet::new(),
         acks: BTreeMap::new(),
     };
 
@@ -345,11 +450,29 @@ async fn on_reveal(state: &Arc<AppState>, from: ParticipantId, payload: RevealPa
 
     {
         let CeremonyState::Started {
-            dealer_commitments, ..
+            hashes,
+            dealer_commitments,
+            excluded_dealers,
+            ..
         } = &mut registry.ceremony
         else {
             return;
         };
+
+        // Both sides of this check are already public (the hash from the
+        // commit round, these commitments from this very reveal) — every
+        // honest operator recomputes the identical comparison and excludes
+        // silently, no complaint needed (module doc, "Malicious-dealer
+        // exclusion, two kinds").
+        let actual_hash = wire::hex_encode(&wire::commitment_hash(&commitments));
+        if hashes.get(&from) != Some(&actual_hash) {
+            warn!(
+                from,
+                "nova-operator reveal did not match its earlier committed hash — excluding"
+            );
+            excluded_dealers.insert(from);
+        }
+
         dealer_commitments.insert(from, commitments);
     }
 
@@ -358,6 +481,96 @@ async fn on_reveal(state: &Arc<AppState>, from: ParticipantId, payload: RevealPa
             from,
             payload: payload.clone(),
         });
+    }
+}
+
+/// A complaint's authoritative check, run both here (a spam/garbage filter
+/// before relaying) and independently by every operator: does `share`
+/// really fail `verify_share` against `against_dealer`'s already-public
+/// commitments? Pure function of public data — no reason for the server's
+/// answer and an honest operator's to ever disagree.
+pub(crate) fn complaint_is_valid(
+    dealer_commitments: &BTreeMap<ParticipantId, Vec<RistrettoPoint>>,
+    against_dealer: ParticipantId,
+    from: ParticipantId,
+    share: &curve25519_dalek::scalar::Scalar,
+) -> bool {
+    dealer_commitments
+        .get(&against_dealer)
+        .is_some_and(|commitments| !verify_share(commitments, from, share))
+}
+
+async fn on_complaint(
+    state: &Arc<AppState>,
+    from: ParticipantId,
+    against_dealer: ParticipantId,
+    disputed_share_hex: String,
+) {
+    let mut registry = state.nova_operator_registry.write().await;
+
+    let Some(disputed_share) = wire::scalar_from_hex(&disputed_share_hex) else {
+        warn!(from, "nova-operator sent a malformed complaint, ignoring");
+        return;
+    };
+
+    let valid = {
+        let CeremonyState::Started {
+            dealer_commitments, ..
+        } = &registry.ceremony
+        else {
+            return;
+        };
+        complaint_is_valid(dealer_commitments, against_dealer, from, &disputed_share)
+    };
+
+    if !valid {
+        warn!(
+            from,
+            against_dealer, "nova-operator complaint did not reproduce, ignoring"
+        );
+        return;
+    }
+
+    info!(
+        from,
+        against_dealer, "nova-operator complaint verified — excluding dealer"
+    );
+    if let CeremonyState::Started {
+        excluded_dealers, ..
+    } = &mut registry.ceremony
+    {
+        excluded_dealers.insert(against_dealer);
+    }
+
+    for conn in registry.connections.values() {
+        let _ = conn.sender.send(CoordinatorMessage::ComplaintBroadcast {
+            from,
+            against_dealer,
+            disputed_share: disputed_share_hex.clone(),
+        });
+    }
+}
+
+async fn on_no_more_complaints(state: &Arc<AppState>, from: ParticipantId) {
+    let mut registry = state.nova_operator_registry.write().await;
+    let total = registry.connections.len();
+
+    let window_closed = {
+        let CeremonyState::Started {
+            complaints_done, ..
+        } = &mut registry.ceremony
+        else {
+            return;
+        };
+        complaints_done.insert(from);
+        complaints_done.len() >= total
+    };
+
+    if window_closed {
+        info!("nova-operator complaint window closed");
+        for conn in registry.connections.values() {
+            let _ = conn.sender.send(CoordinatorMessage::ComplaintWindowClosed);
+        }
     }
 }
 
@@ -376,6 +589,7 @@ async fn on_ceremony_ack(state: &Arc<AppState>, from: ParticipantId, group_publi
     let outcome = {
         let CeremonyState::Started {
             dealer_commitments,
+            excluded_dealers,
             acks,
             ..
         } = &mut registry.ceremony
@@ -389,8 +603,15 @@ async fn on_ceremony_ack(state: &Arc<AppState>, from: ParticipantId, group_publi
             let mut values = acks.values();
             let first = *values.next().expect("at least one ack present");
             if values.all(|&pk| pk == first) {
+                let excluded_dealer_indices: Vec<usize> = dealer_commitments
+                    .keys()
+                    .enumerate()
+                    .filter(|(_, id)| excluded_dealers.contains(id))
+                    .map(|(index, _)| index)
+                    .collect();
                 Some(Ok((
                     dealer_commitments.values().cloned().collect::<Vec<_>>(),
+                    excluded_dealer_indices,
                     first,
                 )))
             } else {
@@ -403,10 +624,17 @@ async fn on_ceremony_ack(state: &Arc<AppState>, from: ParticipantId, group_publi
 
     match outcome {
         None => {}
-        Some(Ok((dealer_commitments, group_public_key))) => {
+        Some(Ok((dealer_commitments, excluded_dealer_indices, group_public_key))) => {
+            let roster: BTreeMap<ParticipantId, String> = registry
+                .connections
+                .iter()
+                .map(|(id, conn)| (*id, conn.static_public_key_hex.clone()))
+                .collect();
             registry.ceremony = CeremonyState::Complete {
                 dealer_commitments,
+                excluded_dealer_indices,
                 group_public_key,
+                roster,
             };
             let confirmed_hex = wire::point_to_hex(&group_public_key);
             info!(group_public_key = %confirmed_hex, "nova-operator ceremony complete");
@@ -489,13 +717,19 @@ async fn broadcast_quorum_unavailable(state: &Arc<AppState>, room: &str, live: u
 /// signature shares each operator computed with its own share, locally, in
 /// its own process.
 pub(crate) async fn handle_demo_request(state: &Arc<AppState>, room: &str) {
-    let (dealer_commitments, group_public_key) = {
+    let (dealer_commitments, excluded_dealer_indices, group_public_key) = {
         let registry = state.nova_operator_registry.read().await;
         match &registry.ceremony {
             CeremonyState::Complete {
                 dealer_commitments,
+                excluded_dealer_indices,
                 group_public_key,
-            } => (dealer_commitments.clone(), *group_public_key),
+                ..
+            } => (
+                dealer_commitments.clone(),
+                excluded_dealer_indices.clone(),
+                *group_public_key,
+            ),
             _ => {
                 let live = registry.connections.len() as u32;
                 drop(registry);
@@ -588,7 +822,8 @@ pub(crate) async fn handle_demo_request(state: &Arc<AppState>, room: &str) {
             broadcast_quorum_unavailable(state, room, quorum.len() as u32).await;
             return;
         };
-        let verification_share = public_verification_share(pid, &dealer_commitments, &[]);
+        let verification_share =
+            public_verification_share(pid, &dealer_commitments, &excluded_dealer_indices);
         if !verify_signature_share(
             pid,
             &verification_share,

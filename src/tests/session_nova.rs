@@ -490,20 +490,108 @@ async fn nova_dummy_frames_are_discarded_without_a_trace() {
 ///
 /// Builds `nova-operator`'s binary first if it isn't already there —
 /// harmless if it is, `cargo build` no-ops on an unchanged target.
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn nova_mpc_demo_uses_a_real_distributed_operator_quorum() {
-    use std::io::{BufRead, BufReader};
-    use std::sync::atomic::{AtomicU32, Ordering};
-
+fn nova_operator_bin() -> String {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
     let build_status = std::process::Command::new(&cargo)
         .args(["build", "-p", "nova-operator", "--bin", "nova-operator"])
         .status()
         .expect("run cargo build for nova-operator");
     assert!(build_status.success(), "nova-operator must build");
+    format!("{}/target/debug/nova-operator", env!("CARGO_MANIFEST_DIR"))
+}
 
-    let operator_bin = format!("{}/target/debug/nova-operator", env!("CARGO_MANIFEST_DIR"));
+fn nova_operator_identity_path(index: u32) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "nova-operator-test-{}-{index}.key",
+        std::process::id()
+    ))
+}
 
+/// Spawns one real `nova-operator` process against `operator_url`, using
+/// `identity_path` (created fresh if it doesn't already exist — reusing an
+/// existing file is exactly how a restarted process presents the same
+/// identity, which the reconnect tests below rely on).
+fn spawn_operator(
+    operator_bin: &str,
+    operator_url: &str,
+    token: &str,
+    identity_path: &std::path::Path,
+    stderr: std::process::Stdio,
+) -> std::process::Child {
+    std::process::Command::new(operator_bin)
+        .args([
+            "--server",
+            operator_url,
+            "--token",
+            token,
+            "--identity",
+            identity_path.to_str().expect("temp path is valid UTF-8"),
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(stderr)
+        .spawn()
+        .expect("spawn nova-operator")
+}
+
+/// Watches `child`'s piped stdout on a background thread, incrementing
+/// `ready` every time a line contains `needle` — the same
+/// spawn-then-watch-stdout pattern every operator-fleet test here uses to
+/// learn when a process reaches a particular point without polling the
+/// server's own state (which the real protocol doesn't expose for tests to
+/// peek at, deliberately — see `session/nova_operator.rs`'s module doc on
+/// this server never holding a share to report on in the first place).
+fn watch_for(
+    child: &mut std::process::Child,
+    needle: &'static str,
+    ready: std::sync::Arc<std::sync::atomic::AtomicU32>,
+) {
+    use std::io::{BufRead, BufReader};
+    let stdout = child.stdout.take().expect("stdout is piped");
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if line.contains(needle) {
+                ready.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+    });
+}
+
+async fn wait_until_at_least(
+    counter: &std::sync::atomic::AtomicU32,
+    target: u32,
+    timeout: Duration,
+) {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if counter.load(std::sync::atomic::Ordering::SeqCst) >= target {
+            return;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!(
+                "only {} of {target} reached in time",
+                counter.load(std::sync::atomic::Ordering::SeqCst)
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// Spawns [`config::NOVA_OPERATOR_COUNT`] real, separate `nova-operator`
+/// processes, waits for them to complete a real DKG ceremony with the
+/// server (never sharing a secret share with it — `session/nova_operator.rs`'s
+/// whole point), then drives the room's demo button and asserts the result
+/// came from that live quorum: `recovered_key_matches` and
+/// `signature_valid` both real cryptographic checks, not canned. One client
+/// requests the demo; the *other* connection receives the broadcast result
+/// too (nothing in it is per-asker).
+///
+/// Builds `nova-operator`'s binary first if it isn't already there —
+/// harmless if it is, `cargo build` no-ops on an unchanged target.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn nova_mpc_demo_uses_a_real_distributed_operator_quorum() {
+    use std::sync::atomic::AtomicU32;
+
+    let operator_bin = nova_operator_bin();
     let token = format!("test-operator-token-{}", std::process::id());
     unsafe { std::env::set_var("NOVA_OPERATOR_TOKEN", &token) };
 
@@ -514,59 +602,28 @@ async fn nova_mpc_demo_uses_a_real_distributed_operator_quorum() {
     let (addr, _app_state, handle) = start_ws_server_with_state().await;
     let operator_url = format!("ws://{addr}/ws/nova-operator");
 
-    // `tokio::process` is deliberately not a dependency here — this crate's
-    // own dependency lists document leaving `fs`/`process` off tokio on
-    // purpose (`Cargo.toml`'s dev-dependency comment). A plain
-    // `std::process::Command` plus a blocking reader thread per child does
-    // the same job without adding either feature.
     let ready = std::sync::Arc::new(AtomicU32::new(0));
     let mut children = Vec::new();
     for i in 0..crate::config::NOVA_OPERATOR_COUNT {
-        let identity_path =
-            std::env::temp_dir().join(format!("nova-operator-test-{}-{i}.key", std::process::id()));
+        let identity_path = nova_operator_identity_path(i);
         let _ = std::fs::remove_file(&identity_path);
-
-        let mut child = std::process::Command::new(&operator_bin)
-            .args([
-                "--server",
-                &operator_url,
-                "--token",
-                &token,
-                "--identity",
-                identity_path.to_str().expect("temp path is valid UTF-8"),
-            ])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("spawn nova-operator");
-
-        let stdout = child.stdout.take().expect("stdout is piped");
-        let ready = ready.clone();
-        std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                if line.contains("ceremony complete") {
-                    ready.fetch_add(1, Ordering::SeqCst);
-                }
-            }
-        });
-
+        let mut child = spawn_operator(
+            &operator_bin,
+            &operator_url,
+            &token,
+            &identity_path,
+            std::process::Stdio::null(),
+        );
+        watch_for(&mut child, "ceremony complete", ready.clone());
         children.push(child);
     }
 
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-    loop {
-        if ready.load(Ordering::SeqCst) >= crate::config::NOVA_OPERATOR_COUNT {
-            break;
-        }
-        if tokio::time::Instant::now() >= deadline {
-            panic!(
-                "only {} of {} nova-operator processes completed the ceremony in time",
-                ready.load(Ordering::SeqCst),
-                crate::config::NOVA_OPERATOR_COUNT
-            );
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    wait_until_at_least(
+        &ready,
+        crate::config::NOVA_OPERATOR_COUNT,
+        Duration::from_secs(30),
+    )
+    .await;
 
     let ws_url = format!("ws://{addr}/ws/{NOVA_ROOM}");
     let (mut ws_a, _) = connect_async(&ws_url).await.expect("client A connects");
@@ -625,4 +682,310 @@ async fn nova_mpc_demo_uses_a_real_distributed_operator_quorum() {
         let _ = child.wait();
     }
     handle.abort();
+}
+
+/// The other half of "reconnecting after the ceremony completes"
+/// (`session/nova_operator.rs`'s module doc): a *process* restart, unlike a
+/// mere dropped connection, genuinely loses the in-memory `KeyShare` — so
+/// when the coordinator recognizes the restarted process's identity as a
+/// returning participant and replies `Reconnected` instead of a fresh
+/// `Welcome`, the operator must fail loudly and exit, not hang forever
+/// waiting for a roster that will never come. This test is what caught
+/// that exact hang during development (`main.rs`'s "Wait for the roster"
+/// loop had no arm for `Reconnected` at all) before fixing it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_restarted_operator_fails_clearly_instead_of_hanging() {
+    use std::sync::atomic::AtomicU32;
+
+    let operator_bin = nova_operator_bin();
+    let token = format!("test-operator-token-{}", std::process::id());
+    unsafe { std::env::set_var("NOVA_OPERATOR_TOKEN", &token) };
+
+    let (addr, _app_state, handle) = start_ws_server_with_state().await;
+    let operator_url = format!("ws://{addr}/ws/nova-operator");
+
+    let ready = std::sync::Arc::new(AtomicU32::new(0));
+    let mut children = Vec::new();
+    let mut identity_paths = Vec::new();
+    for i in 0..crate::config::NOVA_OPERATOR_COUNT {
+        let identity_path = nova_operator_identity_path(100 + i);
+        let _ = std::fs::remove_file(&identity_path);
+        let mut child = spawn_operator(
+            &operator_bin,
+            &operator_url,
+            &token,
+            &identity_path,
+            std::process::Stdio::null(),
+        );
+        watch_for(&mut child, "ceremony complete", ready.clone());
+        identity_paths.push(identity_path);
+        children.push(child);
+    }
+
+    wait_until_at_least(
+        &ready,
+        crate::config::NOVA_OPERATOR_COUNT,
+        Duration::from_secs(30),
+    )
+    .await;
+
+    // Kill participant 0's process — its `KeyShare` goes with it, held only
+    // in that process's own memory — then start a *new* process pointed at
+    // its same identity file. The coordinator still has that identity on
+    // the completed ceremony's roster and isn't currently hearing from it,
+    // so it will recognize and admit the reconnect; the new process has to
+    // recognize *itself* as unable to serve and give up cleanly instead.
+    children[0].kill().expect("kill participant 0");
+    let _ = children[0].wait();
+
+    let mut restarted = spawn_operator(
+        &operator_bin,
+        &operator_url,
+        &token,
+        &identity_paths[0],
+        std::process::Stdio::null(),
+    );
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    let status = loop {
+        if let Some(status) = restarted.try_wait().expect("poll restarted process") {
+            break status;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            let _ = restarted.kill();
+            panic!(
+                "restarted operator neither exited nor errored within 15s — it hung instead \
+                 of failing clearly"
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert!(
+        !status.success(),
+        "a restarted operator with no KeyShare must exit non-zero when recognized as a \
+         returning participant, not report success"
+    );
+
+    for mut child in children {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    handle.abort();
+}
+
+/// Server-side only: the reconnect-admission logic itself
+/// (`session/nova_operator.rs::handle_operator_connection`), driven by a
+/// raw WebSocket client rather than a real `nova-operator` process — this
+/// test only needs to check *admission* (is this identity recognized, is
+/// it currently connected already), not actually serve any decrypt/sign
+/// request, so a raw client presenting a real identity's public key is
+/// enough; it never needs to complete a DKG itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn reconnect_is_rejected_while_still_connected_and_accepted_after_disconnect() {
+    use std::sync::atomic::AtomicU32;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use x25519_dalek::{PublicKey, StaticSecret};
+
+    let operator_bin = nova_operator_bin();
+    let token = format!("test-operator-token-{}", std::process::id());
+    unsafe { std::env::set_var("NOVA_OPERATOR_TOKEN", &token) };
+
+    let (addr, _app_state, handle) = start_ws_server_with_state().await;
+    let operator_url = format!("ws://{addr}/ws/nova-operator");
+
+    let ready = std::sync::Arc::new(AtomicU32::new(0));
+    // Connection order among 5 concurrently-spawned processes is a race —
+    // `children[0]` is not guaranteed (and in practice usually isn't)
+    // assigned participant id 1, so its *actual* id has to be read back
+    // from its own stdout rather than assumed.
+    let target_participant_id = std::sync::Arc::new(std::sync::Mutex::new(None::<u32>));
+    let mut children = Vec::new();
+    let mut identity_paths = Vec::new();
+    for i in 0..crate::config::NOVA_OPERATOR_COUNT {
+        let identity_path = nova_operator_identity_path(200 + i);
+        let _ = std::fs::remove_file(&identity_path);
+        let mut child = spawn_operator(
+            &operator_bin,
+            &operator_url,
+            &token,
+            &identity_path,
+            std::process::Stdio::null(),
+        );
+        if i == 0 {
+            // A combined watcher, not `watch_for` — `child.stdout` can only
+            // be taken once, and this process's line stream needs checking
+            // for both signals (ceremony completion, and its own assigned
+            // participant id).
+            let stdout = child.stdout.take().expect("stdout is piped");
+            let ready = ready.clone();
+            let target_participant_id = target_participant_id.clone();
+            std::thread::spawn(move || {
+                use std::io::{BufRead, BufReader};
+                for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                    if line.contains("ceremony complete") {
+                        ready.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    if let Some(rest) = line.strip_prefix("assigned participant id ")
+                        && let Some(id_str) = rest.split_whitespace().next()
+                        && let Ok(id) = id_str.parse::<u32>()
+                    {
+                        *target_participant_id.lock().expect("lock poisoned") = Some(id);
+                    }
+                }
+            });
+        } else {
+            watch_for(&mut child, "ceremony complete", ready.clone());
+        }
+        identity_paths.push(identity_path);
+        children.push(child);
+    }
+
+    wait_until_at_least(
+        &ready,
+        crate::config::NOVA_OPERATOR_COUNT,
+        Duration::from_secs(30),
+    )
+    .await;
+    let target_participant_id = target_participant_id
+        .lock()
+        .expect("lock poisoned")
+        .expect("participant 0's assigned id must have been observed by now");
+
+    // Read participant 0's real identity back off disk — the same 32 raw
+    // secret bytes `nova_operator::crypto::generate_identity` wrote — and
+    // derive the public key a raw client presents in its own `Hello`.
+    let secret_bytes: [u8; 32] = std::fs::read(&identity_paths[0])
+        .expect("read participant 0's identity file")
+        .try_into()
+        .expect("identity file is 32 bytes");
+    let static_public_key_hex: String = PublicKey::from(&StaticSecret::from(secret_bytes))
+        .as_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+
+    async fn hello_and_first_reply(
+        operator_url: &str,
+        token: &str,
+        static_public_key_hex: &str,
+    ) -> serde_json::Value {
+        let mut request = operator_url.into_client_request().expect("valid ws url");
+        request.headers_mut().insert(
+            "Authorization",
+            format!("Bearer {token}").parse().expect("valid header"),
+        );
+        let (ws_stream, _) = connect_async(request).await.expect("raw client connects");
+        let (mut write, mut read) = ws_stream.split();
+        write
+            .send(text_frame(
+                serde_json::json!({
+                    "type": "Hello",
+                    "static_public_key": static_public_key_hex,
+                })
+                .to_string(),
+            ))
+            .await
+            .expect("send Hello");
+        let msg = read
+            .next()
+            .await
+            .expect("a reply before the stream ends")
+            .expect("no transport error");
+        let text = msg.into_text().expect("a text frame");
+        serde_json::from_str(&text).expect("valid JSON")
+    }
+
+    // Participant 0's real process is still connected — a raw client
+    // presenting the same identity must be rejected, not silently swapped
+    // in for the real one. `handle_operator_connection` rejects by closing
+    // the socket immediately with no message at all (`ws_sink.close()`),
+    // so the only valid outcomes here are the stream ending or erroring —
+    // never a `Text` frame, which would mean it was actually admitted.
+    let mut request = operator_url
+        .as_str()
+        .into_client_request()
+        .expect("valid ws url");
+    request.headers_mut().insert(
+        "Authorization",
+        format!("Bearer {token}").parse().expect("valid header"),
+    );
+    let (ws_stream, _) = connect_async(request)
+        .await
+        .expect("raw client connects while participant 0 is still live");
+    let (mut write, mut read) = ws_stream.split();
+    write
+        .send(text_frame(
+            serde_json::json!({"type": "Hello", "static_public_key": static_public_key_hex})
+                .to_string(),
+        ))
+        .await
+        .expect("send Hello");
+    match read.next().await {
+        None => {}                          // stream ended — rejected
+        Some(Err(_)) => {}                  // transport error — rejected
+        Some(Ok(WsMessage::Close(_))) => {} // explicit close frame — rejected
+        Some(Ok(other)) => panic!(
+            "a raw client presenting a currently-connected participant's identity must be \
+             rejected, not answered with {other:?}"
+        ),
+    }
+
+    // Now kill participant 0's real process — freeing that identity to
+    // reconnect — and confirm the *same* raw-client approach is accepted
+    // and told its original participant id back.
+    children[0].kill().expect("kill participant 0");
+    let _ = children[0].wait();
+    // Give the server a moment to process the disconnect before retrying;
+    // the WS close and the retry are two different connections with no
+    // other ordering guarantee between them.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let reply = hello_and_first_reply(&operator_url, &token, &static_public_key_hex).await;
+    assert_eq!(
+        reply["type"], "Reconnected",
+        "a raw client presenting a now-free, previously-known identity must be admitted as a \
+         reconnect: {reply}"
+    );
+    assert_eq!(
+        reply["participant_id"], target_participant_id,
+        "must be reassigned its original participant id: {reply}"
+    );
+
+    for mut child in children.into_iter().skip(1) {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    handle.abort();
+}
+
+/// `complaint_is_valid` in isolation, against a real `Dealer`'s real
+/// reveal — no processes, no network, deterministic and fast, unlike the
+/// full multi-process tests above. This is the exact function both this
+/// server and every honest `nova-operator` run to decide whether to
+/// exclude an accused dealer, so pinning it directly is what would catch a
+/// regression that let a malicious dealer's bad share go unexcluded (or,
+/// the opposite failure, excluded an innocent one).
+#[test]
+fn complaint_is_valid_only_when_the_share_genuinely_fails_verification() {
+    let dealer = novachannel_mpc::Dealer::new(3, 5);
+    let (commitments, shares) = dealer.reveal();
+    let mut dealer_commitments = std::collections::BTreeMap::new();
+    dealer_commitments.insert(1u32, commitments);
+
+    let real_share = shares[&3];
+    assert!(
+        !complaint_is_valid(&dealer_commitments, 1, 3, &real_share),
+        "a complaint about a genuinely valid share must not validate"
+    );
+
+    let tampered_share = real_share + curve25519_dalek::scalar::Scalar::ONE;
+    assert!(
+        complaint_is_valid(&dealer_commitments, 1, 3, &tampered_share),
+        "a complaint about a genuinely tampered share must validate"
+    );
+
+    assert!(
+        !complaint_is_valid(&dealer_commitments, 99, 3, &real_share),
+        "a complaint naming a dealer id this check has no commitments for must not validate"
+    );
 }

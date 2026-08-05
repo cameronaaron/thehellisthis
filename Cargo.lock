@@ -982,6 +982,7 @@ dependencies = [
  "url",
  "uuid",
  "winterfell",
+ "x25519-dalek",
 ]
 
 [[package]]
