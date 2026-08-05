@@ -876,15 +876,29 @@ class ChatApp {
     // socket directly, so nova's transport is a property of *sending*, not
     // something every call site has to remember.
     sendEvent(payload) {
-        if (
-            (payload.type === 'Message' || payload.type === 'RlnMessage') &&
-            this.roomName === NOVA_ROOM_NAME
-        ) {
-            // A real send counts for *this* slot's cover-traffic decision —
-            // see startNovaDummyTraffic. Typing/read-receipts/reactions/
-            // roster requests don't count: they're not the content the
-            // scheduler exists to hide.
-            this.novaHasRealMessageThisSlot = true;
+        if (this.roomName === NOVA_ROOM_NAME) {
+            if (payload.type === 'Message' || payload.type === 'RlnMessage') {
+                // A real send counts for *this* slot's cover-traffic decision —
+                // see startNovaDummyTraffic. Typing/read-receipts/reactions/
+                // roster requests don't count: they're not the content the
+                // scheduler exists to hide.
+                this.novaHasRealMessageThisSlot = true;
+            }
+            if (!this.novaClient || !this.novaClient.isEstablished()) {
+                // Every application frame in `nova` must be sealed
+                // (session/nova.rs::dispatch) — the two bootstrap frames
+                // that establish the session go straight to `this.ws.send`
+                // themselves, bypassing this method entirely, so nothing
+                // reaching here is exempt. Sending anything else unsealed
+                // would just be rejected server-side with a warning and no
+                // reply; dropping it here is the same outcome without the
+                // round trip. This is a narrow, real window — a `Typing`
+                // ping fired by keystrokes in the first moment after
+                // joining, before the X3DH round trip completes — not a
+                // sign of a broken client, so it isn't queued or retried,
+                // the same way a dropped `Dummy` frame isn't.
+                return;
+            }
         }
         if (this.novaClient && this.novaClient.isEstablished()) {
             try {
