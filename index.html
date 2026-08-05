@@ -2295,7 +2295,11 @@ body {
         <em>novachannel</em>, a post-quantum chat research stack: every message
         here is sealed with a second, independent PQ-authenticated channel
         layered under this connection, on top of the usual anonymous posting
-        and MPC/FROST demo below the composer.
+        and MPC/FROST demo below the composer. This encrypts the connection
+        to <strong>this server</strong> — it is <strong>not</strong>
+        end-to-end between browsers, and this server still renders your
+        message. Check the console for the actual wire values instead of
+        taking that on faith.
     </span>
     <button class="nova-banner-dismiss" id="novaBannerDismiss" type="button" aria-label="Dismiss">
         <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-close"/></svg>

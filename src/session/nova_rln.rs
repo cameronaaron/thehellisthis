@@ -334,10 +334,16 @@ pub(crate) async fn handle_message(
             return;
         }
         Ok(RlnOutcome::Accepted) => {
+            let merkle_root = state.nova_rln_group.read().await.root_hex();
             tracing::info!(
+                y = y_hex,
                 nullifier = nullifier_hex,
-                "nova rln: anonymous message accepted — STARK membership proof verified, \
-                 no sender identity was checked or is recoverable from this proof"
+                proof_base64 = proof_b64,
+                merkle_root,
+                "nova rln: anonymous message accepted — STARK proof independently verified \
+                 against the room's real membership root and current epoch (winterfell::air::verify, \
+                 not a client-supplied flag); no sender identity was checked or is recoverable \
+                 from this proof alone"
             );
             let rendered = match validate_and_render_message(text) {
                 Ok(html) => html,
@@ -358,10 +364,15 @@ pub(crate) async fn handle_message(
             }
         }
         Ok(RlnOutcome::Slashed { recovered_sk }) => {
-            tracing::warn!("nova rln: rate-limit violation, identity secret recovered");
-            OutgoingEvent::NovaRlnSlashed {
-                recovered_secret: recovered_sk_hex(recovered_sk),
-            }
+            let recovered_secret = recovered_sk_hex(recovered_sk);
+            tracing::warn!(
+                nullifier = nullifier_hex,
+                recovered_secret_hex = %recovered_secret,
+                "nova rln: rate-limit violation — two distinct messages from the same member \
+                 in one epoch, Shamir-style share recombination recovered their identity secret \
+                 (the same value about to be broadcast to the room, not a separate claim)"
+            );
+            OutgoingEvent::NovaRlnSlashed { recovered_secret }
         }
         Err(e) => {
             warn!(error = e, "nova rln: proof failed verification");
