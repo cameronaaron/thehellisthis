@@ -127,10 +127,13 @@ const SECURITY_HEADERS: &[(&str, &str)] = &[
     // Room names are in the URL and can be private-ish; do not leak the full
     // path to the font CDNs or to anything a user links out to.
     ("referrer-policy", "strict-origin-when-cross-origin"),
-    // Nothing here needs hardware access.
+    // Nothing here needs hardware access. `interest-cohort=()` used to sit
+    // here too, opting out of Chrome's FLoC trial — Chrome removed FLoC
+    // entirely, so the directive names a feature no browser recognizes
+    // anymore and only produced a console warning ("Unrecognized feature").
     (
         "permissions-policy",
-        "camera=(), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()",
+        "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
     ),
     // Identity cookies are Secure; without HSTS the first request over http is
     // still an opportunity to strip TLS.
