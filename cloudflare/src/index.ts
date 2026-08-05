@@ -8,13 +8,10 @@ import { Container, getContainer } from '@cloudflare/containers';
  * else — rooms, identity, rate limiting — is the container's job, because all
  * of that state lives in the container's memory.
  */
-export class InfiniteChatContainer extends Container {
+export class InfiniteChatContainer extends Container<Env> {
   defaultPort = 3000;
 
-  envVars = {
-    PORT: '3000',
-    RUST_LOG: 'info',
-  };
+  envVars: Record<string, string>;
 
   // Polled by the runtime to decide whether this instance is healthy. The
   // handler never takes the room write lock, so a busy server cannot look dead.
@@ -26,10 +23,32 @@ export class InfiniteChatContainer extends Container {
   // it. This is the library's own default; stated explicitly so it reads as
   // a decision rather than an accident of an unset field.
   sleepAfter = '10m';
+
+  // `envVars` has to be assigned here, not as a class-field literal, because
+  // it needs `env` — the Worker secret set via `wrangler secret put
+  // NOVA_OPERATOR_TOKEN` is only reachable through the constructor's `env`
+  // argument, not at class-definition time. Omitted entirely (not passed as
+  // an empty string) when unset, matching `is_authorized_for_nova_operator`'s
+  // own fail-closed behaviour on the Rust side: no token configured means
+  // `/ws/nova-operator` refuses every connection, the same as `/metrics`/
+  // `/admin` with no token of their own.
+  constructor(ctx: Container<Env>['ctx'], env: Env) {
+    super(ctx, env);
+    this.envVars = {
+      PORT: '3000',
+      RUST_LOG: 'info',
+      ...(env.NOVA_OPERATOR_TOKEN ? { NOVA_OPERATOR_TOKEN: env.NOVA_OPERATOR_TOKEN } : {}),
+    };
+  }
 }
 
 interface Env {
   CHAT_CONTAINER: DurableObjectNamespace<InfiniteChatContainer>;
+  // Set via `wrangler secret put NOVA_OPERATOR_TOKEN` — never in
+  // `wrangler.jsonc`'s plaintext `vars`. Optional in the type because local
+  // `wrangler dev` typically runs without it, the same fail-closed case the
+  // constructor above already handles.
+  NOVA_OPERATOR_TOKEN?: string;
 }
 
 /**
