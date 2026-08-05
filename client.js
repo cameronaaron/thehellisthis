@@ -228,6 +228,7 @@ class ChatApp {
         this.charCount = document.getElementById('charCount');
         this.novaAnonymousToggle = document.getElementById('novaAnonymousToggle');
         this.novaAnonymousToggleLabel = document.getElementById('novaAnonymousToggleLabel');
+        this.novaAnonymousCooldownReadout = document.getElementById('novaAnonymousCooldownReadout');
         this.novaMpcDemoBtn = document.getElementById('novaMpcDemoBtn');
         this.novaDpBudgetReadout = document.getElementById('novaDpBudgetReadout');
         this.novaBanner = document.getElementById('novaBanner');
@@ -304,6 +305,16 @@ class ChatApp {
         if (this.novaMpcDemoBtn) {
             this.novaMpcDemoBtn.addEventListener('click', () => {
                 this.sendEvent({ type: 'NovaMpcDemoRequest' });
+            });
+        }
+
+        if (this.novaAnonymousToggle) {
+            // Toggling off anonymous mode has to release the send button
+            // immediately — the cooldown ticker's own 1s interval would
+            // otherwise leave it visibly disabled for up to a second after
+            // switching to a mode the cooldown never applied to.
+            this.novaAnonymousToggle.addEventListener('change', () => {
+                this.updateNovaAnonymousCooldown();
             });
         }
 
@@ -502,6 +513,7 @@ class ChatApp {
         console.log('WebSocket disconnected', event && event.code);
         if (this.heartbeatTimeoutId) clearTimeout(this.heartbeatTimeoutId);
         this.stopNovaDummyTraffic();
+        this.stopNovaAnonymousCooldownTicker();
         // The ratchet session this held is for a `NovaSlot` the server has
         // already dropped (session/nova.rs: per-connection, not per-user) —
         // a reconnect gets a fresh `NovaSlot` in `AwaitingSession`. Without
@@ -826,6 +838,69 @@ class ChatApp {
         }
     }
 
+    // ---- nova room only: keeping a normal typing pace from walking into
+    // RLN slashing (session/nova_rln.rs) --------------------------------
+    //
+    // Posting anonymously twice in one `NOVA_RLN_EPOCH_SECONDS` window
+    // recovers the poster's identity secret — the mechanism's whole point,
+    // not a bug (see the module doc there). `sendMessage()`'s own check
+    // against `novaLastAnonymousEpoch` is the actual gate; this ticker is
+    // only the visible half of it, so a user sees a countdown and a
+    // disabled send button instead of silently discovering the rule by
+    // triggering it.
+
+    startNovaAnonymousCooldownTicker() {
+        if (this.novaAnonymousCooldownIntervalId) return;
+        this.novaAnonymousCooldownIntervalId = setInterval(
+            () => this.updateNovaAnonymousCooldown(),
+            1000
+        );
+        this.updateNovaAnonymousCooldown();
+    }
+
+    stopNovaAnonymousCooldownTicker() {
+        if (this.novaAnonymousCooldownIntervalId) {
+            clearInterval(this.novaAnonymousCooldownIntervalId);
+            this.novaAnonymousCooldownIntervalId = null;
+        }
+        if (this.novaAnonymousCooldownReadout) {
+            this.novaAnonymousCooldownReadout.hidden = true;
+        }
+    }
+
+    novaAnonymousOnCooldown() {
+        return (
+            this.novaLastAnonymousEpoch !== undefined &&
+            this.novaLastAnonymousEpoch === Math.floor(Date.now() / 1000 / NOVA_RLN_EPOCH_SECONDS)
+        );
+    }
+
+    updateNovaAnonymousCooldown() {
+        // Irrelevant outside anonymous mode — unchecking the toggle must
+        // release the send button immediately rather than staying disabled
+        // until the epoch this cooldown belongs to rolls over.
+        const checked = this.novaAnonymousToggle && this.novaAnonymousToggle.checked;
+        const onCooldown = checked && this.novaAnonymousOnCooldown();
+
+        if (this.novaAnonymousCooldownReadout) {
+            this.novaAnonymousCooldownReadout.hidden = !onCooldown;
+            if (onCooldown) {
+                const secondsLeft =
+                    NOVA_RLN_EPOCH_SECONDS - (Math.floor(Date.now() / 1000) % NOVA_RLN_EPOCH_SECONDS);
+                this.novaAnonymousCooldownReadout.textContent =
+                    `Anonymous post sent — ${secondsLeft}s until you can post anonymously again ` +
+                    'without recovering your own identity secret';
+            }
+        }
+
+        // Only this ticker's own condition drives the disable — never force
+        // it false while the connection itself is down, or this would race
+        // handleWebSocketClose's own disabling on every tick.
+        if (this.connected && this.sendButton) {
+            this.sendButton.disabled = onCooldown;
+        }
+    }
+
     // The visible readout for the DP privacy odometer: how much epsilon
     // this connection has left before cover traffic stops hiding its
     // send/silent pattern. Updated every slot rather than only near
@@ -870,9 +945,16 @@ class ChatApp {
                 this.sendEvent({ type: 'RlnRegister', commitment });
             });
             this.novaRlnLeafIndex = registered.leaf_index;
+            novaLog('RLN anonymous identity registered into the room Merkle membership tree', {
+                'identity commitment (hex, public)': commitment,
+                'assigned leaf index': registered.leaf_index,
+                property: 'no message posted with this identity is linkable to it, unless it ' +
+                    'posts twice in one rate-limit epoch — see the Slashed case below',
+            });
             if (this.novaAnonymousToggleLabel) {
                 this.novaAnonymousToggleLabel.hidden = false;
             }
+            this.startNovaAnonymousCooldownTicker();
         } catch (e) {
             console.error('nova rln: registration failed', e);
         }
@@ -899,8 +981,19 @@ class ChatApp {
                 text
             );
             const { proof, y, nullifier } = JSON.parse(proofJson);
+            novaLog('RLN membership proof generated for this anonymous post', {
+                'STARK proof bytes (base64 decoded)': atob(proof).length,
+                'nullifier (hex, public — ties this post to this epoch+identity without revealing which)': nullifier,
+                'y (hex, public — the proof-claimed share value)': y,
+                'Merkle root proved against': pathResponse.root,
+                epoch: epoch.toString(),
+                property: 'the server (session/nova_rln.rs) recomputes root/epoch/x itself rather ' +
+                    'than trusting these — verification fails outright on a mismatch',
+            });
             this.sendEvent({ type: 'RlnMessage', proof, y, nullifier, text });
             this.myLastSentTime = Date.now();
+            this.novaLastAnonymousEpoch = Number(epoch);
+            this.updateNovaAnonymousCooldown();
             this.input.value = '';
             this.charCount.textContent = '0';
             this.input.focus();
@@ -1882,6 +1975,13 @@ class ChatApp {
             this.novaAnonymousToggle &&
             this.novaAnonymousToggle.checked
         ) {
+            if (this.novaAnonymousOnCooldown()) {
+                this.showError(
+                    'Already posted anonymously this window — wait for the countdown ' +
+                        'below to avoid recovering your own identity secret.'
+                );
+                return;
+            }
             this.sendNovaAnonymousMessage(text);
             return;
         }

@@ -1554,6 +1554,23 @@ body {
     display: none;
 }
 
+/* nova room only: RLN posting twice in one epoch recovers the poster's
+   identity secret (session/nova_rln.rs) — this is client.js's countdown so
+   a normal typing pace doesn't walk into that by accident. Same treatment
+   as the DP budget readout below: a plain text line stating the actual
+   remaining seconds, not a bar standing in for it. */
+.nova-anonymous-cooldown-readout {
+    display: block;
+    padding: 2px var(--space-md, 16px) 4px;
+    font-size: 11px;
+    color: var(--on-surface-variant, currentColor);
+    opacity: 0.6;
+}
+
+.nova-anonymous-cooldown-readout[hidden] {
+    display: none;
+}
+
 /* nova room only: triggers session/nova_operator.rs's demo round against a
    real quorum of separately-run nova-operator processes. Hidden until the
    PQ channel establishes (client.js::completeNovaHandshake) — same §10.9
@@ -2376,6 +2393,7 @@ body {
     <input id="novaAnonymousToggle" type="checkbox"/>
     Post anonymously (RLN-verified, rate-limited)
 </label>
+<div id="novaAnonymousCooldownReadout" class="nova-anonymous-cooldown-readout" hidden></div>
 <button id="novaMpcDemoBtn" class="nova-mpc-demo-button" type="button" hidden>
     Run MPC/FROST demo (real quorum of separately-run operator processes)
 </button>
