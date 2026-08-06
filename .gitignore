@@ -11,6 +11,9 @@
 tarpaulin-report.*
 cobertura.xml
 lcov.info
+# `--engine llvm` instruments build scripts too; one drops its raw profile
+# in the repo root rather than target/coverage/ like everything else.
+*.profraw
 
 # Dependencies
 cloudflare/node_modules/
