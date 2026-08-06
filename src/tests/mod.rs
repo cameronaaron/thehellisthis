@@ -24,7 +24,7 @@ use crate::routes::{
 use crate::security::is_allowed_origin;
 use crate::session::{
     admit_user, apply_client_event, apply_client_event_at, cleanup_user, complaint_is_valid,
-    render_off_thread, resolve_render, within_throttle, ws_handler,
+    remove_member, render_off_thread, resolve_render, run_seal_loop, within_throttle, ws_handler,
 };
 use crate::startup::{
     DEFAULT_PORT, build_router, generate_random_room_name, init_tracing, resolve_port, serve,
@@ -514,6 +514,11 @@ static METRICS_TOKEN_ENV: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new
 /// Serialises the tests that set `ADMIN_TOKEN`, for the same reason
 /// `METRICS_TOKEN_ENV` exists.
 static ADMIN_TOKEN_ENV: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Serialises the tests that set `NOVA_OPERATOR_TOKEN`, for the same reason
+/// `METRICS_TOKEN_ENV` exists — several `nova-operator` tests each set it to
+/// their own distinct value and connect real or raw clients against it.
+static NOVA_OPERATOR_TOKEN_ENV: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 const EMBEDDED_HTML: &str = include_str!("../../index.html");
 

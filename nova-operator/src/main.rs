@@ -59,42 +59,50 @@ type WsRead = SplitStream<WsStream>;
 const RECONNECT_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 const RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(30);
 
-fn parse_args() -> (String, String, PathBuf) {
+/// The parsing/validation logic, separated from `parse_args`'s
+/// `std::process::exit` so it can be unit tested: `std::process::exit` does
+/// not return, so a test that reached it would take the whole test binary
+/// down with it (the same reason `src/startup.rs::main_inner` returns an
+/// `ExitCode` instead of exiting directly in the main crate).
+fn parse_args_from<I: Iterator<Item = String>>(
+    mut args: I,
+) -> Result<(String, String, PathBuf), String> {
     let mut server = None;
     let mut token = None;
     let mut identity = None;
 
-    let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--server" => server = args.next(),
             "--token" => token = args.next(),
             "--identity" => identity = args.next().map(PathBuf::from),
-            other => {
-                eprintln!("unknown argument: {other}");
-                std::process::exit(2);
-            }
+            other => return Err(format!("unknown argument: {other}")),
         }
     }
 
-    let server = server.unwrap_or_else(|| {
-        eprintln!("--server <ws(s)://host/ws/nova-operator> is required");
-        std::process::exit(2);
-    });
-    let token = token.unwrap_or_else(|| {
-        eprintln!(
-            "--token <bearer token> is required (must match the coordinator's NOVA_OPERATOR_TOKEN)"
-        );
-        std::process::exit(2);
-    });
+    let server = server.ok_or("--server <ws(s)://host/ws/nova-operator> is required")?;
+    let token = token.ok_or(
+        "--token <bearer token> is required (must match the coordinator's NOVA_OPERATOR_TOKEN)",
+    )?;
     let identity = identity.unwrap_or_else(default_identity_path);
 
-    (server, token, identity)
+    Ok((server, token, identity))
+}
+
+fn parse_args() -> (String, String, PathBuf) {
+    parse_args_from(std::env::args().skip(1)).unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(2);
+    })
+}
+
+fn identity_path_for(home: &str) -> PathBuf {
+    Path::new(home).join(".nova-operator").join("identity.key")
 }
 
 fn default_identity_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    Path::new(&home).join(".nova-operator").join("identity.key")
+    identity_path_for(&home)
 }
 
 /// Loads this operator's persistent identity keypair from `path`, or
@@ -585,12 +593,22 @@ async fn main() {
 /// (rather than exiting the process) so `main`'s reconnect loop can try
 /// again — this operator still holds `key_share` regardless of how the
 /// connection came and went.
-async fn run_steady_state(
-    write: &mut WsWrite,
-    read: &mut WsRead,
+///
+/// Generic over the same `SinkExt`/`StreamExt` bounds `send` and
+/// `next_coordinator_message` already use, rather than the concrete
+/// `WsWrite`/`WsRead` — the same "generic over the sink" move
+/// `session.rs` made in the main crate, so a test can drive this with an
+/// in-memory stream instead of a real socket.
+async fn run_steady_state<W, R>(
+    write: &mut W,
+    read: &mut R,
     key_share: &KeyShare,
     my_id: ParticipantId,
-) {
+) where
+    W: SinkExt<WsMessage> + Unpin,
+    W::Error: std::fmt::Debug,
+    R: StreamExt<Item = Result<WsMessage, tokio_tungstenite::tungstenite::Error>> + Unpin,
+{
     let mut pending_nonces: Option<SecretNonces> = None;
     while let Some(msg) = next_coordinator_message(read).await {
         match msg {
@@ -745,5 +763,349 @@ mod tests {
         let (mut commitments, _shares) = dealer.reveal();
         commitments[0] += curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT;
         assert_ne!(wire::commitment_hash(&commitments), expected);
+    }
+
+    #[test]
+    fn parse_args_from_reads_server_token_and_identity() {
+        let args = [
+            "--server",
+            "wss://x",
+            "--token",
+            "tok",
+            "--identity",
+            "/tmp/id",
+        ]
+        .into_iter()
+        .map(String::from);
+        let (server, token, identity) = parse_args_from(args).expect("all required flags given");
+        assert_eq!(server, "wss://x");
+        assert_eq!(token, "tok");
+        assert_eq!(identity, PathBuf::from("/tmp/id"));
+    }
+
+    #[test]
+    fn parse_args_from_defaults_identity_when_omitted() {
+        let args = ["--server", "wss://x", "--token", "tok"]
+            .into_iter()
+            .map(String::from);
+        let (_, _, identity) = parse_args_from(args).expect("required flags given");
+        assert_eq!(identity, default_identity_path());
+    }
+
+    #[test]
+    fn parse_args_from_rejects_missing_server() {
+        let args = ["--token", "tok"].into_iter().map(String::from);
+        assert!(parse_args_from(args).unwrap_err().contains("--server"));
+    }
+
+    #[test]
+    fn parse_args_from_rejects_missing_token() {
+        let args = ["--server", "wss://x"].into_iter().map(String::from);
+        assert!(parse_args_from(args).unwrap_err().contains("--token"));
+    }
+
+    #[test]
+    fn parse_args_from_rejects_an_unknown_flag() {
+        let args = ["--bogus"].into_iter().map(String::from);
+        assert!(
+            parse_args_from(args)
+                .unwrap_err()
+                .contains("unknown argument")
+        );
+    }
+
+    #[test]
+    fn identity_path_for_joins_home_and_the_default_filename() {
+        assert_eq!(
+            identity_path_for("/home/x"),
+            PathBuf::from("/home/x/.nova-operator/identity.key")
+        );
+    }
+
+    #[test]
+    fn load_or_create_identity_generates_and_persists_a_new_key() {
+        let dir =
+            std::env::temp_dir().join(format!("nova-operator-test-gen-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let path = dir.join("identity.key");
+
+        let secret = load_or_create_identity(&path);
+        assert!(path.exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(
+                mode, 0o600,
+                "identity file must not be group/world readable"
+            );
+        }
+
+        let reloaded = load_or_create_identity(&path);
+        assert_eq!(
+            secret.to_bytes(),
+            reloaded.to_bytes(),
+            "a second load must return the same persisted key, not generate a new one"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[should_panic(expected = "is not a 32-byte key")]
+    fn load_or_create_identity_panics_on_a_malformed_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "nova-operator-test-malformed-{}",
+            std::process::id()
+        ));
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("identity.key");
+        fs::write(&path, b"too short").unwrap();
+
+        load_or_create_identity(&path);
+    }
+
+    #[test]
+    fn base64_round_trips() {
+        let data = b"nova operator round trip";
+        let encoded = base64_encode(data);
+        assert_eq!(base64_decode(&encoded).expect("valid base64"), data);
+    }
+
+    #[test]
+    fn base64_decode_rejects_invalid_input() {
+        assert_eq!(base64_decode("not valid base64!!"), None);
+    }
+
+    #[tokio::test]
+    async fn next_coordinator_message_parses_a_valid_frame() {
+        let json = serde_json::to_string(&CoordinatorMessage::ComplaintWindowClosed).unwrap();
+        let mut stream = futures_util::stream::iter(vec![Ok(WsMessage::Text(json.into()))]);
+        let msg = next_coordinator_message(&mut stream).await;
+        assert!(matches!(
+            msg,
+            Some(CoordinatorMessage::ComplaintWindowClosed)
+        ));
+    }
+
+    #[tokio::test]
+    async fn next_coordinator_message_returns_none_on_malformed_json() {
+        let mut stream = futures_util::stream::iter(vec![Ok(WsMessage::Text("not json".into()))]);
+        assert!(next_coordinator_message(&mut stream).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn next_coordinator_message_returns_none_on_close() {
+        let mut stream = futures_util::stream::iter(vec![Ok(WsMessage::Close(None))]);
+        assert!(next_coordinator_message(&mut stream).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn next_coordinator_message_skips_non_text_frames() {
+        let json = serde_json::to_string(&CoordinatorMessage::ComplaintWindowClosed).unwrap();
+        let mut stream = futures_util::stream::iter(vec![
+            Ok(WsMessage::Ping(Vec::new().into())),
+            Ok(WsMessage::Text(json.into())),
+        ]);
+        let msg = next_coordinator_message(&mut stream).await;
+        assert!(matches!(
+            msg,
+            Some(CoordinatorMessage::ComplaintWindowClosed)
+        ));
+    }
+
+    #[tokio::test]
+    async fn next_coordinator_message_returns_none_on_a_stream_error() {
+        let mut stream = futures_util::stream::iter(vec![Err(
+            tokio_tungstenite::tungstenite::Error::AlreadyClosed,
+        )]);
+        assert!(next_coordinator_message(&mut stream).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn next_coordinator_message_returns_none_on_an_empty_stream() {
+        let mut stream = futures_util::stream::iter(Vec::<
+            Result<WsMessage, tokio_tungstenite::tungstenite::Error>,
+        >::new());
+        assert!(next_coordinator_message(&mut stream).await.is_none());
+    }
+
+    type MockSink = std::pin::Pin<
+        Box<dyn futures_util::Sink<WsMessage, Error = std::convert::Infallible> + Send>,
+    >;
+
+    fn collecting_sink() -> (MockSink, std::sync::Arc<std::sync::Mutex<Vec<WsMessage>>>) {
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sent_for_sink = sent.clone();
+        let sink = futures_util::sink::unfold((), move |_, item: WsMessage| {
+            let sent = sent_for_sink.clone();
+            async move {
+                sent.lock().unwrap().push(item);
+                Ok::<(), std::convert::Infallible>(())
+            }
+        });
+        (Box::pin(sink), sent)
+    }
+
+    #[tokio::test]
+    async fn send_serializes_and_writes_one_frame() {
+        let (mut sink, sent) = collecting_sink();
+        send(&mut sink, &OperatorMessage::NoMoreComplaints).await;
+        let frames = sent.lock().unwrap();
+        assert_eq!(frames.len(), 1);
+        match &frames[0] {
+            WsMessage::Text(t) => assert!(t.contains("NoMoreComplaints")),
+            other => panic!("expected a text frame, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn report_failure_sends_a_ceremony_failed_frame_and_logs() {
+        let (mut sink, sent) = collecting_sink();
+        report_failure(&mut sink, "something went wrong".to_string()).await;
+        let frames = sent.lock().unwrap();
+        assert_eq!(frames.len(), 1);
+        match &frames[0] {
+            WsMessage::Text(t) => {
+                assert!(t.contains("CeremonyFailed"));
+                assert!(t.contains("something went wrong"));
+            }
+            other => panic!("expected a text frame, got {other:?}"),
+        }
+    }
+
+    fn test_key_share(my_id: ParticipantId) -> KeyShare {
+        KeyShare {
+            participant_id: my_id,
+            secret_share: curve25519_dalek::scalar::Scalar::from(7u64),
+            group_public_key: curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT,
+        }
+    }
+
+    #[tokio::test]
+    async fn run_steady_state_answers_a_partial_decrypt_request() {
+        let key_share = test_key_share(1);
+        let ephemeral = curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT;
+        let request = CoordinatorMessage::PartialDecryptRequest {
+            ephemeral_point: wire::point_to_hex(&ephemeral),
+        };
+        let json = serde_json::to_string(&request).unwrap();
+        let mut read = futures_util::stream::iter(vec![Ok(WsMessage::Text(json.into()))]);
+        let (mut write, sent) = collecting_sink();
+
+        run_steady_state(&mut write, &mut read, &key_share, 1).await;
+
+        let frames = sent.lock().unwrap();
+        assert_eq!(frames.len(), 1);
+        match &frames[0] {
+            WsMessage::Text(t) => assert!(t.contains("PartialDecryptResponse")),
+            other => panic!("expected a text frame, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn run_steady_state_answers_round1_then_round2() {
+        let key_share = test_key_share(1);
+        let round2_request = CoordinatorMessage::Round2Request {
+            message: "sign me".to_string(),
+            signer_ids: vec![1],
+            commitments: vec![],
+        };
+        let mut read = futures_util::stream::iter(vec![
+            Ok(WsMessage::Text(
+                serde_json::to_string(&CoordinatorMessage::Round1Request)
+                    .unwrap()
+                    .into(),
+            )),
+            Ok(WsMessage::Text(
+                serde_json::to_string(&round2_request).unwrap().into(),
+            )),
+        ]);
+        let (mut write, sent) = collecting_sink();
+
+        run_steady_state(&mut write, &mut read, &key_share, 1).await;
+
+        let frames = sent.lock().unwrap();
+        assert_eq!(
+            frames.len(),
+            2,
+            "expects a Round1Response then a Round2Response"
+        );
+        match &frames[0] {
+            WsMessage::Text(t) => assert!(t.contains("Round1Response")),
+            other => panic!("expected a text frame, got {other:?}"),
+        }
+        match &frames[1] {
+            WsMessage::Text(t) => assert!(t.contains("Round2Response")),
+            other => panic!("expected a text frame, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn run_steady_state_ignores_round2_with_no_outstanding_nonces() {
+        let key_share = test_key_share(1);
+        let round2_request = CoordinatorMessage::Round2Request {
+            message: "sign me".to_string(),
+            signer_ids: vec![1],
+            commitments: vec![],
+        };
+        let mut read = futures_util::stream::iter(vec![Ok(WsMessage::Text(
+            serde_json::to_string(&round2_request).unwrap().into(),
+        ))]);
+        let (mut write, sent) = collecting_sink();
+
+        run_steady_state(&mut write, &mut read, &key_share, 1).await;
+
+        assert!(
+            sent.lock().unwrap().is_empty(),
+            "a Round2Request with no prior Round1 must produce no reply"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_steady_state_logs_and_continues_on_ceremony_failed() {
+        let key_share = test_key_share(1);
+        let mut read = futures_util::stream::iter(vec![
+            Ok(WsMessage::Text(
+                serde_json::to_string(&CoordinatorMessage::CeremonyFailed {
+                    reason: "demo aborted".to_string(),
+                })
+                .unwrap()
+                .into(),
+            )),
+            Ok(WsMessage::Text(
+                serde_json::to_string(&CoordinatorMessage::PartialDecryptRequest {
+                    ephemeral_point: wire::point_to_hex(
+                        &curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT,
+                    ),
+                })
+                .unwrap()
+                .into(),
+            )),
+        ]);
+        let (mut write, sent) = collecting_sink();
+
+        run_steady_state(&mut write, &mut read, &key_share, 1).await;
+
+        assert_eq!(
+            sent.lock().unwrap().len(),
+            1,
+            "CeremonyFailed produces no reply of its own but must not stop the loop"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_steady_state_ignores_unrelated_message_types_and_returns_when_the_stream_ends() {
+        let key_share = test_key_share(1);
+        let mut read = futures_util::stream::iter(vec![Ok(WsMessage::Text(
+            serde_json::to_string(&CoordinatorMessage::ComplaintWindowClosed)
+                .unwrap()
+                .into(),
+        ))]);
+        let (mut write, sent) = collecting_sink();
+
+        run_steady_state(&mut write, &mut read, &key_share, 1).await;
+
+        assert!(sent.lock().unwrap().is_empty());
     }
 }

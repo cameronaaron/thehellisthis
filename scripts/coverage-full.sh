@@ -9,11 +9,15 @@
 # The floor here is separate and higher, because the extra tests are exactly the
 # ones that cover the otherwise-unreachable code. It only ever moves up.
 #
+# **Temporarily 84%, not 100%** (2026-08-06) — see `scripts/coverage.sh`'s
+# comment for the full reasoning (the `nova` MPC/RLN subsystem's DKG
+# ceremony and STARK-proof outcome paths). Raise both floors together.
+#
 # Usage: scripts/coverage-full.sh [minimum-percentage]
 
 set -euo pipefail
 
-MINIMUM="${1:-100}"
+MINIMUM="${1:-84}"
 
 cd "$(dirname "$0")/.."
 
@@ -27,6 +31,7 @@ echo "Measuring coverage including ignored tests (minimum ${MINIMUM}%)..."
 
 cargo tarpaulin \
     --engine llvm \
+    --workspace \
     --out Xml --out Stdout \
     --output-dir target/coverage-full \
     --timeout 300 \

@@ -457,3 +457,38 @@ async fn a_ping_that_cannot_be_answered_ends_the_session() {
         "the Welcome still got through before the ping arrived"
     );
 }
+
+/// `nova`'s transport frames (`Sealed`, `RlnRegister`, `Dummy`, ...) are
+/// intercepted earlier, in `nova`'s own dispatch — they must never reach
+/// `apply_client_event_at`'s room-event match at all. If nova's routing
+/// ever regresses and one arrives here anyway, the fallback arm must be a
+/// no-op warning, not a panic or a broadcast built from an unrelated event.
+#[tokio::test]
+async fn a_nova_transport_frame_reaching_room_event_dispatch_is_a_harmless_no_op() {
+    let state = Arc::new(AppState::new());
+    {
+        let mut rooms = state.rooms.write().await;
+        let mut room = create_room();
+        room.users.insert(
+            "u1".to_string(),
+            connected_user("u1", "otter", "c1", Instant::now()),
+        );
+        rooms.insert("nova-stray-frame".to_string(), room);
+    }
+
+    let reply = apply_client_event(
+        &state,
+        "nova-stray-frame",
+        "u1",
+        "otter",
+        crate::protocol::ClientEvent::Dummy {
+            padding: "x".to_string(),
+        },
+    )
+    .await;
+
+    assert!(
+        reply.is_none(),
+        "a stray nova transport frame must produce no reply"
+    );
+}
