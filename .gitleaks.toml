@@ -1,0 +1,24 @@
+# gitleaks config — extends the built-in default rule set rather than
+# replacing it, so new upstream rules keep applying automatically.
+#
+# Two documented false positives, both confirmed harmless by hand
+# (ENGINEERING-STANDARDS.md-style reasoning: an exclusion without a reason
+# is a leak being hidden):
+#   - RFC 6455's own example WebSocket handshake key, `dGhlIHNhbXBsZSBub25jZQ==`
+#     ("the sample nonce" base64-encoded) — used verbatim in tests that
+#     exercise the WebSocket upgrade handshake. It is the spec's published
+#     example value, not a secret generated for this project.
+#   - The literal string "ChaCha20-Poly1305" — an algorithm name in doc
+#     comments and error messages, not a key or credential. It trips the
+#     generic high-entropy heuristic on its own.
+title = "thehellisthis gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Known false positives — see the comment above each entry"
+regexes = [
+  '''dGhlIHNhbXBsZSBub25jZQ==''',
+  '''ChaCha20-Poly1305''',
+]

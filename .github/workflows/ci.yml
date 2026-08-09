@@ -175,3 +175,21 @@ jobs:
 
       - name: Audit
         run: cargo audit
+
+  # Secret scan over the *whole history*, not just this push's diff —
+  # `fetch-depth: 0` is required for that; the default shallow checkout
+  # would only let gitleaks see this one commit. Runs on every push and PR,
+  # same as `audit`, because a secret committed once is in history forever
+  # regardless of what a later commit does — see scripts/gitleaks.sh and
+  # .gitleaks.toml for the config and the two documented false positives.
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITLEAKS_CONFIG: .gitleaks.toml

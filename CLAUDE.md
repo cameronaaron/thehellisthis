@@ -31,12 +31,20 @@ Cloudflare Container behind a Worker.
 
 ```bash
 cargo run                       # dev server → http://localhost:3000/main
-cargo test --all-features       # 612 tests; all must pass before committing
+cargo test --all-features       # 781 tests; all must pass before committing
 cargo fmt --all -- --check      # formatting is a gate, not a preference
 cargo clippy --all-targets --all-features -- -D warnings   # warnings are failures
 cargo build --release           # LTO'd binary for the container image
-scripts/coverage.sh             # line-coverage floor: 100%
+scripts/coverage.sh             # line-coverage floor: currently 84%, was 100% —
+                                 # see the script's own comment for what's left
+                                 # and why, and the reopen condition
+scripts/gitleaks.sh             # secret scan over the whole git history
 ```
+
+`scripts/install-git-hooks.sh` installs a local pre-commit hook that runs
+`gitleaks protect --staged` before every commit — opt-in, not automatic (see
+its own comment for why), and a second line of defence in front of the CI
+job below, not a replacement for it.
 
 Two more that CI deliberately does **not** run, because they depend on real
 elapsed time and a loaded shared runner is where such a test becomes a flake:
@@ -44,7 +52,7 @@ elapsed time and a loaded shared runner is where such a test becomes a flake:
 ```bash
 scripts/smoke.sh                # drive the real binary, then read its log
 scripts/slow-tests.sh           # the #[ignore]d time-dependent tests
-scripts/coverage-full.sh        # coverage including them (also 100%)
+scripts/coverage-full.sh        # coverage including them (currently 84% too)
 ```
 
 Run these before pushing anything that touches the heartbeat, the housekeeping
@@ -57,7 +65,7 @@ slots, and arrivals without matching departures. It reported success once while
 matching nothing at all, so it now fails if its checks find no lines: a check
 that cannot fail is worse than no check (§6.4), in shell as much as in Rust.
 
-Those five are the gate, and they are exactly what `.github/workflows/ci.yml`
+Those six are the gate, and they are exactly what `.github/workflows/ci.yml`
 runs — a green local run means a green CI run.
 
 **Mutation testing** is a manual sweep, not a gate (a full run takes far longer
@@ -550,7 +558,7 @@ Frame order on connect is **guaranteed**: `Welcome`, then history, then
 
 ## Tests
 
-`src/tests/` — 703 tests across 33 modules, run with `cargo test --all-features`.
+`src/tests/` — 783 tests across 34 modules, run with `cargo test --all-features`.
 One module per concern rather than one 19,000-line file, and no module over
 ~1,150 lines: `session_identity.rs`/`session_throttles.rs`/`session_presence.rs`/
 `session_broadcast.rs`/`session_frames.rs`/`session_join_and_room.rs` split what
