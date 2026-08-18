@@ -23,7 +23,7 @@ jobs:
     name: Check for a new novachannel commit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Read the pinned rev
         id: pinned
