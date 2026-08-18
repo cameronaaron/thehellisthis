@@ -14,10 +14,10 @@
   },
   "devDependencies": {
     "@cloudflare/containers": "^0.3.7",
-    "@cloudflare/workers-types": "^5.20260727.1",
-    "@types/node": "^26.1.1",
+    "@cloudflare/workers-types": "^5.20260814.1",
+    "@types/node": "^26.2.0",
     "typescript": "^7.0.2",
-    "wrangler": "^4.114.0"
+    "wrangler": "^4.123.0"
   },
   "packageManager": "pnpm@11.12.0"
 }
