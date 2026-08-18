@@ -84,8 +84,8 @@ ammonia = "4.1.4"
 # dependencies — declared directly rather than hand-rolled for the same
 # reason as `sha2`, and at zero additional supply-chain cost since it was
 # already in the dependency tree.
-sha2 = "0.10.9"
-base64 = "0.22.1"
+sha2 = "0.11.0"
+base64 = "0.23.1"
 
 # `nova` room only (routes.rs/session/nova.rs): a hybrid classical/post-quantum
 # secure channel layered under wss:// for that one room's message payloads.
