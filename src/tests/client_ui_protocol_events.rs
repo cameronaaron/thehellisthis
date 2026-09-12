@@ -219,6 +219,57 @@ fn client_and_server_agree_on_the_idle_close_code() {
     );
 }
 
+/// The reconnect backoff is jittered, so a restart is not a stampede.
+///
+/// There is one container instance and it sleeps after ten idle minutes, so
+/// every open tab losing its socket at the same instant is a routine event,
+/// not a disaster scenario. An unjittered `1000 * 2^attempt` puts all of them
+/// on the identical ladder: the server meets the entire population at 1s,
+/// then again at 2s, 4s, 8s. Three tabs from one address stacked their
+/// refusals against the per-address limit inside a single suspicion window,
+/// which is how a reconnect storm used to end in an hour-long ban for the
+/// person living through it (`exhausting_the_per_address_connection_limit_never_bans_the_address`).
+///
+/// Asserted on the source rather than by simulating a herd: what makes the
+/// difference is that the delay a client actually waits is drawn from a range
+/// rather than computed, and a delay computed from `reconnectAttempts` alone
+/// is exactly the regression.
+#[test]
+fn the_reconnect_backoff_is_jittered() {
+    let js = EMBEDDED_JS;
+
+    let body = js
+        .split_once("tryReconnect() {")
+        .and_then(|(_, rest)| rest.split_once("\n    }"))
+        .map(|(body, _)| body)
+        .expect("client.js should define tryReconnect");
+
+    assert!(
+        body.contains("Math.random()"),
+        "tryReconnect must draw its delay from a range: without jitter every \
+         client that lost its connection at the same moment retries at the \
+         same moments, and one instance restarting means meeting the whole \
+         room at once"
+    );
+    assert!(
+        body.contains("Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000)"),
+        "the backoff itself must stay exponential and capped — jitter spreads \
+         the retries, it does not replace the ceiling on how long one waits"
+    );
+
+    // The delay actually passed to the timer is the jittered one, not the
+    // bare backoff sitting next to it.
+    let scheduled = body
+        .rsplit_once("}, ")
+        .map(|(_, tail)| tail)
+        .expect("tryReconnect should schedule its retry with setTimeout");
+    assert!(
+        scheduled.starts_with("delay)"),
+        "the retry must be scheduled on the jittered delay, not the raw \
+         backoff: {scheduled:?}"
+    );
+}
+
 /// §7 — the client does not undo the eviction that lets a room empty.
 ///
 /// The server removes a user who has said nothing for ten minutes so the room

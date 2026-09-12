@@ -45,17 +45,26 @@ pub async fn ws_handler(
     let origin = headers.get("origin").and_then(|v| v.to_str().ok());
     let host = headers.get(header::HOST).and_then(|v| v.to_str().ok());
 
-    if !is_allowed_origin(origin, host) {
-        warn!(?origin, "rejected websocket upgrade from foreign origin");
-        return ChatError::SecurityError("Origin not allowed".to_string()).into_response();
-    }
-
     // Hashed at the boundary: everything downstream compares addresses for
     // equality only, so the real address never needs to exist past this line.
     // It is never stored in a map, never logged, and absent from a memory dump.
     let ip = extract_client_ip(&headers, Some(&conn_info))
         .as_deref()
         .map(hash_client_address);
+
+    if !is_allowed_origin(origin, host) {
+        warn!(?origin, "rejected websocket upgrade from foreign origin");
+        // *This* is what the ban list is for. A browser sends an `Origin` that
+        // does not match the host it is talking to only when a third-party
+        // page is driving it, which is precisely the attack `is_allowed_origin`
+        // exists to refuse — the shipped client cannot produce one. Repeating
+        // it is evidence, unlike running out of connection slots, which is
+        // what having tabs open looks like (§5.10).
+        if let Some(ip) = &ip {
+            let _ = state.security_manager.record_suspicious_activity(ip).await;
+        }
+        return ChatError::SecurityError("Origin not allowed".to_string()).into_response();
+    }
 
     let host = host.unwrap_or_default().to_string();
 
@@ -116,7 +125,19 @@ pub(crate) async fn check_admission(
                 limit = MAX_CONCURRENT_CONNECTIONS_PER_IP,
                 "refused: per-address connection limit"
             );
-            let _ = state.security_manager.record_suspicious_activity(ip).await;
+            // Deliberately *not* recorded as suspicious activity, and this
+            // was a real lockout. This refusal is what having tabs open looks
+            // like: the limit is three, and a returning tab is refused for as
+            // long as the connection it is replacing is still held. A network
+            // blip with three tabs open therefore produced three refusals per
+            // client retry, and `client.js` retries at 1s, 2s, 4s, 8s — over
+            // eleven refusals inside the sixty-second suspicion window, which
+            // banned the address for an hour. Since this was the *only* caller
+            // of `record_suspicious_activity`, the entire ban list was
+            // reachable by exactly one population: people with several tabs
+            // open and a bad connection. The limit has already done its job
+            // by refusing; escalating a working limit into an hour-long
+            // blackout is not a second line of defence, it is a bug (§5.10).
             return Err(ChatError::RateLimitError(
                 "Too many connections from your IP".to_string(),
             ));

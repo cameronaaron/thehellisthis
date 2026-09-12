@@ -2127,3 +2127,34 @@ if attachments leave the broadcast path, or if the ring becomes byte-bounded.
 The general rule: **anything that holds a value until someone else takes it is
 a queue, and every queue is a memory ceiling with a different name on it.**
 Bound it in bytes, not in items, or at least write down the item cost.
+
+### §5.10 — a limit that is working is not an abuse signal (2026-09-12)
+
+The ban list had exactly one thing that could fill it: being refused by the
+per-address connection limit. That refusal is what having tabs open looks
+like. The limit is three; a returning tab is refused for as long as the
+connection it replaces is still held; `client.js` retried at 1s/2s/4s/8s. So
+three tabs through one network blip produced over eleven refusals inside the
+sixty-second suspicion window — and eleven was the threshold, for a one-hour
+ban. The entire ban mechanism was reachable by one population: real users with
+several tabs and a bad connection. Nothing an actual attacker does was in it.
+
+Two rules come out of this:
+
+1. **A refusal the limit already handled must not escalate.** If the check has
+   refused the request, the system is working as designed; turning "you are at
+   your limit" into "you are barred from the site" punishes the case the limit
+   exists to shape. Escalate only on evidence — something the shipped client
+   *cannot* produce. A foreign `Origin` on an upgrade qualifies: a browser
+   sends one only when a third-party page is driving it.
+2. **Retries must be jittered.** An unjittered `base * 2^attempt` synchronises
+   every client that failed at the same instant, so one instance restarting —
+   routine here, `max_instances` is 1 and it sleeps after ten idle minutes —
+   means meeting the whole population at each rung of the ladder. Jitter is
+   also what keeps a per-address limit from being tripped by a client's own
+   retry pattern.
+
+Generally: **ask what population each defence actually catches.** A threshold
+nobody has worked out the reachable inputs for is a guess, and the guess here
+had the sign backwards — it was maximally hostile to the patient, legitimate
+user and entirely absent against the attacker.

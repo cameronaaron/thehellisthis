@@ -2,6 +2,8 @@
 //! stale-entry sweeps that keep both bounded (§3.5).
 
 use super::*;
+use crate::session::check_admission;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 #[tokio::test]
 async fn test_security_manager_ban_ip() {
@@ -31,6 +33,103 @@ async fn test_security_manager_ban_expires() {
 
     let result = security_manager.check_ip("10.0.0.99").await;
     assert!(result.is_ok());
+}
+
+/// Running out of connection slots is not evidence of anything, and must not
+/// ban the address it happens to.
+///
+/// The shape of the lockout this pins: the per-address limit is three, a
+/// returning tab is refused for as long as the connection it replaces is
+/// still held, and `client.js` retries at 1s/2s/4s/8s. Three tabs through one
+/// network blip is over eleven refusals inside the sixty-second suspicion
+/// window — and eleven was the ban threshold, for an hour. This was the only
+/// caller of `record_suspicious_activity`, so the whole ban list was reachable
+/// by exactly one population: real users with tabs open.
+///
+/// Asserted against `check_admission` rather than the pool, because the
+/// refusal and the (absent) escalation are the same call and the bug was in
+/// how they were wired together.
+#[tokio::test]
+async fn exhausting_the_per_address_connection_limit_never_bans_the_address() {
+    let state = Arc::new(AppState::new());
+    let ip = hash_client_address("198.51.100.7");
+
+    // Hold the address at its ceiling, the way three live tabs do.
+    for _ in 0..MAX_CONCURRENT_CONNECTIONS_PER_IP {
+        state
+            .connection_pool
+            .add_connection(&ip)
+            .await
+            .expect("the first three connections are within the limit");
+    }
+
+    // Now retry far past the suspicion threshold, as a blip through three
+    // tabs does inside one window.
+    for attempt in 0..(MAX_SUSPICIOUS_EVENTS * 2) {
+        let refused = check_admission(&state, Some(&ip), "main").await;
+        assert!(
+            matches!(refused, Err(ChatError::RateLimitError(_))),
+            "attempt {attempt} should be refused for capacity, not anything else: \
+             {refused:?}"
+        );
+    }
+
+    assert!(
+        state.security_manager.banned_ips.read().await.is_empty(),
+        "being refused for having too many connections open must never earn a \
+         ban: the limit has already done its job by refusing, and escalating \
+         it locks a real user out of the whole site for {}s",
+        IP_BAN_DURATION.as_secs()
+    );
+    assert!(
+        state
+            .security_manager
+            .suspicious_activity
+            .read()
+            .await
+            .is_empty(),
+        "nor may it accumulate towards one"
+    );
+
+    // And once a slot frees, the same address is admitted again immediately —
+    // no residue from all those refusals.
+    state.connection_pool.remove_connection(&ip).await;
+    assert!(
+        check_admission(&state, Some(&ip), "main").await.is_ok(),
+        "a freed slot must be usable by the address that was just refused"
+    );
+}
+
+/// A foreign `Origin` is what the ban list is for.
+///
+/// A browser sends an `Origin` that does not match the host it is talking to
+/// only when a third-party page is driving it — the shipped client cannot
+/// produce one — so unlike running out of slots, repeating it is evidence.
+/// This is the other half of the change above: the ban machinery is still
+/// reachable, just by something a real visitor never does.
+#[tokio::test]
+async fn repeated_foreign_origin_upgrades_do_earn_a_ban() {
+    let (addr, state, handle) = start_ws_server_with_state().await;
+
+    for _ in 0..=MAX_SUSPICIOUS_EVENTS {
+        let mut request = format!("ws://{addr}/ws/main")
+            .into_client_request()
+            .expect("request builds");
+        request
+            .headers_mut()
+            .insert("origin", "https://evil.example".parse().unwrap());
+        // Every one of these is refused; what matters is what accumulates.
+        let _ = connect_async(request).await;
+    }
+
+    let banned = state.security_manager.banned_ips.read().await;
+    assert!(
+        !banned.is_empty(),
+        "a host that keeps opening sockets from a foreign origin is the case \
+         the ban list exists for, and must still reach it"
+    );
+
+    handle.abort();
 }
 
 // ========== WEBSOCKET INTEGRATION TESTS ==========
