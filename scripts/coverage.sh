@@ -16,11 +16,17 @@
 #     needs the same "generic over the sink" treatment `run_steady_state`
 #     already got, applied to a much larger state machine, plus a hand-built
 #     multi-party ceremony transcript to drive it with.
-#   - `session/nova_rln.rs`'s proof accept/duplicate/slash outcomes: only
-#     reachable with a real STARK proof, which only builds under `--release`
-#     (winterfell's documented debug-assertion false positive — see
+#   - `session/nova_rln.rs`'s proof accept/duplicate/slash outcomes, and
+#     `RlnClaim::parse`'s success arm and the throttle call site behind it:
+#     all only reachable with a real STARK proof, which only builds under
+#     `--release` (winterfell's documented debug-assertion false positive,
+#     re-confirmed 2026-09-12 — `air::prove` itself panics with "transition
+#     constraint degrees didn't match" under `cargo test`, so even producing
+#     a proof to feed the parser is off the table; see
 #     `nova_rln_anonymous_post_and_double_post_slashing`'s doc comment) —
-#     tarpaulin always instruments a debug build.
+#     tarpaulin always instruments a debug build. CI covers these in the
+#     separate `cargo test --release --all-features nova_rln` step, which is
+#     where the throttle is pinned end-to-end.
 #   - `session/nova_operator.rs`: a handful of malicious-dealer/complaint
 #     scenarios that need a fuller live multi-operator scenario than exists
 #     yet.
