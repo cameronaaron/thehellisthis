@@ -2098,3 +2098,32 @@ The lesson generalises past this library: **a dependency's default is a number
 somebody else chose against their constraints, not yours.** Any per-connection
 allocation a dependency makes on your behalf belongs in the memory budget, and
 its default belongs in a measurement, not in an assumption.
+
+### A broadcast ring is retained memory (2026-09-12)
+
+§3's ceiling counted history. It did not count the thing that turned out to
+be larger. A `tokio::sync::broadcast` ring holds each sent value until *every*
+subscriber has taken it, so one receiver that stops reading — a peer that
+stopped ACKing, a backgrounded tab on a dead network — pins up to the
+channel's whole depth. At a depth of 1000 and `MAX_BROADCAST_FRAME_BYTES`
+(~172 KB, a message carrying an attachment at its cap), one room with one
+stalled reader pins 172 MB *on top of* the 150 MB history ceiling, on a
+256 MiB container, and `MemoryTracker` sees none of it.
+
+The arithmetic now lives in `the_memory_budget_still_closes`: baseline +
+history + `MAX_CONCURRENT_USERS` connections + one room's ring must fit inside
+85% of `CONTAINER_MEMORY_BYTES`. At the old depth it comes to 343 MB against a
+268 MB box — 128%. At 256 it is 214 MB, 80%.
+
+Two things this cost, stated rather than hidden. Lag tolerance drops from
+about two seconds to about half a second at a room's busiest; a client that
+exceeds it is lagged off, reconnects, and is replayed the history it missed.
+And the bound that closes is **per room** — across `MAX_ROOMS` it does not,
+and cannot while attachment payloads ride inside broadcast frames. What bounds
+the aggregate is the per-user message rate limit and the need for a separately
+stalled reader in each room, which is a rate argument, not arithmetic. Reopen
+if attachments leave the broadcast path, or if the ring becomes byte-bounded.
+
+The general rule: **anything that holds a value until someone else takes it is
+a queue, and every queue is a memory ceiling with a different name on it.**
+Bound it in bytes, not in items, or at least write down the item cost.

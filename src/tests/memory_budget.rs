@@ -4,6 +4,7 @@
 //! copying it, O(1) reactions — actually holds under test.
 
 use super::*;
+use crate::room::BROADCAST_CHANNEL_CAPACITY;
 
 /// §3 — the memory budget closes, whatever the constants are set to.
 ///
@@ -54,6 +55,65 @@ fn the_memory_budget_still_closes() {
             "escaping expands by up to 5x, so a lower ceiling makes the fallback able to exceed the limit it is the fallback for"
         );
     }
+
+    // And the whole thing fits in the container, which is the claim the rest
+    // of this test is only useful because of.
+    //
+    // `MAX_TOTAL_ROOMS_MEMORY` bounds *tracked* bytes — history and
+    // attachments. Three things sit outside it and none of them were in any
+    // arithmetic before: the baseline process, the per-connection transport
+    // buffers, and the broadcast rings. The rings were the largest of the
+    // three and the least visible, because a `tokio` broadcast holds every
+    // sent frame until all subscribers have taken it, so one receiver that
+    // stops reading pins `BROADCAST_CHANNEL_CAPACITY` frames — at the
+    // previous depth of 1000, 172 MB on top of a 150 MB ceiling, on a box
+    // with 256 MiB in it.
+    let history = MAX_TOTAL_ROOMS_MEMORY;
+    let connections = MAX_CONCURRENT_USERS * MEASURED_CONNECTION_BYTES;
+    let one_rooms_ring = BROADCAST_CHANNEL_CAPACITY * MAX_BROADCAST_FRAME_BYTES;
+    let committed = MEASURED_BASELINE_BYTES + history + connections + one_rooms_ring;
+
+    let (num, den) = MEMORY_BUDGET_HEADROOM_RATIO;
+    let allowed = CONTAINER_MEMORY_BYTES / den * num;
+    assert!(
+        committed <= allowed,
+        "at capacity this process commits {committed} bytes — baseline \
+         {MEASURED_BASELINE_BYTES}, history {history}, {MAX_CONCURRENT_USERS} \
+         connections {connections}, one room's broadcast ring \
+         {one_rooms_ring} — against {allowed} allowed of the container's \
+         {CONTAINER_MEMORY_BYTES}. Over it, a full server is an OOM kill that \
+         disconnects every user in every room, which is the one failure the \
+         whole memory law exists to prevent. Lower a ceiling, or raise the \
+         container's instance type in cloudflare/wrangler.jsonc and this \
+         constant with it."
+    );
+}
+
+/// The container really is the size [`CONTAINER_MEMORY_BYTES`] says it is.
+///
+/// `wrangler.jsonc` already carried a comment saying that raising the instance
+/// type means revisiting the memory budget. A comment is not a check — and the
+/// budget it pointed at did not include the two largest consumers, so it would
+/// not have caught the change either way. This is the executable half: change
+/// the instance type and the arithmetic above has to be redone in the same
+/// commit (§6).
+#[test]
+fn the_container_is_still_the_size_the_budget_assumes() {
+    const WRANGLER: &str = include_str!("../../cloudflare/wrangler.jsonc");
+
+    assert!(
+        WRANGLER.contains("\"instance_type\": \"lite\""),
+        "cloudflare/wrangler.jsonc no longer asks for the `lite` instance \
+         type, whose 256 MiB is what CONTAINER_MEMORY_BYTES and every ceiling \
+         sized against it assume. Update that constant and re-derive the \
+         budget, or put the instance type back."
+    );
+    assert_eq!(
+        CONTAINER_MEMORY_BYTES,
+        256 * 1024 * 1024,
+        "`lite` is 256 MiB; the budget's idea of the box has drifted from the \
+         box"
+    );
 }
 
 /// §2 — the join path shares stored messages; it does not copy them.

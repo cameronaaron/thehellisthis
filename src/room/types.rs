@@ -18,11 +18,37 @@ use crate::protocol::OutgoingMessage;
 /// Broadcast channel depth. A slow client that falls this far behind is lagged
 /// off the channel rather than allowed to grow the server's memory.
 ///
+/// **This is a memory constant, not a comfort setting.** A `tokio` broadcast
+/// ring holds each sent value until every subscriber has taken it, so a
+/// single receiver that has stopped reading — a peer that stopped ACKing, a
+/// backgrounded tab on a dead network — pins up to this many frames in the
+/// room's ring. At [`crate::config::MAX_BROADCAST_FRAME_BYTES`] (a message
+/// carrying an attachment at its cap, ~172 KB) that is the *dominant*
+/// consumer of a 256 MiB container, and it is invisible to `MemoryTracker`:
+/// at the previous depth of 1000, one room with one stalled reader could pin
+/// 172 MB on top of the 150 MB history ceiling, and the arithmetic the
+/// ceiling is supposed to be did not include it.
+///
+/// 256 is what closes the budget in `the_memory_budget_still_closes` — 44 MB
+/// worst case per room. What it costs is lag tolerance: at the busiest a room
+/// can legitimately be (a hundred users, typing events at their 200 ms
+/// throttle, ~500 frames/s) a receiver has about half a second to catch up
+/// before it is lagged off, where it used to have two. That is a client that
+/// reconnects and is replayed the history it missed, against an OOM kill that
+/// disconnects every user in every room (§5). The trade is not close.
+///
+/// The bound that closes is *per room*. Across [`crate::config::MAX_ROOMS`]
+/// the arithmetic does not close, and cannot while attachments ride inside
+/// broadcast frames — the remaining bound there is the per-user message rate
+/// limit plus the need for a separately stalled reader in each room. Reopen
+/// if attachments ever move out of the broadcast path, or if a room's ring
+/// becomes byte-bounded rather than frame-bounded.
+///
 /// `pub(crate)`: also the depth `state.rs`'s `nova_sealed_sender` uses — the
 /// `nova` room's second, sealed-frame channel needs the same lag tolerance
 /// as every room's own, since it is the channel nova connections actually
 /// subscribe to (`session/lifecycle.rs::join_room`).
-pub(crate) const BROADCAST_CHANNEL_CAPACITY: usize = 1000;
+pub(crate) const BROADCAST_CHANNEL_CAPACITY: usize = 256;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConnectionState {

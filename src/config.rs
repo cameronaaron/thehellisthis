@@ -421,6 +421,44 @@ pub(crate) const MAX_TOTAL_ROOMS_MEMORY: usize = 150_000_000;
 /// soft threshold exists to make that rare.
 pub(crate) const MEMORY_SOFT_LIMIT_RATIO: (usize, usize) = (9, 10);
 
+/// The memory the production container actually has: Cloudflare's `lite`
+/// instance type is 256 MiB (`cloudflare/wrangler.jsonc`).
+///
+/// Here so the budget can be *asserted* against it rather than asserted
+/// against itself. [`MAX_TOTAL_ROOMS_MEMORY`]'s own comment claimed 150 MB
+/// "leaves comfortable headroom in that box", and nothing checked the claim —
+/// which is how the two largest consumers outside it, the per-connection
+/// transport buffers and the broadcast rings, came to add up to more than the
+/// box. `the_memory_budget_still_closes` now does the arithmetic, and
+/// `the_container_is_still_the_size_the_budget_assumes` fails if the instance
+/// type changes underneath it.
+pub(crate) const CONTAINER_MEMORY_BYTES: usize = 256 * 1024 * 1024;
+
+/// Resident bytes per connected socket, **measured**, not derived.
+///
+/// Release binary, 100 idle connections: 6.1 MB → 9.4 MB resident, i.e.
+/// 32.6 KiB each with [`WS_SOCKET_BUFFER_SIZE`] at 8 KiB (it was 153 KiB on
+/// the library's 128 KiB default — see that constant). Rounded up. A
+/// measurement rather than a sum of struct sizes because the transport's
+/// buffers, the four task futures, and the allocator's own rounding are all
+/// in it, and only one of those is visible in the source.
+pub(crate) const MEASURED_CONNECTION_BYTES: usize = 33 * 1024;
+
+/// Resident bytes with the server up and nobody connected — the binary, the
+/// Tokio runtime, the compiled-in client page and script, and `nova`'s WASM.
+/// Measured at 6.1 MB on the release binary; rounded up.
+pub(crate) const MEASURED_BASELINE_BYTES: usize = 7 * 1024 * 1024;
+
+/// How much of [`CONTAINER_MEMORY_BYTES`] the budget is allowed to account
+/// for, as (numerator, denominator).
+///
+/// The remainder is for what no constant here can predict: allocator
+/// fragmentation, a transient 512 KiB frame being assembled on several
+/// sockets at once, and the render's own working set. 85% because an OOM kill
+/// disconnects every user in every room (§5) — the cost of being wrong in
+/// this direction is not proportional to how wrong you were.
+pub(crate) const MEMORY_BUDGET_HEADROOM_RATIO: (usize, usize) = (85, 100);
+
 // ---------------------------------------------------------------------------
 // Security
 // ---------------------------------------------------------------------------
