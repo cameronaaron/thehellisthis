@@ -116,6 +116,66 @@ pub(crate) enum RlnOutcome {
     Slashed { recovered_sk: BaseElement },
 }
 
+/// One client's anonymous-message claim, parsed and nothing more.
+///
+/// Separated from verification because the two have completely different
+/// costs and completely different needs. Parsing needs no shared state and
+/// takes microseconds; verification needs the room's tree, takes the write
+/// lock, and is the most expensive thing a client can ask this server to do
+/// (measured: 0.4 ms per `air::verify` on a development machine, and the
+/// production container has 1/16 of a vCPU). Splitting them means a
+/// malformed frame no longer contends on the lock with real ones, and gives
+/// the throttle in `session/nova.rs` a seam at exactly the point where the
+/// expense begins: a frame that was never going to verify does not spend a
+/// verification's worth of budget, and a frame that will, does.
+pub(crate) struct RlnClaim {
+    proof: Proof,
+    y: BaseElement,
+    nullifier: BaseElement,
+    /// Derived from the text *as sent*, which is what pins the proof to the
+    /// actual message content (module doc) — never taken from the wire.
+    x: BaseElement,
+}
+
+impl RlnClaim {
+    /// Parses the wire form, or `None` with the reason logged.
+    ///
+    /// `text` is hashed here rather than carried, so there is no way for a
+    /// caller to verify a proof against anything but the message being sent.
+    pub(crate) fn parse(
+        proof_b64: &str,
+        y_hex: &str,
+        nullifier_hex: &str,
+        text: &str,
+    ) -> Option<Self> {
+        let decode = |what: &str, hex: &str| match hex_to_field(hex) {
+            Some(field) => Some(field),
+            None => {
+                warn!("nova rln: malformed {what}");
+                None
+            }
+        };
+
+        let Ok(proof_bytes) = BASE64.decode(proof_b64) else {
+            warn!("nova rln: proof is not valid base64");
+            return None;
+        };
+        let y = decode("y", y_hex)?;
+        let nullifier = decode("nullifier", nullifier_hex)?;
+        let Ok(proof) = Proof::from_bytes(&proof_bytes) else {
+            warn!("nova rln: malformed proof");
+            return None;
+        };
+
+        Some(RlnClaim {
+            proof,
+            y,
+            nullifier,
+            x: bytes_to_field(text.as_bytes()),
+        })
+    }
+}
+
 impl NovaRlnGroup {
     pub(crate) fn new() -> Self {
         NovaRlnGroup {
@@ -167,22 +227,25 @@ impl NovaRlnGroup {
     }
 
     /// Verifies one anonymous message's proof and checks it against the
-    /// nullifier set. `proof_b64`/`y_hex`/`nullifier_hex` are the client's
-    /// claims; `text` is checked *as sent*, which is what pins `x` to the
-    /// actual message content (module doc).
+    /// nullifier set.
+    ///
+    /// Takes an already-parsed [`RlnClaim`] rather than the raw wire strings.
+    /// Everything that can refuse a frame *without* running a verification —
+    /// base64, the two field elements, the proof's own structure — is cheap,
+    /// needs none of this state, and used to happen in here, under the write
+    /// lock, where a malformed frame contended with every real one. See
+    /// [`RlnClaim::parse`].
     pub(crate) fn verify_and_record(
         &mut self,
-        proof_bytes: &[u8],
-        y_hex: &str,
-        nullifier_hex: &str,
-        text: &str,
+        claim: RlnClaim,
     ) -> Result<RlnOutcome, &'static str> {
-        let y = hex_to_field(y_hex).ok_or("malformed y")?;
-        let nullifier = hex_to_field(nullifier_hex).ok_or("malformed nullifier")?;
-        let x = bytes_to_field(text.as_bytes());
+        let RlnClaim {
+            proof,
+            y,
+            nullifier,
+            x,
+        } = claim;
         let root = self.tree.root();
-
-        let proof = Proof::from_bytes(proof_bytes).map_err(|_| "malformed proof")?;
 
         let now = current_epoch();
         // A one-epoch grace window: the client proves against whatever
@@ -313,19 +376,39 @@ pub(crate) async fn handle_path_request(
 pub(crate) async fn handle_message(
     state: &Arc<AppState>,
     room: &str,
+    slot: &super::nova::NovaSlot,
     proof_b64: &str,
     y_hex: &str,
     nullifier_hex: &str,
     text: &str,
 ) {
-    let Ok(proof_bytes) = BASE64.decode(proof_b64) else {
-        warn!("nova rln: proof is not valid base64");
+    // Parsed before the throttle and before the lock: a frame that cannot
+    // verify — bad base64, a field element that is not one, bytes that are
+    // not a proof — costs microseconds, contends with nobody, and does not
+    // spend this connection's verification budget. See `RlnClaim`.
+    let Some(claim) = RlnClaim::parse(proof_b64, y_hex, nullifier_hex, text) else {
         return;
     };
 
+    // Only a frame that is actually about to be verified is rationed.
+    // Verification is the expense — 0.4 ms measured, ~6 ms on the
+    // production container's 1/16 vCPU, inline on a `current_thread`
+    // runtime where it is time no other connection in any room gets — and
+    // nothing else stood in for this. RLN's own one-per-epoch rule is
+    // enforced by the nullifier set, which is only consulted for proofs
+    // that *verify*, so replaying one valid frame in a loop cost the server
+    // a verification every time and the sender nothing.
+    if !slot
+        .check_rln_message_throttle(std::time::Instant::now())
+        .await
+    {
+        tracing::debug!("nova rln: message throttled");
+        return;
+    }
+
     let outcome = {
         let mut group = state.nova_rln_group.write().await;
-        group.verify_and_record(&proof_bytes, y_hex, nullifier_hex, text)
+        group.verify_and_record(claim)
     };
 
     let event = match outcome {

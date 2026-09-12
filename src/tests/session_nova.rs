@@ -8,6 +8,7 @@
 //! elsewhere in this suite — nothing here touches a non-`nova` code path.
 
 use super::*;
+use crate::session::NovaSlot;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -825,6 +826,52 @@ async fn rln_register_refuses_once_the_membership_tree_is_full() {
     handle.abort();
 }
 
+/// The RLN throttle's boundary, without needing a STARK proof to reach it.
+///
+/// The end-to-end version of this lives in
+/// `nova_rln_anonymous_post_and_double_post_slashing`, which is release-only
+/// (winterfell's debug sanity check — see that test's own doc). This is the
+/// same decision at the level a debug run can reach, and it is the boundary
+/// that matters: *exactly* one interval later is allowed, a hair under it is
+/// not. The instant is supplied rather than slept through, the same edge
+/// injection `apply_client_event_at` and `cleanup_rooms_at` use — a test
+/// reading its own clock can approach a threshold but never stand on it
+/// (§9.4, §6.6f).
+#[tokio::test]
+async fn the_rln_message_throttle_opens_exactly_one_interval_later() {
+    let slot = NovaSlot::new();
+    let start = Instant::now();
+
+    assert!(
+        slot.check_rln_message_throttle(start).await,
+        "a connection that has never submitted a proof must not be throttled"
+    );
+    assert!(
+        !slot
+            .check_rln_message_throttle(
+                start + NOVA_RLN_MESSAGE_MIN_INTERVAL - Duration::from_nanos(1)
+            )
+            .await,
+        "a hair under the interval is still throttled — this is the bound that \
+         stops one connection spending the container's whole CPU on \
+         verifications"
+    );
+    assert!(
+        slot.check_rln_message_throttle(start + NOVA_RLN_MESSAGE_MIN_INTERVAL)
+            .await,
+        "exactly one interval later is allowed"
+    );
+
+    // And the clock restarts from the *accepted* submission, not the first
+    // one: a refused frame must not shorten the next one's wait.
+    assert!(
+        !slot
+            .check_rln_message_throttle(start + NOVA_RLN_MESSAGE_MIN_INTERVAL)
+            .await,
+        "the interval is measured from the last accepted submission"
+    );
+}
+
 /// An `RlnMessage` whose proof is garbage fails verification quietly — no
 /// broadcast, no reply, no panic. This exercises the malformed-proof and
 /// verification-failure paths in both `session/nova.rs::dispatch` and
@@ -1264,6 +1311,42 @@ async fn nova_rln_anonymous_post_and_double_post_slashing() {
     let path = wire_path(&path_response["path"]);
 
     let msg2 = prove_rln_message(rln_identity.sk, path, epoch, "a second, different message");
+
+    // Sent immediately, this one is *throttled* rather than verified — a
+    // verification is the most expensive thing a client can ask of this
+    // server (~6 ms on the production container's 1/16 vCPU, inline on a
+    // `current_thread` runtime), and `NOVA_RLN_MESSAGE_MIN_INTERVAL` is what
+    // stops one connection spending all of it. Proved here rather than by
+    // waiting to see nothing happen (§6.4): an ordinary sealed message is
+    // sent right behind it, and it is what arrives next. Were the throttle
+    // gone, the slashing broadcast would overtake it.
+    send_sealed(&mut ws_a, &mut session_a, &msg2).await;
+    send_sealed(
+        &mut ws_a,
+        &mut session_a,
+        &serde_json::json!({"type": "Message", "text": "throttle probe"}),
+    )
+    .await;
+
+    let next = recv_group_sealed(&mut ws_b, &mut group_b).await;
+    assert_eq!(
+        next["type"], "Message",
+        "an RlnMessage inside the throttle interval must produce nothing at \
+         all, so the ordinary message behind it is what arrives next: {next}"
+    );
+    assert!(
+        next["message"]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("throttle probe"),
+        "unexpected payload: {next}"
+    );
+
+    // Past the interval the identical frame is accepted, and slashes. Same
+    // epoch — `NOVA_RLN_EPOCH_SECONDS` is 30s and the server also accepts the
+    // previous epoch, so this wait cannot turn the violation into two
+    // legitimate messages.
+    tokio::time::sleep(NOVA_RLN_MESSAGE_MIN_INTERVAL + Duration::from_millis(100)).await;
     send_sealed(&mut ws_a, &mut session_a, &msg2).await;
 
     let slashed = recv_group_sealed_of_type(&mut ws_b, &mut group_b, "NovaRlnSlashed").await;

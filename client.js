@@ -559,16 +559,6 @@ class ChatApp {
             return;
         }
 
-        // Exponential, and then *jittered* — the jitter is the part that
-        // matters. Without it every client that lost its connection at the
-        // same moment retries at the same moments: a container scale-down
-        // (routine here, `sleepAfter` is 10m and there is one instance) put
-        // every open tab on the identical 1s/2s/4s/8s ladder, so the server
-        // met the whole room at once instead of spread over the window. With
-        // three tabs from one address that also stacked refusals against the
-        // per-address limit inside a single suspicion window, which is how a
-        // reconnect storm used to end in an hour-long ban for the person
-        // living through it. Half the backoff fixed, half spread across it.
         const backoff = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
         const delay = Math.round(backoff / 2 + Math.random() * (backoff / 2));
         this.updateConnectionStatus('connecting');

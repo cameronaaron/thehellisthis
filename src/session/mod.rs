@@ -29,7 +29,7 @@ pub(crate) use admission::{admit_user, attach_cookies, check_admission};
 
 pub(crate) use crate::protocol::encode_event;
 #[cfg(test)]
-pub(crate) use nova::{remove_member, run_seal_loop};
+pub(crate) use nova::{NovaSlot, remove_member, run_seal_loop};
 #[cfg(test)]
 pub(crate) use nova_operator::complaint_is_valid;
 pub(crate) use nova_operator::{NovaOperatorRegistry, nova_operator_ws_handler};

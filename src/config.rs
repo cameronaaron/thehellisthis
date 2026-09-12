@@ -68,6 +68,26 @@ pub(crate) const NOVA_GROUP_CAPACITY: usize = 64;
 /// short that a genuinely single anonymous post per member feels cramped.
 pub(crate) const NOVA_RLN_EPOCH_SECONDS: u64 = 30;
 
+/// How often one `nova` connection may submit an `RlnMessage`.
+///
+/// This rations genuinely expensive CPU, not repetition. Every `RlnMessage`
+/// costs a STARK verification — measured at 0.4 ms on a development machine,
+/// and the production container has 1/16 of a vCPU, so ~6 ms there — run
+/// inline on a `current_thread` runtime, where it is time no other connection
+/// in any room gets at its heartbeat, its ping, or its own messages.
+///
+/// It was unthrottled, and nothing stood in for one. The nullifier set
+/// enforces RLN's own one-message-per-epoch rule, but it is only consulted
+/// for proofs that *verify* — the verification has already been paid for by
+/// then — so replaying a single valid frame in a loop cost the server a
+/// verification every time and the sender nothing.
+///
+/// One second, against a legitimate rate of one message per
+/// [`NOVA_RLN_EPOCH_SECONDS`] (30s): thirty times more permissive than the
+/// protocol itself, and it bounds one connection's verification cost to well
+/// under 1% of the container.
+pub(crate) const NOVA_RLN_MESSAGE_MIN_INTERVAL: Duration = Duration::from_secs(1);
+
 /// Total participants in the `nova` MPC/FROST DKG (`session/nova_operator.rs`)
 /// — matches the size the earlier in-process simulation used, so the only
 /// thing that changed when it became genuinely distributed is *where* the
@@ -424,6 +444,12 @@ pub(crate) const MEMORY_SOFT_LIMIT_RATIO: (usize, usize) = (9, 10);
 /// The memory the production container actually has: Cloudflare's `lite`
 /// instance type is 256 MiB (`cloudflare/wrangler.jsonc`).
 ///
+/// This and the three below are `cfg(test)` because nothing at runtime
+/// consults them: they are the box the budget is *checked* against, not a
+/// knob the server reads. They live here rather than in the test because
+/// "how big is the box, and what does a connection cost in it" is what a
+/// reader comes to this file to find out.
+///
 /// Here so the budget can be *asserted* against it rather than asserted
 /// against itself. [`MAX_TOTAL_ROOMS_MEMORY`]'s own comment claimed 150 MB
 /// "leaves comfortable headroom in that box", and nothing checked the claim —
@@ -432,6 +458,7 @@ pub(crate) const MEMORY_SOFT_LIMIT_RATIO: (usize, usize) = (9, 10);
 /// box. `the_memory_budget_still_closes` now does the arithmetic, and
 /// `the_container_is_still_the_size_the_budget_assumes` fails if the instance
 /// type changes underneath it.
+#[cfg(test)]
 pub(crate) const CONTAINER_MEMORY_BYTES: usize = 256 * 1024 * 1024;
 
 /// Resident bytes per connected socket, **measured**, not derived.
@@ -442,11 +469,13 @@ pub(crate) const CONTAINER_MEMORY_BYTES: usize = 256 * 1024 * 1024;
 /// measurement rather than a sum of struct sizes because the transport's
 /// buffers, the four task futures, and the allocator's own rounding are all
 /// in it, and only one of those is visible in the source.
+#[cfg(test)]
 pub(crate) const MEASURED_CONNECTION_BYTES: usize = 33 * 1024;
 
 /// Resident bytes with the server up and nobody connected — the binary, the
 /// Tokio runtime, the compiled-in client page and script, and `nova`'s WASM.
 /// Measured at 6.1 MB on the release binary; rounded up.
+#[cfg(test)]
 pub(crate) const MEASURED_BASELINE_BYTES: usize = 7 * 1024 * 1024;
 
 /// How much of [`CONTAINER_MEMORY_BYTES`] the budget is allowed to account
@@ -457,6 +486,7 @@ pub(crate) const MEASURED_BASELINE_BYTES: usize = 7 * 1024 * 1024;
 /// sockets at once, and the render's own working set. 85% because an OOM kill
 /// disconnects every user in every room (§5) — the cost of being wrong in
 /// this direction is not proportional to how wrong you were.
+#[cfg(test)]
 pub(crate) const MEMORY_BUDGET_HEADROOM_RATIO: (usize, usize) = (85, 100);
 
 // ---------------------------------------------------------------------------

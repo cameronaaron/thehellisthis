@@ -136,7 +136,7 @@ use tokio::sync::Mutex;
 use tokio::sync::broadcast::error::RecvError;
 use tracing::{debug, error, info, warn};
 
-use crate::config::NOVA_GROUP_CAPACITY;
+use crate::config::{NOVA_GROUP_CAPACITY, NOVA_RLN_MESSAGE_MIN_INTERVAL};
 use crate::protocol::{ClientEvent, OutgoingEvent, encode_broadcast};
 use crate::state::AppState;
 
@@ -172,6 +172,10 @@ pub(crate) struct NovaSlot {
     /// When this connection last triggered the MPC demo, for
     /// [`MPC_DEMO_MIN_INTERVAL`]. A separate mutex — unrelated concern.
     last_mpc_demo: Mutex<Option<Instant>>,
+    /// When this connection last submitted an `RlnMessage`, for
+    /// [`NOVA_RLN_MESSAGE_MIN_INTERVAL`]. Its own mutex for the same reason: a
+    /// throttle on proof verification has nothing to do with the demo's.
+    last_rln_message: Mutex<Option<Instant>>,
 }
 
 impl NovaSlot {
@@ -180,6 +184,7 @@ impl NovaSlot {
             pairwise: Mutex::new(PairwiseState::AwaitingSession),
             leaf_index: Mutex::new(None),
             last_mpc_demo: Mutex::new(None),
+            last_rln_message: Mutex::new(None),
         }
     }
 
@@ -312,6 +317,23 @@ impl NovaSlot {
     pub(crate) async fn check_mpc_demo_throttle(&self, now: Instant) -> bool {
         let mut last = self.last_mpc_demo.lock().await;
         if last.is_some_and(|t| now.duration_since(t) < MPC_DEMO_MIN_INTERVAL) {
+            return false;
+        }
+        *last = Some(now);
+        true
+    }
+
+    /// `true` and records `now` if this connection last submitted an
+    /// `RlnMessage` longer than [`NOVA_RLN_MESSAGE_MIN_INTERVAL`] ago (or never
+    /// has).
+    ///
+    /// Checked *before* the proof is verified, which is the whole point: a
+    /// refused frame must not have cost a verification, the same
+    /// validate-before-you-spend ordering the reaction path uses
+    /// (`session/events.rs`, constraint #22).
+    pub(crate) async fn check_rln_message_throttle(&self, now: Instant) -> bool {
+        let mut last = self.last_rln_message.lock().await;
+        if last.is_some_and(|t| now.duration_since(t) < NOVA_RLN_MESSAGE_MIN_INTERVAL) {
             return false;
         }
         *last = Some(now);
@@ -576,7 +598,11 @@ pub(crate) async fn dispatch(
                     // identity leaking nothing extra, since a `nova`
                     // sender already gets its own broadcasts back like
                     // any other room.
-                    nova_rln::handle_message(state, room, &proof, &y, &nullifier, &text).await;
+                    // The throttle lives inside `handle_message`, at the
+                    // seam where the expense actually starts — see
+                    // `nova_rln::RlnClaim`.
+                    nova_rln::handle_message(state, room, slot, &proof, &y, &nullifier, &text)
+                        .await;
                     None
                 }
                 // Cover traffic: discarded, on purpose, before it reaches

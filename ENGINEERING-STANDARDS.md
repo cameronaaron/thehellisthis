@@ -2158,3 +2158,35 @@ Generally: **ask what population each defence actually catches.** A threshold
 nobody has worked out the reachable inputs for is a guess, and the guess here
 had the sign backwards — it was maximally hostile to the patient, legitimate
 user and entirely absent against the attacker.
+
+### The expensive check is itself the resource (2026-09-12)
+
+`RlnMessage` was the one client event with no throttle at all, and it is the
+most expensive thing a client can ask this server to do: a STARK verification,
+measured at 0.4 ms on a development machine and therefore ~6 ms on the
+production container's 1/16 vCPU, run inline on a `current_thread` runtime
+where it is time no other connection in any room gets at its heartbeat, its
+ping, or its own messages.
+
+Nothing stood in for a throttle, and it *looked* as though something did: RLN's
+whole premise is one message per member per epoch. But that rule is enforced by
+the nullifier set, which is only consulted for proofs that **verify** — the
+verification has already been paid for by the time the rule applies. So
+replaying one valid frame in a loop cost the server a verification every time
+and the sender nothing. A protocol-level rate limit is not a server-level rate
+limit when the protocol's own enforcement sits downstream of the expense.
+
+This is the exception to constraint #22's "validate first, then spend", and the
+two are the same principle rather than opposites. #22 says a refused event did
+no work worth rationing. Here the *validation is the work*, so the seam has to
+sit between the cheap checks and the expensive one: `RlnClaim::parse` (base64,
+two field elements, the proof's own structure — microseconds, no lock) runs
+before the throttle, and `air::verify` (the lock, the milliseconds) runs after
+it. A garbage frame is still free and still unthrottled; a frame that is about
+to cost a verification is rationed.
+
+Splitting the parse out also moved it off the RLN write lock, where a malformed
+frame used to contend with every real one.
+
+**When adding a throttle, ask what it is rationing and put it immediately
+before that, not at the top of the handler.**
