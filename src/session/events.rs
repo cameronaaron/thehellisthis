@@ -16,9 +16,7 @@ use crate::error::ChatError;
 use crate::protocol::{ClientEvent, OutgoingEvent, OutgoingMessage, SystemEvent, encode_broadcast};
 use crate::room::ConnectionState;
 use crate::state::AppState;
-use crate::validation::{
-    render_message_html, sanitize_attachment, sanitize_reply, validate_and_render_message,
-};
+use crate::validation::{sanitize_attachment, sanitize_reply, validate_and_render_message};
 
 /// Runs CPU-bound work — Markdown parsing, HTML sanitisation — on Tokio's
 /// blocking pool instead of inline.
@@ -168,6 +166,20 @@ pub async fn apply_client_event_at(
                 return None;
             }
 
+            // The untrimmed length, checked first because it is the cheapest
+            // thing here and because of where it used to be: *after* the
+            // render, and after this message had already been recorded as the
+            // user's last one. So the one input it exists to refuse —
+            // whitespace padding, which trims down to nothing but still costs
+            // full bytes on the wire and in the per-user duplicate record
+            // (`whitespace_padded_messages_cannot_bypass_the_length_cap`) —
+            // was refused only once the server had done all the work of
+            // accepting it. Validate before you spend (§5.2, constraint #22).
+            if text.len() > MAX_MESSAGE_LEN {
+                warn!(user_id = %user_id, len = text.len(), "message too long");
+                return None;
+            }
+
             let attachment = match attachment.map(sanitize_attachment) {
                 Some(Ok(attachment)) => Some(attachment),
                 Some(Err(e)) => {
@@ -203,30 +215,35 @@ pub async fn apply_client_event_at(
             // across the wait — this does not change how many rooms can be
             // mutated at once, only who else can make progress while one of
             // them is busy.
-            let render_text = text.clone();
-            let rendered = render_off_thread(move || {
-                if needs_text {
-                    validate_and_render_message(&render_text)
-                } else {
-                    Ok(render_message_html(&render_text))
+            let rendered_html = if needs_text {
+                let render_text = text.clone();
+                let rendered =
+                    render_off_thread(move || validate_and_render_message(&render_text)).await;
+                match resolve_render(rendered) {
+                    Ok(html) => html,
+                    Err(e) => {
+                        debug!(user_id = %user_id, error = %e, "message rejected");
+                        return None;
+                    }
                 }
-            })
-            .await;
-
-            let rendered_html = match resolve_render(rendered) {
-                Ok(html) => html,
-                Err(e) => {
-                    debug!(user_id = %user_id, error = %e, "message rejected");
-                    return None;
-                }
+            } else {
+                // An image with no caption. There is no Markdown here to
+                // render: `!needs_text` means the text trims to nothing, and
+                // whitespace renders to the empty string
+                // (`a_blank_caption_is_stored_as_no_text`), so this branch
+                // used to spend a `spawn_blocking` and a full comrak+ammonia
+                // pass to compute a value it already knew.
+                //
+                // It was not merely wasted work. `render_message_html`
+                // renders its input *untrimmed*, so this was the one path on
+                // which a caption longer than `MAX_MESSAGE_LEN` reached the
+                // renderer at all — the length check that would have refused
+                // it sat *after* the render, which is the ordering now fixed
+                // above.
+                String::new()
             };
 
             user.last_message_text = Some((text.clone(), now));
-
-            if text.len() > MAX_MESSAGE_LEN {
-                warn!(user_id = %user_id, len = text.len(), "message too long");
-                return None;
-            }
 
             let timestamp = SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)

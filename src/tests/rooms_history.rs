@@ -803,6 +803,66 @@ async fn whitespace_padded_messages_cannot_bypass_the_length_cap() {
     );
 }
 
+/// A refused message must not become the user's duplicate record.
+///
+/// The length check above used to sit *after* the render and after
+/// `last_message_text` was written, so a message the server refused still
+/// overwrote what the duplicate guard was comparing against. That makes the
+/// guard defeatable by sandwiching: send something, send something refused,
+/// send the first thing again, and the double-send goes through. Same
+/// principle as constraint #22 — a refused event must not have spent, or
+/// disturbed, anything belonging to the next one.
+///
+/// The instants are supplied so all three events land inside
+/// `DUPLICATE_MESSAGE_WINDOW`; with the clock read inside the function the
+/// window would be a race (§9.4).
+#[tokio::test]
+async fn a_refused_message_does_not_clear_the_duplicate_guard() {
+    let now = Instant::now();
+    let state = state_with_user("room", "user", now).await;
+
+    let send = async |text: String, at: Instant| {
+        apply_client_event_at(
+            &state,
+            "room",
+            "user",
+            "otter",
+            ClientEvent::Message {
+                text,
+                reply_to: None,
+                attachment: None,
+            },
+            at,
+        )
+        .await;
+    };
+
+    send("hello".to_string(), now).await;
+    assert_eq!(
+        state.rooms.read().await["room"].chat_history.len(),
+        1,
+        "the first message is stored"
+    );
+
+    // Refused: over the untrimmed cap.
+    send(" ".repeat(MAX_MESSAGE_LEN + 500) + "hi", now).await;
+    assert_eq!(
+        state.rooms.read().await["room"].chat_history.len(),
+        1,
+        "an over-length message must not be stored"
+    );
+
+    // Immediately resending the first message is still a double-send.
+    send("hello".to_string(), now).await;
+    assert_eq!(
+        state.rooms.read().await["room"].chat_history.len(),
+        1,
+        "the refused message must not have replaced what the duplicate guard \
+         compares against — otherwise a double-send gets through by putting a \
+         refused message between the two copies"
+    );
+}
+
 // ========== PRIVACY ==========
 
 /// The id index tracks the history through every path that changes it.

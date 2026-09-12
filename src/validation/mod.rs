@@ -17,7 +17,13 @@ pub(crate) use attachments::{decode_base64_prefix, sniff_image_mime};
 
 pub use client_address::{extract_client_ip, hash_client_address};
 
+/// Only [`validate_and_render_message`] renders now. The session used to call
+/// this directly for an attachment's caption, which was the one path that
+/// could hand the renderer an untrimmed `MAX_PAYLOAD_SIZE` — see
+/// `session/events.rs`'s blank-caption branch. Still exported to the tests
+/// that pin the pipeline itself (constraint #8: sanitise after rendering).
+#[cfg(test)]
+pub(crate) use text::render_message_html;
 pub use text::{
-    matches_room_name_shape, render_message_html, sanitize_reply, validate_and_render_message,
-    validate_input,
+    matches_room_name_shape, sanitize_reply, validate_and_render_message, validate_input,
 };

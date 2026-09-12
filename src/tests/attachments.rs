@@ -733,3 +733,51 @@ async fn pruning_returns_the_attachment_bytes_it_removed() {
         "removing every message must return every byte"
     );
 }
+
+/// An image with a blank caption is stored with no text at all.
+///
+/// `!needs_text` means the caption trims to nothing, and whitespace renders
+/// to the empty string — so the branch that used to spend a `spawn_blocking`
+/// and a full comrak+ammonia pass on it was computing a value it already
+/// knew. It was also the one path on which a caption longer than
+/// `MAX_MESSAGE_LEN` reached the renderer, because `render_message_html`
+/// renders its input untrimmed and the check that would have refused it sat
+/// after the render (`a_refused_message_does_not_clear_the_duplicate_guard`).
+///
+/// This pins the equivalence the shortcut depends on, which is the part a
+/// future edit could get wrong: a picture with no caption must carry no
+/// caption, not a caption made of whitespace.
+#[tokio::test]
+async fn a_blank_caption_is_stored_as_no_text() {
+    for caption in ["", " ", "   \t  ", "\n\n"] {
+        let state = state_with_user("room", "user", Instant::now()).await;
+        apply_client_event(
+            &state,
+            "room",
+            "user",
+            "otter",
+            ClientEvent::Message {
+                text: caption.to_string(),
+                reply_to: None,
+                attachment: Some(png_attachment()),
+            },
+        )
+        .await;
+
+        let rooms = state.rooms.read().await;
+        let history = &rooms["room"].chat_history;
+        assert_eq!(
+            history.len(),
+            1,
+            "an image with a blank caption is still a message: {caption:?}"
+        );
+        assert_eq!(
+            history[0].text, "",
+            "a blank caption must be stored as no text: {caption:?}"
+        );
+        assert!(
+            history[0].attachment.is_some(),
+            "the picture is the message here: {caption:?}"
+        );
+    }
+}
