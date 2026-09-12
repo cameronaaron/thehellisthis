@@ -19,8 +19,15 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 PORT="${PORT:-3199}"
-LOG="$(mktemp -t infinite-chat-smoke)"
-trap 'kill "${SERVER_PID:-0}" 2>/dev/null || true; rm -f "$LOG"' EXIT
+LOG="$(mktemp "${TMPDIR:-/tmp}/infinite-chat-smoke.XXXXXX")"
+cleanup() {
+    if [ -n "${SERVER_PID:-}" ]; then
+        kill -INT "$SERVER_PID" 2>/dev/null || true
+        wait "$SERVER_PID" 2>/dev/null || true
+    fi
+    rm -f "$LOG"
+}
+trap cleanup EXIT
 
 echo "Building the release binary..."
 cargo build --release --quiet

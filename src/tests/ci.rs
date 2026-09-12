@@ -249,3 +249,56 @@ fn these_images_track_latest_on_purpose() {
          reversing the project's run-at-latest policy: {pinned:?}"
     );
 }
+
+/// Both documented image entry points must build the same artifact.
+#[test]
+fn docker_entry_points_share_the_production_recipe() {
+    assert_eq!(
+        include_str!("../../Dockerfile"),
+        include_str!("../../Dockerfile.cloudflare"),
+        "the default Docker build must use the tested production recipe"
+    );
+}
+
+/// A manual release cannot skip the checks that protect the merge path.
+#[test]
+fn manual_deploy_runs_release_checks_before_publishing() {
+    let script = strip_hash_comments(include_str!("../../deploy.sh"));
+    let (checks, _) = script.split_once("pnpm exec wrangler deploy").unwrap();
+    for command in [
+        "cargo fmt --all -- --check",
+        "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings",
+        "cargo test --workspace --all-features --locked",
+        "cargo build --release --locked",
+        "cargo test --release --all-features --locked nova_rln",
+        "scripts/coverage.sh",
+        "scripts/smoke-container.sh",
+        "cargo audit",
+        "scripts/gitleaks.sh",
+        "pnpm install --frozen-lockfile",
+        "pnpm exec tsc --noEmit",
+        "pnpm test",
+        "pnpm audit --audit-level=high",
+    ] {
+        assert!(
+            checks.lines().any(|line| line.trim() == command),
+            "missing pre-deploy check: {command}"
+        );
+    }
+    assert!(
+        !script.contains("docker builder prune"),
+        "deployment must not delete unrelated build caches"
+    );
+}
+
+/// A failed build must neither fail in mktemp nor signal the caller's group.
+#[test]
+fn smoke_build_failure_never_signals_an_unstarted_server() {
+    let output = std::process::Command::new("bash")
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args(["-c", "cargo() { return 17; }; kill() { exit 91; }; export -f cargo kill; bash scripts/smoke.sh"])
+        .output()
+        .expect("run the smoke harness with a failing compiler");
+    assert_eq!(output.status.code(), Some(17), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Building the release binary"));
+}

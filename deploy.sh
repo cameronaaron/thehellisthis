@@ -13,18 +13,23 @@ cd "$(dirname "$0")"
 
 echo "🔎 Running the gate before deploying..."
 cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-features
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo test --workspace --all-features --locked
 
-# Cloudflare builds the image from Dockerfile.cloudflare with the repo root as
-# its context. Clearing the builder cache avoids shipping a stale layer.
-echo "🧹 Clearing Docker builder cache..."
-docker builder prune -af > /dev/null 2>&1 || true
+cargo build --release --locked
+cargo test --release --all-features --locked nova_rln
+scripts/coverage.sh
+scripts/smoke-container.sh
+cargo audit
+scripts/gitleaks.sh
 
 cd cloudflare
 
 echo "📦 Installing worker dependencies..."
 pnpm install --frozen-lockfile
+pnpm exec tsc --noEmit
+pnpm test
+pnpm audit --audit-level=high
 
 echo "🚢 Deploying..."
 pnpm exec wrangler deploy
