@@ -71,7 +71,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 # never configures a highlighting adapter, and nothing here is a CLI. Disabling
 # them drops ~15 transitive crates, including every crate behind three RUSTSEC
 # advisories (quick-xml, bincode) and one unmaintained warning (yaml-rust).
-comrak = { version = "0.54.0", default-features = false }
+comrak = { version = "0.55.0", default-features = false }
 ammonia = "4.1.4"
 
 # The page's one `<style>` block is named in the CSP by its content hash
