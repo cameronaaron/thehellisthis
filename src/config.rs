@@ -138,6 +138,44 @@ pub(crate) const MAX_MESSAGES_PER_ROOM: usize = 500;
 pub(crate) const MAX_MESSAGE_AGE: Duration = Duration::from_secs(86_400 * 30);
 pub(crate) const MAX_PAYLOAD_SIZE: usize = 512 * 1024;
 
+/// The read and write buffers the WebSocket transport allocates *per
+/// connection*, and the largest single message it will assemble.
+///
+/// These are the transport's own limits, applied to every upgrade
+/// (`session/admission.rs`), and they are a memory decision, not a tuning
+/// knob. Left unset, `tungstenite`'s defaults are a 128 KiB read buffer
+/// allocated eagerly per socket and a **64 MiB** ceiling on one inbound
+/// message — so [`MAX_PAYLOAD_SIZE`] was being checked *after* the whole
+/// thing had already been buffered, and the process could hold 128 times the
+/// bytes the check exists to refuse, entirely outside
+/// [`MAX_TOTAL_ROOMS_MEMORY`]'s accounting. Measured: 6.1 MB resident with
+/// no connections, 21.4 MB with a hundred idle ones — 153 KiB each, of which
+/// the 128 KiB read buffer is the bulk. At [`MAX_CONCURRENT_USERS`] that is
+/// 61 MB of buffers on a 256 MiB container already committing 150 MB to
+/// history.
+///
+/// 8 KiB because a chat frame is small: a typing event is tens of bytes, a
+/// message a few hundred. An attachment frame is larger, and costs a handful
+/// of extra `read` calls rather than a larger resident buffer — the frame's
+/// own length is reserved when its header arrives, so a big frame is still
+/// read in one allocation, just not a permanent one.
+pub(crate) const WS_SOCKET_BUFFER_SIZE: usize = 8 * 1024;
+
+/// The largest frame this server ever puts on a socket: one message carrying
+/// an attachment at its cap and rendered text at its cap, with the JSON
+/// scaffolding and the quoted reply around them.
+///
+/// Two things are sized against it — the write buffer's hard ceiling, which
+/// must exceed any single frame or a legitimate send would fail, and the
+/// broadcast ring's share of the memory budget
+/// ([`crate::room::BROADCAST_CHANNEL_CAPACITY`], asserted in
+/// `the_memory_budget_still_closes`).
+pub(crate) const MAX_BROADCAST_FRAME_BYTES: usize = MAX_ATTACHMENT_BYTES
+    + MAX_RENDERED_MESSAGE_LEN
+    + MAX_REPLY_AUTHOR_LEN
+    + MAX_REPLY_PREVIEW_LEN
+    + 1024;
+
 /// Caps on the quoted-reply block, which is composed entirely of
 /// client-supplied strings.
 ///

@@ -195,7 +195,10 @@ pub(crate) async fn nova_operator_ws_handler(
     if !is_authorized_for_nova_operator(&headers) {
         return http::StatusCode::UNAUTHORIZED.into_response();
     }
-    ws.on_upgrade(move |socket| handle_operator_connection(state, socket))
+    // The same transport limits every other socket runs under: an authorized
+    // operator is still a peer whose frames this process has to allocate for.
+    super::admission::with_transport_limits(ws)
+        .on_upgrade(move |socket| handle_operator_connection(state, socket))
 }
 
 async fn handle_operator_connection(state: Arc<AppState>, socket: WebSocket) {

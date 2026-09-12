@@ -2071,3 +2071,30 @@ CLI scan. PR #8 exposed the missing binding before the scan ran. Grant the
 secret-scan job contents/read and pull-requests/read, pass GitHub's automatic
 token, and disable its comments rather than granting write permission.
 `secret_scan_can_read_pull_requests_without_write_permissions` enforces this.
+
+### The transport's own limits are part of the memory ceiling (2026-09-12)
+
+§3 bounds what history retains. It said nothing about what the WebSocket
+transport allocates underneath it, and the defaults there were the larger
+number. Unset, `tungstenite` eagerly allocates a **128 KiB read buffer per
+connection** and will assemble a **64 MiB** inbound message before handing it
+to this server's own `MAX_PAYLOAD_SIZE` check — so that check was reading a
+string the process had already paid 128× the limit for, and `MAX_CONCURRENT_-
+CONNECTIONS_PER_IP` (3) made a 192 MiB transient reachable from one address
+on a 256 MiB container.
+
+Measured, release binary, 100 idle connections: 6.1 MB resident → 21.4 MB,
+i.e. 153 KiB per connection. With `read_buffer_size`/`write_buffer_size` at
+8 KiB: 6.1 MB → 9.4 MB, 32.6 KiB per connection. At `MAX_CONCURRENT_USERS`
+that is 61 MB against 13 MB.
+
+Both `max_frame_size` and `max_message_size` must be set. The first bounds one
+frame and is enforced from the frame *header*, before any payload is reserved;
+the second bounds a message reassembled from many frames. Setting only one
+leaves the other's bound reachable through the gap — a single 16 MiB frame is
+buffered in full before a 512 KiB message limit can reject it.
+
+The lesson generalises past this library: **a dependency's default is a number
+somebody else chose against their constraints, not yours.** Any per-connection
+allocation a dependency makes on your behalf belongs in the memory budget, and
+its default belongs in a measurement, not in an assumption.

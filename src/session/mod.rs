@@ -12,7 +12,7 @@
 //! [`events`] is applying one parsed client event, [`teardown`] is releasing
 //! everything on the way out.
 
-mod admission;
+pub(crate) mod admission;
 mod events;
 mod lifecycle;
 mod nova;

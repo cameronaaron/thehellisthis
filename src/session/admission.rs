@@ -14,7 +14,8 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::config::{
-    MAX_CONCURRENT_CONNECTIONS_PER_IP, MAX_CONCURRENT_USERS, MAX_ROOM_NAME_LEN, NOVA_ROOM,
+    MAX_BROADCAST_FRAME_BYTES, MAX_CONCURRENT_CONNECTIONS_PER_IP, MAX_CONCURRENT_USERS,
+    MAX_PAYLOAD_SIZE, MAX_ROOM_NAME_LEN, NOVA_ROOM, WS_SOCKET_BUFFER_SIZE,
 };
 use crate::error::ChatError;
 use crate::identity::{OptionalUserCookie, UserCookie, create_user_cookies};
@@ -62,6 +63,34 @@ pub async fn ws_handler(
         Ok(response) => response.into_response(),
         Err(e) => e.into_response(),
     }
+}
+
+/// Applies the transport limits every WebSocket on this server runs under.
+///
+/// One function, called by both upgrade handlers, because these are not a
+/// per-route preference: they are the only thing standing between one socket
+/// and an allocation the memory ceiling knows nothing about. Unset,
+/// `tungstenite` allocates a 128 KiB read buffer per connection and will
+/// assemble a **64 MiB** inbound message before this server's own
+/// [`MAX_PAYLOAD_SIZE`] check ever runs — the check was reading a string the
+/// process had already paid for. The frame limit is enforced from the frame
+/// *header*, before a byte of payload is reserved, so an oversized frame now
+/// costs nothing at all.
+///
+/// Both `max_frame_size` and `max_message_size` are set: the first bounds one
+/// frame, the second bounds a fragmented message reassembled from many, and
+/// leaving either at its default leaves the other's bound reachable through
+/// the gap. See [`WS_SOCKET_BUFFER_SIZE`] for the measured cost this removes.
+pub(crate) fn with_transport_limits(ws: WebSocketUpgrade) -> WebSocketUpgrade {
+    ws.read_buffer_size(WS_SOCKET_BUFFER_SIZE)
+        .write_buffer_size(WS_SOCKET_BUFFER_SIZE)
+        // Must exceed any single frame this server sends, or a legitimate
+        // message at the cap would fail to write; past that it turns a peer
+        // that has stopped reading into a clean disconnect rather than a
+        // buffer that grows for as long as it stays stopped.
+        .max_write_buffer_size(WS_SOCKET_BUFFER_SIZE + MAX_BROADCAST_FRAME_BYTES)
+        .max_frame_size(MAX_PAYLOAD_SIZE)
+        .max_message_size(MAX_PAYLOAD_SIZE)
 }
 
 /// Every check that can refuse a connection, before anything is reserved.
@@ -172,7 +201,7 @@ pub async fn ws_handler_inner(
         create_user_cookies(&final_user_id, &final_animal_name, host);
 
     let client_ip = ip.clone();
-    let mut response = ws
+    let mut response = with_transport_limits(ws)
         .on_upgrade(move |socket| {
             handle_websocket(
                 room,

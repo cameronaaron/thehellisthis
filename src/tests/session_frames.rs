@@ -313,25 +313,75 @@ async fn joining_user_triggers_a_trim_of_oversized_history() {
     );
 }
 
-/// A frame larger than the payload cap is dropped at the frame level, before
-/// it is even parsed as an event.
+/// A frame larger than the payload cap is refused by the *transport*, before
+/// a byte of its payload is allocated — and a frame exactly at the cap is not.
+///
+/// This is the boundary of the only bound that stops one socket allocating
+/// outside [`crate::config::MAX_TOTAL_ROOMS_MEMORY`] entirely. Left to its
+/// defaults, `tungstenite` assembles a 64 MiB message and *then* hands it to
+/// the app-level `MAX_PAYLOAD_SIZE` check — 128 times the bytes the check
+/// exists to refuse, already paid for, per connection. `with_transport_limits`
+/// moves the decision to the frame header, where it costs nothing.
+///
+/// The pair is the point: at the cap the session survives (the frame is
+/// delivered, found not to be an event, and ignored), one byte over it the
+/// session ends. A limit set anywhere else fails one half or the other.
 #[tokio::test]
-async fn oversized_frame_is_dropped_without_killing_the_session() {
+async fn a_frame_over_the_payload_cap_is_refused_by_the_transport() {
     let (addr, _state, handle) = start_ws_server_with_state().await;
+
+    // Exactly at the cap: accepted by the transport, ignored by the app.
     let (mut ws, _) = connect_async(format!("ws://{addr}/ws/oversize-room"))
         .await
         .expect("connect failed");
-
     assert_eq!(recv_json_event(&mut ws).await["type"], "Welcome");
-
-    let huge = "x".repeat(MAX_PAYLOAD_SIZE + 1024);
-    ws.send(text_frame(huge)).await.expect("send failed");
-
-    // The socket must still be usable afterwards, not torn down.
+    ws.send(text_frame("x".repeat(MAX_PAYLOAD_SIZE)))
+        .await
+        .expect("send failed");
     ws.send(WsMessage::Ping(vec![9].into())).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(
+        session_survives(&mut ws).await,
+        "a frame at exactly the payload cap must be delivered and ignored, \
+         not refused — the limit is a ceiling, not a smaller one"
+    );
+
+    // One byte over: the transport refuses it and the session ends.
+    let (mut ws, _) = connect_async(format!("ws://{addr}/ws/oversize-room-2"))
+        .await
+        .expect("connect failed");
+    assert_eq!(recv_json_event(&mut ws).await["type"], "Welcome");
+    let _ = ws.send(text_frame("x".repeat(MAX_PAYLOAD_SIZE + 1))).await;
+    assert!(
+        !session_survives(&mut ws).await,
+        "a frame over the payload cap must be refused at the frame header; a \
+         session that survives it is one whose transport buffered the whole \
+         thing first"
+    );
 
     handle.abort();
+}
+
+/// Whether the socket is still carrying traffic a short while from now.
+///
+/// Reads until the stream ends or goes quiet: the server's own heartbeat
+/// arrives every [`crate::config::HEARTBEAT_INTERVAL`], so "quiet for a
+/// moment" is not evidence either way — the end of the stream is.
+async fn session_survives(
+    ws: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+) -> bool {
+    let deadline = Duration::from_millis(500);
+    loop {
+        match tokio::time::timeout(deadline, ws.next()).await {
+            // Quiet for the whole window with the socket still open.
+            Err(_) => return true,
+            // The stream ended, or errored: this session is over.
+            Ok(None) | Ok(Some(Err(_))) => return false,
+            Ok(Some(Ok(WsMessage::Close(_)))) => return false,
+            Ok(Some(Ok(_))) => continue,
+        }
+    }
 }
 
 /// A user who has gone quiet is sent the eviction frame and the loop ends.
