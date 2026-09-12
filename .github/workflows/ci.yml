@@ -191,6 +191,9 @@ jobs:
   # .gitleaks.toml for the config and the two documented false positives.
   secrets:
     name: Secret scan
+    permissions:
+      contents: read
+      pull-requests: read
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -199,4 +202,6 @@ jobs:
 
       - uses: gitleaks/gitleaks-action@v3
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: false
           GITLEAKS_CONFIG: .gitleaks.toml

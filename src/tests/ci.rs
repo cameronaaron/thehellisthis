@@ -302,3 +302,17 @@ fn smoke_build_failure_never_signals_an_unstarted_server() {
     assert_eq!(output.status.code(), Some(17), "{output:?}");
     assert!(String::from_utf8_lossy(&output.stdout).contains("Building the release binary"));
 }
+
+/// The action needs PR metadata even when its local CLI scan passes.
+#[test]
+fn secret_scan_can_read_pull_requests_without_write_permissions() {
+    let workflow = strip_hash_comments(include_str!("../../.github/workflows/ci.yml"));
+    let (_, job) = workflow
+        .split_once("  secrets:\n")
+        .expect("secret scan job");
+    assert!(job.contains("GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}"));
+    assert!(job.contains("contents: read"));
+    assert!(job.contains("pull-requests: read"));
+    assert!(job.contains("GITLEAKS_ENABLE_COMMENTS: false"));
+    assert!(!job.contains(": write"));
+}

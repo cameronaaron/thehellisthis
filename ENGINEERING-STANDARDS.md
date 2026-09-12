@@ -2065,3 +2065,9 @@ an up-to-date PR with Gate, Coverage floor, Worker typecheck, Dependency audit
 and Secret scan from GitHub Actions, including administrators; disallow force
 pushes and deletion. Zero additional approvals keeps a sole maintainer able
 to merge a green PR. Recheck the live setting if CI job names change.
+
+The Gitleaks Action needs GITHUB_TOKEN to read PR metadata, unlike the local
+CLI scan. PR #8 exposed the missing binding before the scan ran. Grant the
+secret-scan job contents/read and pull-requests/read, pass GitHub's automatic
+token, and disable its comments rather than granting write permission.
+`secret_scan_can_read_pull_requests_without_write_permissions` enforces this.
