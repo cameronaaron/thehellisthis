@@ -15,7 +15,8 @@ use uuid::Uuid;
 
 use crate::config::{
     MAX_BROADCAST_FRAME_BYTES, MAX_CONCURRENT_CONNECTIONS_PER_IP, MAX_CONCURRENT_USERS,
-    MAX_PAYLOAD_SIZE, MAX_ROOM_NAME_LEN, NOVA_ROOM, WS_SOCKET_BUFFER_SIZE,
+    MAX_PAYLOAD_SIZE, MAX_ROOM_NAME_LEN, MAX_ROOMS, NOVA_ROOM, WS_SOCKET_BUFFER_SIZE,
+    is_permanent_room,
 };
 use crate::error::ChatError;
 use crate::identity::{OptionalUserCookie, UserCookie, create_user_cookies};
@@ -275,6 +276,34 @@ pub(crate) async fn admit_user(
 ) -> Option<(String, String)> {
     let mut rooms = state.rooms.write().await;
     let is_new_room = !rooms.contains_key(room);
+
+    // The room cap, enforced where rooms are actually created.
+    //
+    // It was checked only by `routes/page.rs::room_handler` — the *page*
+    // handler — so it bounded nothing: a client that skipped the page and
+    // opened `/ws/<anything>` created a room regardless, and `MAX_ROOMS`
+    // rooms is what `HashMap::with_capacity(MAX_ROOMS)` and
+    // `MAX_ROOM_ATTACHMENT_BYTES`'s derivation (the process ceiling divided
+    // by the room count) both assume. `config.rs` calls rooms "the only
+    // unbounded-by-user-input allocation in the server"; this is the line
+    // that makes that true rather than aspirational. The shipped client
+    // cannot skip the page, which is exactly why the page's check was never
+    // a control.
+    //
+    // `is_new_room` guards it: once the cap is reached, everybody already in
+    // a room must still be able to rejoin it. The permanent rooms are exempt
+    // for the reason `is_permanent_room` gives — the front door cannot be
+    // crowded out of existence.
+    if is_new_room && !is_permanent_room(room) && rooms.len() >= MAX_ROOMS {
+        warn!(
+            room = %room,
+            open = rooms.len(),
+            limit = MAX_ROOMS,
+            "refused: the server is out of rooms"
+        );
+        return None;
+    }
+
     let room_state = rooms.entry(room.to_string()).or_insert_with(|| {
         debug!(room = %room, "creating room");
         create_room()

@@ -2190,3 +2190,31 @@ frame used to contend with every real one.
 
 **When adding a throttle, ask what it is rationing and put it immediately
 before that, not at the top of the handler.**
+
+### §5.12 — a limit enforced on one path is not enforced (2026-09-12)
+
+`MAX_ROOMS` was checked in exactly one place: `routes/page.rs::room_handler`,
+the handler that serves the *page*. A client that skipped the page and opened
+`/ws/<anything>` created a room regardless, because `admit_user` reaches
+`entry(room).or_insert_with(create_room)` with no cap between it and the
+caller. Measured: 70 rooms against a cap of 50, and nothing bounding it but
+how fast a script can open sockets.
+
+Three separate claims rested on that cap being real — `config.rs` calling
+rooms "the only unbounded-by-user-input allocation in the server", `state.rs`
+pre-sizing the map `with_capacity(MAX_ROOMS)` so it "never has to rehash", and
+`MAX_ROOM_ATTACHMENT_BYTES` dividing the process ceiling by the room count so
+that "every room at its attachment budget is exactly half the process". All
+three were written against a number nothing held.
+
+The rule: **enforce a limit at the operation it bounds, not at the route a
+well-behaved client takes to get there.** The page's check is a courtesy — it
+gives a visitor a sentence instead of a socket that opens and closes — and a
+courtesy is not a control. The control belongs under the lock that performs
+the allocation, which is also the only place that can decide atomically.
+
+Two ways the naive fix is wrong, both now pinned by
+`the_room_cap_holds_on_the_socket_path`: refusing on the cap alone locks
+everyone out of the rooms they are *already in* (guard on the room being new),
+and refusing the permanent rooms lets a script that fills the server with
+ephemeral rooms take down the site's own front door (`is_permanent_room`).

@@ -12,7 +12,7 @@ use tracing::{debug, info};
 
 use crate::config::{
     DISCONNECTED_USER_RETENTION, EMPTY_ROOM_CLEANUP_DELAY, MAIN_ROOM, MAIN_ROOM_FADE_IDLE,
-    MAIN_ROOM_FADE_KEEP, MAX_MESSAGES_PER_ROOM, NOVA_ROOM,
+    MAIN_ROOM_FADE_KEEP, MAX_MESSAGES_PER_ROOM, is_permanent_room,
 };
 use crate::room::{ConnectionState, RoomState, UserData};
 use crate::state::AppState;
@@ -57,7 +57,7 @@ pub async fn cleanup_rooms_at(state: &Arc<AppState>, now: Instant) {
         // does not fade like `main` — there is no reason a research demo's
         // history should shrink on the flagship room's schedule, so only
         // `is_main` feeds the fade target below.
-        let is_permanent = is_main || room_name == NOVA_ROOM;
+        let is_permanent = is_permanent_room(room_name);
         let idle_for = now.duration_since(room.last_activity);
         let target = history_trim_target(is_main, idle_for);
 

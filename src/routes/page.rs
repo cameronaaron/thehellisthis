@@ -11,7 +11,9 @@ use axum::{
 use http::{HeaderMap, StatusCode, header};
 use tracing::{debug, warn};
 
-use crate::config::{MAX_ROOM_NAME_LEN, MAX_ROOMS, MIN_ROOM_NAME_LEN, RESERVED_ROOM_NAMES};
+use crate::config::{
+    MAX_ROOM_NAME_LEN, MAX_ROOMS, MIN_ROOM_NAME_LEN, RESERVED_ROOM_NAMES, is_permanent_room,
+};
 use crate::state::AppState;
 use crate::validation::matches_room_name_shape;
 
@@ -251,8 +253,12 @@ pub async fn room_handler(
         return Html(reason.message()).into_response();
     }
 
+    // The permanent rooms are never refused for capacity — see
+    // `is_permanent_room`. The real enforcement is in `admit_user`, under the
+    // lock that creates rooms; this is the same answer given earlier, so a
+    // visitor gets a sentence instead of a socket that opens and closes.
     let rooms = state.rooms.read().await;
-    if !rooms.contains_key(&room) && rooms.len() >= MAX_ROOMS {
+    if !rooms.contains_key(&room) && !is_permanent_room(&room) && rooms.len() >= MAX_ROOMS {
         warn!(room = %room, limit = MAX_ROOMS, "room cap reached");
         return Html("Maximum number of rooms reached").into_response();
     }

@@ -842,3 +842,68 @@ fn room_name_rejection_checks_reserved_before_length_before_shape() {
 }
 
 // ========== ROSTER INTEGRITY ==========
+
+/// The room cap is a cap, not something the page politely honours.
+///
+/// `MAX_ROOMS` was checked only in `routes/page.rs::room_handler`, so it
+/// bounded nothing a client had to respect: opening `/ws/<anything>` created
+/// a room regardless, and 70 rooms against a cap of 50 was what this test
+/// measured before the check moved to `admit_user`, where rooms are actually
+/// created. `config.rs` calls rooms "the only unbounded-by-user-input
+/// allocation in the server", `state.rs` sizes the map `with_capacity(MAX_ROOMS)`
+/// so it "never has to rehash", and `MAX_ROOM_ATTACHMENT_BYTES` divides the
+/// process ceiling by the room count — three claims that all needed this to
+/// be true.
+///
+/// Three properties, because the naive fix breaks two of them: the cap holds,
+/// a room that already exists can still be joined once it is reached, and the
+/// permanent rooms are never crowded out.
+#[tokio::test]
+async fn the_room_cap_holds_on_the_socket_path() {
+    let state = Arc::new(AppState::new());
+
+    for i in 0..MAX_ROOMS {
+        assert!(
+            admit_user(&state, &format!("room-{i}"), &format!("c-{i}"), None)
+                .await
+                .is_some(),
+            "room {i} is within the cap"
+        );
+    }
+
+    for i in 0..20 {
+        assert!(
+            admit_user(&state, &format!("extra-{i}"), &format!("x-{i}"), None)
+                .await
+                .is_none(),
+            "a new room past the cap must be refused"
+        );
+    }
+    assert_eq!(
+        state.rooms.read().await.len(),
+        MAX_ROOMS,
+        "the cap is the number of rooms that exist, not a number the socket \
+         path was free to exceed"
+    );
+
+    // A room that already exists is still joinable at the cap — otherwise
+    // reaching it would lock everyone out of the rooms they are in.
+    assert!(
+        admit_user(&state, "room-0", "another", None)
+            .await
+            .is_some(),
+        "an existing room must still admit visitors once the cap is reached"
+    );
+
+    // And the front door and the demo cannot be crowded out of existence.
+    for permanent in [MAIN_ROOM, NOVA_ROOM] {
+        assert!(
+            admit_user(&state, permanent, "arriving", None)
+                .await
+                .is_some(),
+            "{permanent} must be admitted even at the cap: a script filling the \
+             server with ephemeral rooms must not be able to take down the \
+             site's own entry point"
+        );
+    }
+}

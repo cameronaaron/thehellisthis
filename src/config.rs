@@ -117,6 +117,21 @@ pub(crate) fn room_user_limit(room: &str) -> usize {
     }
 }
 
+/// Whether `room` is one of the two rooms that always exist.
+///
+/// [`MAIN_ROOM`] is the front door and [`NOVA_ROOM`] is the demo link; neither
+/// is ever garbage-collected, and neither may be refused because the server
+/// has filled up with ephemeral rooms. Without that exemption a script could
+/// create [`MAX_ROOMS`] rooms before anybody visited `/main` and the site's
+/// own entry point would answer "maximum number of rooms reached".
+///
+/// One function rather than the `is_main || room == NOVA_ROOM` that
+/// `cleanup.rs` computed inline: "which rooms never die" is one fact, and
+/// three places now depend on it (§8).
+pub(crate) fn is_permanent_room(room: &str) -> bool {
+    room == MAIN_ROOM || room == NOVA_ROOM
+}
+
 /// Path segments that can never be a room, because they are real routes or
 /// well-known files. Kept sorted for readability.
 pub(crate) const RESERVED_ROOM_NAMES: &[&str] = &[
