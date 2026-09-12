@@ -69,13 +69,16 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy (warnings are failures)
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
       - name: Tests
-        run: cargo test --all-features
+        run: cargo test --workspace --all-features --locked
 
       - name: Release build
-        run: cargo build --release
+        run: cargo build --release --locked
+
+      - name: Container runtime smoke test
+        run: scripts/smoke-container.sh
 
       - name: Verify binary exists
         run: test -f target/release/infinite-chat
@@ -153,6 +156,10 @@ jobs:
         working-directory: cloudflare
         run: pnpm exec tsc --noEmit
 
+      - name: Worker regression tests
+        working-directory: cloudflare
+        run: pnpm test
+
       - name: Audit
         working-directory: cloudflare
         run: pnpm audit --audit-level=high
@@ -184,6 +191,9 @@ jobs:
   # .gitleaks.toml for the config and the two documented false positives.
   secrets:
     name: Secret scan
+    permissions:
+      contents: read
+      pull-requests: read
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -192,4 +202,6 @@ jobs:
 
       - uses: gitleaks/gitleaks-action@v3
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: false
           GITLEAKS_CONFIG: .gitleaks.toml

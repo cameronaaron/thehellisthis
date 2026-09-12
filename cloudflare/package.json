@@ -10,6 +10,7 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "build": "tsc",
+    "test": "node --test src/*.test.mjs",
     "types": "wrangler types --include-runtime=false"
   },
   "devDependencies": {
@@ -19,5 +20,5 @@
     "typescript": "^7.0.2",
     "wrangler": "^4.123.0"
   },
-  "packageManager": "pnpm@11.12.0"
+  "packageManager": "pnpm@11.22.0"
 }

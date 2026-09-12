@@ -85,6 +85,8 @@ concrete, executable version of "obsessive engineering quality." Concretely:
 | Reaction integrity | `a_reaction_for_a_message_that_does_not_exist_is_refused`, `the_message_id_index_never_drifts_from_the_history`, `history_resolves_reactions_for_the_viewer_receiving_it` |
 | Housekeeping runs | `the_housekeeping_loops_run_on_their_own`, `fading_with_nothing_left_to_fade_changes_nothing` |
 | Ratchets | `the_memory_budget_still_closes`, `the_join_path_shares_history_rather_than_copying_it`, `adding_a_message_costs_the_same_whatever_the_history_holds`, `reacting_never_touches_the_history` |
+| Container entry points | `docker_entry_points_share_the_production_recipe`, `scripts/smoke-container.sh` |
+| Manual release checks | `manual_deploy_runs_release_checks_before_publishing`, `smoke_build_failure_never_signals_an_unstarted_server` |
 | Dead webfonts | `the_page_names_no_font_it_does_not_ship_with`, `no_css_content_string_is_an_icon_ligature` |
 
 ---
@@ -2026,3 +2028,46 @@ possible scale: a standards file nobody could follow, cited by a `CLAUDE.md`
 that described a component tree this repository does not have. The laws above
 are derived from *this* server — its lock, its memory ceiling, its protocol, and
 the specific defects found while writing them down.
+
+### Release verification findings (2026-09-11)
+
+The default Dockerfile drifted to Rust 1.81 and omitted the operator workspace
+and embedded browser assets while CI inspected only Dockerfile.cloudflare.
+It now links to that production recipe; the entry-point contract above fails
+on the old recipe. Both builds enforce Cargo.lock.
+
+The Worker must explicitly forward ADMIN_TOKEN and METRICS_TOKEN as container
+environment variables, just like NOVA_OPERATOR_TOKEN. Worker bindings do not
+become process environment variables automatically. The Node Worker tests
+exercise the actual constructor and fetch handler with only the Cloudflare
+transport stubbed, including absent secrets, handshake preservation and
+uncached 503s. Node alone requires a duplex hint for streaming Request bodies;
+the test adapter supplies it without changing the Workers request path.
+
+The pnpm 11.12.0 pin prevented frozen installs before any check could run;
+11.22.0 installed the existing lockfile successfully. The dependency audits
+also found h2 0.4.15 and miniflare's exact sharp pin affected by advisories.
+Keep the audits in both CI and the manual deploy path; a successful build
+alone does not detect those defects.
+
+The smoke script used BSD-only `mktemp -t prefix` and failed under GNU mktemp.
+Use an explicit six-X template. Its old EXIT trap also fell back to `kill 0`
+when compilation failed before assigning a server PID, which signals the
+caller's entire process group. Cleanup now signals only a started child;
+the failing-compiler regression intercepts kill and checks the original exit.
+
+Container verification must explicitly build and run linux/amd64, the platform
+Wrangler selects, even on an ARM developer machine. A native ARM smoke test
+cannot establish the deployment target's runtime-library compatibility.
+
+GitHub main branch protection was enabled and read back on 2026-09-12: require
+an up-to-date PR with Gate, Coverage floor, Worker typecheck, Dependency audit
+and Secret scan from GitHub Actions, including administrators; disallow force
+pushes and deletion. Zero additional approvals keeps a sole maintainer able
+to merge a green PR. Recheck the live setting if CI job names change.
+
+The Gitleaks Action needs GITHUB_TOKEN to read PR metadata, unlike the local
+CLI scan. PR #8 exposed the missing binding before the scan ran. Grant the
+secret-scan job contents/read and pull-requests/read, pass GitHub's automatic
+token, and disable its comments rather than granting write permission.
+`secret_scan_can_read_pull_requests_without_write_permissions` enforces this.

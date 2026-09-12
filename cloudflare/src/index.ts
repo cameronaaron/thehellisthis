@@ -37,6 +37,8 @@ export class InfiniteChatContainer extends Container<Env> {
     this.envVars = {
       PORT: '3000',
       RUST_LOG: 'info',
+      ...(env.ADMIN_TOKEN ? { ADMIN_TOKEN: env.ADMIN_TOKEN } : {}),
+      ...(env.METRICS_TOKEN ? { METRICS_TOKEN: env.METRICS_TOKEN } : {}),
       ...(env.NOVA_OPERATOR_TOKEN ? { NOVA_OPERATOR_TOKEN: env.NOVA_OPERATOR_TOKEN } : {}),
     };
   }
@@ -49,6 +51,8 @@ interface Env {
   // `wrangler dev` typically runs without it, the same fail-closed case the
   // constructor above already handles.
   NOVA_OPERATOR_TOKEN?: string;
+  ADMIN_TOKEN?: string;
+  METRICS_TOKEN?: string;
 }
 
 /**
@@ -85,6 +89,7 @@ function unavailable(): Response {
     status: 503,
     headers: {
       'Retry-After': '5',
+      'Cache-Control': 'no-store',
       'Content-Type': 'text/plain; charset=utf-8',
     },
   });

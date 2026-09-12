@@ -12,7 +12,7 @@ Live at **<https://thehellisthis.com>**.
 ```bash
 cargo run                    # → http://localhost:3000/main
 
-cargo build --release        # LTO'd, stripped: 5.4 MB
+cargo build --release --locked
 PORT=3000 ./target/release/infinite-chat
 ```
 
@@ -73,7 +73,7 @@ src/
   cleanup.rs      Room housekeeping pass
   emoji.rs        Reaction emoji roster (the closed set a reaction may be)
   security.rs     Security headers, CSP, WebSocket origin policy
-  tests.rs        612 tests
+  tests/          Unit, contract and WebSocket integration tests
 index.html        The page, compiled into the binary
 client.js         The client script, served from /app.js so the CSP can
                   forbid inline script entirely
@@ -139,9 +139,9 @@ its value. The ones worth knowing:
 ## Testing
 
 ```bash
-cargo test --all-features        # 612 tests
+cargo test --workspace --all-features --locked
 cargo test --all-features roster # a subset
-scripts/coverage.sh              # line-coverage floor (95%)
+scripts/coverage.sh              # line-coverage floor (84%; remaining gaps in the script)
 cargo mutants                    # mutation testing (manual sweep, slow)
 ```
 
@@ -152,21 +152,22 @@ real server with a real client.
 
 ## Development gate
 
-These four commands are what CI runs. All must pass before committing.
+Run the local release checks before committing. CI also checks the Worker,
+release-only RLN test, dependency audits and full-history secret scan.
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-features
-cargo build --release
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo test --workspace --all-features --locked
+cargo build --release --locked
 scripts/coverage.sh
 ```
 
 ## Deployment
 
-Pushing to `main` deploys, after CI passes
-([.github/workflows/deploy.yml](.github/workflows/deploy.yml)). To deploy
-manually:
+Cloudflare Git integration deploys pushes to `main` independently of CI.
+Require all CI checks through branch protection before merging; a direct push
+can deploy a failing commit. To deploy manually after the local gates:
 
 ```bash
 ./deploy.sh
@@ -176,6 +177,33 @@ The Rust server runs in a Cloudflare Container behind a Worker that proxies both
 HTTP and WebSocket traffic. `max_instances` is 1: all state is in process
 memory, so a second instance would be a second, separate set of rooms behind the
 same URLs.
+
+## Operational setup
+
+`Dockerfile` links to `Dockerfile.cloudflare`, so `docker build -t infinite-chat .`
+uses the same non-root production recipe. Run one instance: room state is not
+shared, and a restart intentionally loses history and identities.
+
+For the Cloudflare deployment, configure Worker secrets from `cloudflare/`:
+
+```sh
+pnpm exec wrangler secret put ADMIN_TOKEN
+pnpm exec wrangler secret put METRICS_TOKEN
+# Only if operating the separate Nova quorum:
+pnpm exec wrangler secret put NOVA_OPERATOR_TOKEN
+```
+
+The Worker forwards these secrets to the container. With no configured secret,
+the corresponding endpoint refuses access. For a standalone container, supply
+them as environment variables. Never commit the values.
+
+Before releasing, run `pnpm --dir cloudflare test`, the Worker typecheck and
+audit, `scripts/smoke.sh`, and `scripts/slow-tests.sh`.
+`scripts/smoke-container.sh` builds and starts the actual image, checks the
+HTTP routes, embedded assets and admin/metrics authentication, and verifies
+non-root execution and graceful shutdown. Check
+branch protection and perform a Cloudflare smoke test after deployment; local
+checks cannot establish those platform settings or live behavior.
 
 ## Documentation
 

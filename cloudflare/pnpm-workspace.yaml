@@ -10,6 +10,8 @@
 # was enforced and under pnpm it was merely coincidental until it moved here.
 overrides:
   undici: '^7.29.0'
+  # miniflare pins an affected sharp; 0.35.4 fixes its libheif advisories.
+  sharp: '^0.35.4'
 
 # pnpm refuses to run a dependency's install scripts unless it is named here.
 # That default is the right one — an install script is arbitrary code from a

@@ -41,7 +41,7 @@ COPY nova-operator ./nova-operator
 # also contains `nova-operator`'s own binary target, which this image has no
 # use for (it runs on operators' own machines) and which would otherwise be
 # built and discarded here for nothing.
-RUN cargo build --release --bin infinite-chat
+RUN cargo build --release --locked --bin infinite-chat
 
 # distroless, not a general-purpose OS: no shell, no package manager, no `ls`,
 # no `cat` — nothing a container-escape or a dependency RCE could use once it
