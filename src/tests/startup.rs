@@ -363,3 +363,53 @@ fn the_servers_public_surface_still_exists() {
         );
     }
 }
+
+/// §5 — a panicking housekeeping pass must not end housekeeping.
+///
+/// The two loops are detached tasks, and `panic = "abort"` is deliberately
+/// not set, so a panic inside a pass used to be confined to the task that
+/// *was* the loop: rooms would stop being deleted and history would stop
+/// being trimmed, permanently, with the first symptom arriving much later as
+/// a process sitting at its memory ceiling dropping live messages. Confining
+/// a panic to one pass is right. Confining it to the loop is how a mechanic
+/// disappears.
+///
+/// The work is a parameter, which is what makes the panicking pass something
+/// this test can simply hand over — the same reason the four connection tasks
+/// are generic over their sink (§6.1c). Simulated time, so it does not wait
+/// three real minutes.
+///
+/// The panic's own message reaching the test output is expected; the
+/// assertion is about what happened after it.
+#[tokio::test(start_paused = true)]
+async fn a_panicking_housekeeping_pass_does_not_end_the_loop() {
+    let passes = Arc::new(AtomicUsize::new(0));
+    let counted = passes.clone();
+
+    tokio::spawn(run_housekeeping_loop(
+        "test",
+        Duration::from_secs(60),
+        move || {
+            let counted = counted.clone();
+            async move {
+                // The first pass panics; every later one is ordinary work.
+                if counted.fetch_add(1, Ordering::SeqCst) == 0 {
+                    panic!("a housekeeping pass panicked");
+                }
+            }
+        },
+    ));
+
+    for _ in 0..4 {
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(61)).await;
+    }
+    tokio::task::yield_now().await;
+
+    assert!(
+        passes.load(Ordering::SeqCst) >= 3,
+        "only {} passes ran: the loop stopped at the panicking one, which is \
+         housekeeping gone for the life of the process",
+        passes.load(Ordering::SeqCst)
+    );
+}

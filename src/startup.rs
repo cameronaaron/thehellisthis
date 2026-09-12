@@ -9,6 +9,7 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::{Router, routing::get};
 use axum_server::Server;
@@ -109,22 +110,60 @@ pub(crate) fn build_router(state: Arc<AppState>) -> Router {
 /// cleanup pass on a dying process has nothing to preserve.
 pub(crate) fn spawn_housekeeping(state: &Arc<AppState>) {
     let rooms_state = state.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(ROOM_CLEANUP_INTERVAL);
-        loop {
-            interval.tick().await;
-            cleanup_rooms(&rooms_state).await;
-        }
-    });
+    tokio::spawn(run_housekeeping_loop(
+        "rooms",
+        ROOM_CLEANUP_INTERVAL,
+        move || {
+            let state = rooms_state.clone();
+            async move { cleanup_rooms(&state).await }
+        },
+    ));
 
     let resource_state = state.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(RESOURCE_CLEANUP_INTERVAL);
-        loop {
-            interval.tick().await;
-            resource_state.cleanup().await;
+    tokio::spawn(run_housekeeping_loop(
+        "resources",
+        RESOURCE_CLEANUP_INTERVAL,
+        move || {
+            let state = resource_state.clone();
+            async move { state.cleanup().await }
+        },
+    ));
+}
+
+/// Runs one housekeeping pass on `interval`, for the life of the process, and
+/// survives a pass that panics.
+///
+/// The pass runs in its own task so that a panic inside it arrives here as a
+/// `JoinError` instead of killing this loop. That distinction is the whole
+/// reason this function exists. `panic = "abort"` is deliberately not set
+/// (§5.1) so that one panicking connection cannot take the process down —
+/// but the same confinement applied to *these* tasks meant a single panic in
+/// a cleanup pass would end housekeeping permanently and silently: rooms
+/// would stop being deleted, history would stop being trimmed, and the first
+/// symptom would be the process sitting at its memory ceiling dropping live
+/// messages, with nothing in the log to connect that to a panic minutes
+/// earlier. Confining a panic to one *pass* is right; confining it to the
+/// loop is how a mechanic disappears.
+///
+/// Generic over the work rather than written twice, and for the same reason
+/// the four connection tasks are generic over their sink: the panicking pass
+/// is then something a test can hand it (`a_panicking_housekeeping_pass_does_not_end_the_loop`)
+/// instead of a line nothing can reach.
+pub(crate) async fn run_housekeeping_loop<F, Fut>(name: &'static str, interval: Duration, work: F)
+where
+    F: Fn() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    let mut ticker = tokio::time::interval(interval);
+    loop {
+        ticker.tick().await;
+        if let Err(e) = tokio::spawn(work()).await {
+            // Not `panic!`-ing in turn: the next pass is a minute away and
+            // will very likely succeed, and taking the loop down is exactly
+            // the outcome this exists to prevent.
+            error!(loop_name = name, error = %e, "housekeeping pass did not complete");
         }
-    });
+    }
 }
 
 /// The port to listen on, from `PORT`, falling back to [`DEFAULT_PORT`].

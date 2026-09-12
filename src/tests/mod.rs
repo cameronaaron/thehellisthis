@@ -27,8 +27,8 @@ use crate::session::{
     remove_member, render_off_thread, resolve_render, run_seal_loop, within_throttle, ws_handler,
 };
 use crate::startup::{
-    DEFAULT_PORT, build_router, generate_random_room_name, init_tracing, resolve_port, serve,
-    spawn_housekeeping,
+    DEFAULT_PORT, build_router, generate_random_room_name, init_tracing, resolve_port,
+    run_housekeeping_loop, serve, spawn_housekeeping,
 };
 use crate::state::{AppState, announce_departures};
 use crate::validation::{

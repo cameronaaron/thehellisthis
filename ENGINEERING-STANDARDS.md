@@ -2218,3 +2218,27 @@ Two ways the naive fix is wrong, both now pinned by
 everyone out of the rooms they are *already in* (guard on the room being new),
 and refusing the permanent rooms lets a script that fills the server with
 ephemeral rooms take down the site's own front door (`is_permanent_room`).
+
+### §5.11a — confine a panic to the pass, not to the loop (2026-09-12)
+
+`panic = "abort"` is deliberately unset (§5.1) so one panicking connection
+cannot disconnect every user in every room. The same confinement applied to
+the two housekeeping loops had the opposite effect from the one intended: the
+panicking task *was* the loop, so a single bad pass ended room deletion and
+history trimming permanently and silently. The first symptom would arrive
+minutes or hours later as a process sitting at its memory ceiling dropping
+live messages, with nothing in the log connecting the two — and rooms that
+never die is not a degraded mode here, it is the product's central mechanic
+(§7) switched off.
+
+Each pass now runs in its own task, so a panic arrives at the loop as a
+`JoinError` to log rather than as the end of the loop. The loop does not
+re-panic: the next pass is a minute away and will almost certainly succeed.
+
+The general rule: **for anything that runs forever, ask what happens to the
+*next* iteration when this one fails.** A supervisor is not optional
+machinery for a loop that is the only thing keeping an invariant true.
+
+Making the pass a parameter is what made the failure testable
+(`a_panicking_housekeeping_pass_does_not_end_the_loop`) — the same move as
+making the four connection tasks generic over their sink (§6.1c).
