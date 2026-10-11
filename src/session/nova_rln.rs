@@ -89,7 +89,12 @@ pub(crate) struct NullifierSet {
 
 impl NullifierSet {
     pub(crate) fn new() -> Self {
-        let fresh = || (None, PathOram::new(NULLIFIER_SET_CAPACITY, NULLIFIER_SET_BUCKET));
+        let fresh = || {
+            (
+                None,
+                PathOram::new(NULLIFIER_SET_CAPACITY, NULLIFIER_SET_BUCKET),
+            )
+        };
         NullifierSet {
             slots: [fresh(), fresh()],
         }

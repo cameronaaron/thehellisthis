@@ -575,7 +575,12 @@ fn the_page_links_to_its_source_code() {
 fn the_client_claims_no_differential_privacy() {
     for (name, source) in [("client.js", EMBEDDED_JS), ("index.html", EMBEDDED_HTML)] {
         let lowered = source.to_lowercase();
-        for claim in ["differential privacy", "differential-privacy", "dp cover-traffic", "dp budget"] {
+        for claim in [
+            "differential privacy",
+            "differential-privacy",
+            "dp cover-traffic",
+            "dp budget",
+        ] {
             assert!(!lowered.contains(claim), "{name} claims {claim:?}");
         }
     }

@@ -291,7 +291,10 @@ fn single_quoted_literals(js: &str) -> Vec<String> {
     let mut chars = js.chars().peekable();
     while let Some(c) = chars.next() {
         let nested = stack.len() > 1;
-        match stack.last_mut().expect("the outermost state is never popped") {
+        match stack
+            .last_mut()
+            .expect("the outermost state is never popped")
+        {
             State::Code(depth) => match c {
                 '/' if chars.peek() == Some(&'/') => {
                     chars.by_ref().find(|&c| c == '\n');
