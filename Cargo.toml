@@ -1,0 +1,125 @@
+[workspace]
+# nova-operator shares this Cargo.lock so both resolve novachannel-mpc to one
+# commit, provided both manifests name the same source (they once didn't).
+# nova-wasm targets wasm32 and can't join; it is built by
+# scripts/build-nova-wasm.sh with its own lockfile.
+members = [".", "nova-operator"]
+
+[package]
+name = "infinite-chat"
+version = "0.1.0"
+edition = "2024"
+# `time` 0.3.47 (via tower-cookies), which fixes RUSTSEC-2026-0009, needs 1.88.
+# The MSRV is a claim others build against, so it follows the dependency tree.
+rust-version = "1.88"
+description = "Ephemeral multi-room WebSocket chat server"
+license = "AGPL-3.0-or-later"
+publish = false
+
+[dependencies]
+# Only the features the server uses: the current-thread runtime and
+# `#[tokio::main]` (`rt`, `macros`), `TcpListener` (`net`), the room
+# primitives (`sync`), timers (`time`) and `ctrl_c` (`signal`). No `fs` or
+# `process`, which nothing calls.
+tokio = { version = "1.53.1", features = [
+    "rt",
+    "macros",
+    "net",
+    "sync",
+    "time",
+    "signal",
+] }
+
+# Web framework
+axum = { version = "0.8.9", features = ["ws", "macros"] }
+axum-server = "0.8.0"
+tower-http = { version = "0.7.0", features = ["cors", "set-header"] }
+http = "1.4.2"
+tower-cookies = "0.11.0"
+
+# Serialization
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+
+# Utilities
+futures = "0.3.33"
+uuid = { version = "1.24.0", features = ["v4", "serde"] }
+rand = "0.10.2"
+bytes = "1.12.1"
+regex = "1.13.1"
+thiserror = "2.0.19"
+
+# Logging
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+# Content processing. comrak without default features: no CLI (clap, xdg,
+# shell-words) or syntect highlighting, neither used, and about 15 fewer
+# crates, including every one behind three RUSTSEC advisories (quick-xml,
+# bincode) and an unmaintained warning (yaml-rust).
+comrak = { version = "0.54.0", default-features = false }
+ammonia = "4.1.4"
+
+# The CSP names the page's `<style>` block by a SHA-256 of its embedded bytes,
+# computed at startup. RustCrypto, not hand-rolled: unlike the fnv1a cache key,
+# this goes in a header a browser trusts. base64 was already a transitive
+# dependency of axum.
+sha2 = "0.11.0"
+base64 = "0.23.1"
+
+# The `nova` room (session/nova*.rs): novachannel's hybrid post-quantum channel,
+# RLN, ORAM and MPC crates. Pinned to a commit, unlike the base images that
+# track latest (§9.4): an unreviewed cryptography change reaching the server is
+# a different risk from an OS patch level, so bumps are deliberate.
+# novachannel-watch.yml opens an issue when upstream moves; all three manifests
+# move together.
+novachannel = { git = "https://github.com/cameronaaron/novachannel.git", package = "novachannel", rev = "5fe0c75ac9022134d4c7874925814a22d089775c" }
+# RLN verification (about 0.2 ms native) runs here; proving runs in nova-wasm,
+# since a server able to prove for a member could forge for them.
+novachannel-rln = { git = "https://github.com/cameronaaron/novachannel.git", package = "novachannel-rln", rev = "5fe0c75ac9022134d4c7874925814a22d089775c" }
+# Backs the nullifier set, so which bucket a double-post check touches doesn't
+# reveal which member posted.
+novachannel-oram = { git = "https://github.com/cameronaaron/novachannel.git", package = "novachannel-oram", rev = "5fe0c75ac9022134d4c7874925814a22d089775c" }
+# novachannel-rln's API (`air::verify`, `PublicInputs`, `Proof`) uses
+# winterfell's types directly, so decoding a proof needs it too; the same
+# version novachannel-rln depends on.
+winterfell = "0.13"
+# The public half of the MPC/FROST demo (session/nova_operator.rs): combining
+# partial decryptions and verifying and aggregating signature shares. Shares
+# themselves live only in nova-operator processes.
+novachannel-mpc = { git = "https://github.com/cameronaaron/novachannel.git", package = "novachannel-mpc", rev = "5fe0c75ac9022134d4c7874925814a22d089775c" }
+# novachannel-mpc's curve types, to decode the operator protocol's hex values.
+curve25519-dalek = { version = "5", features = ["rand_core"] }
+# The operator wire protocol, shared by path so coordinator and operators
+# can't drift.
+nova-operator = { path = "nova-operator" }
+[dev-dependencies]
+# `test-util` gives tests simulated time, so housekeeping loops can be shown
+# to run every 60 seconds without waiting; `io-util` is for tokio-tungstenite,
+# and `rt-multi-thread` for the few multi-threaded tests. Test-only.
+tokio = { version = "1.53.1", features = [
+    "rt-multi-thread",
+    "macros",
+    "net",
+    "sync",
+    "time",
+    "signal",
+    "io-util",
+    "test-util",
+] }
+tokio-tungstenite = "0.30.0"
+tower = { version = "0.5.3", features = ["util"] }
+url = "2.5.8"
+# Derives a nova-operator identity file's public key, so reconnect tests
+# (tests/session_nova.rs) can present a real operator identity over a raw
+# WebSocket. Same version nova-operator pins, one entry in the lockfile.
+x25519-dalek = { version = "3", features = ["static_secrets"] }
+
+[profile.release]
+# A smaller image starts faster; LTO and one codegen unit cost build time only.
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+# panic = "abort" is deliberately not set: Tokio confines a panic to its task,
+# while abort would let one connection's panic disconnect every room
+# (ENGINEERING-STANDARDS.md §5.1).

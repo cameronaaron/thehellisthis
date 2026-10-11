@@ -1,0 +1,39 @@
+[package]
+name = "nova-operator"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+publish = false
+description = "A standalone FROST and threshold-decryption operator for the nova room's MPC demo. Run one per participant, on separate machines, so the chat server never holds every share; the design is in src/session/nova_operator.rs in the main crate."
+
+[lib]
+name = "nova_operator"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nova-operator"
+path = "src/main.rs"
+
+[dependencies]
+# The DKG/FROST primitives. Shares the root Cargo.lock with the server, so
+# both resolve to one commit as long as both manifests name the same source.
+novachannel-mpc = { git = "https://github.com/cameronaaron/novachannel.git", package = "novachannel-mpc", rev = "5fe0c75ac9022134d4c7874925814a22d089775c" }
+curve25519-dalek = { version = "5", features = ["rand_core"] }
+# Seals each DKG share to its recipient's static key so the relaying server
+# can't read it; a one-shot sealed box, not a session (see crypto.rs).
+x25519-dalek = { version = "3", features = ["static_secrets"] }
+# chacha20poly1305 0.11 and hkdf 0.13 use digest 0.11, so sha2 must be 0.11
+# too; 0.10 put two digest majors in one build and failed trait bounds.
+chacha20poly1305 = "0.11"
+hkdf = "0.13"
+sha2 = "0.11"
+# As novachannel-mpc::csprng(): getrandom's SysRng is fallible, and
+# rand_core's UnwrapErr makes it the CryptoRng x25519-dalek wants.
+rand_core = "0.10"
+getrandom = { version = "0.4", features = ["sys_rng"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal", "io-util"] }
+tokio-tungstenite = "0.30.0"
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.23"

@@ -1,0 +1,25 @@
+{
+  "name": "infinite-chat-cloudflare",
+  "license": "AGPL-3.0-or-later",
+  "version": "1.0.0",
+  "description": "Cloudflare Containers deployment for Infinite Chat WebSocket server",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "build": "tsc",
+    "test": "node --test src/*.test.mjs",
+    "types": "wrangler types --include-runtime=false"
+  },
+  "devDependencies": {
+    "@cloudflare/containers": "^0.3.7",
+    "@cloudflare/workers-types": "^5.20260814.1",
+    "@types/node": "^26.2.0",
+    "typescript": "^7.0.2",
+    "wrangler": "^4.123.0"
+  },
+  "packageManager": "pnpm@11.22.0"
+}

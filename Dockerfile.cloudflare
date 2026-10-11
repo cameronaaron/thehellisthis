@@ -1,0 +1,57 @@
+# Multi-stage build for Cloudflare Containers: compile with the Rust
+# toolchain, run on a minimal runtime.
+
+# Unpinned on purpose (`slim`, `stable`, `latest`, never a version): this
+# project runs dependencies at latest and catches problems with the weekly
+# audits, compiler and base OS included. `slim` is a smaller package set even
+# for a discarded stage. `these_images_track_latest_on_purpose` fails if a
+# `FROM` names a version.
+FROM rust:slim AS builder
+
+WORKDIR /app
+
+COPY Cargo.toml Cargo.lock* ./
+COPY src ./src
+COPY index.html ./index.html
+COPY client.js ./client.js
+# wasm-pack's committed output, embedded by src/routes/page.rs; built by
+# scripts/build-nova-wasm.sh, not here.
+COPY nova-wasm/pkg ./nova-wasm/pkg
+# A workspace member and path dependency (the shared operator protocol), so
+# cargo needs it, though this image never runs the operator binary.
+COPY nova-operator ./nova-operator
+
+# No build dependencies to install: nothing links OpenSSL (the server makes no
+# outbound TLS; Cloudflare terminates it). `--bin infinite-chat` skips the
+# operator binary, which runs on operators' own machines.
+RUN cargo build --release --locked --bin infinite-chat
+
+# distroless: no shell, package manager or coreutils for an intruder to use.
+# `ldd` on the binary names libc.so.6, libm.so.6 and libgcc_s.so.1, which
+# cc-debian12 provides; static-debian12 would need a musl build, whose linker
+# broke under x86_64-on-arm64 emulation when tried. `:nonroot` selects the
+# built-in unprivileged user (uid 65532); it is a variant, not a version, so
+# still a moving tag.
+FROM gcr.io/distroless/cc-debian12:nonroot AS runtime
+
+WORKDIR /app
+
+# The binary is the only artifact: the page, script and robots.txt are
+# compiled in, so nothing on disk can be out of date with it. BuildKit sets
+# ownership at COPY time, since distroless has no `chown` to run afterwards.
+COPY --from=builder --chown=nonroot:nonroot /app/target/release/infinite-chat /app/infinite-chat
+
+# Explicit as well as implied by the tag, so swapping the base image can't
+# silently start running as root.
+USER nonroot
+
+ENV PORT=3000
+ENV RUST_LOG=info
+
+EXPOSE 3000
+
+# Exec form: distroless has no shell for a shell-form CMD.
+CMD ["./infinite-chat"]
+
+# Cloudflare Containers stops instances with SIGINT.
+STOPSIGNAL SIGINT

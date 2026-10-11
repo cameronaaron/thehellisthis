@@ -1,0 +1,59 @@
+# Code the coverage floor does not count, and why.
+#
+# The floor is 100%. Anything below it is either a missing test or an entry
+# here — never a lowered number. Ported from the coverage exclusion list on
+# cameronaaron.com, which holds its thresholds at 100 and excludes a short,
+# reasoned list rather than settling for a percentage.
+#
+# Two rules, both enforced by `coverage_exemptions_are_justified_and_current`:
+#
+#   1. Every entry carries a `reason`. An exclusion without one is a number
+#      being hidden.
+#   2. Every entry names a path that exists. An exemption must never outlive
+#      the thing it exempts — the same self-cleaning property the dependency
+#      allow-list has.
+
+[[exempt]]
+path = "src/tests"
+reason = """
+The test suite itself — a directory of modules since it outgrew one file.
+Coverage measures whether the *server* is exercised;
+counting the tests' own branches measures nothing, and a helper with an
+unexercised arm would otherwise show up as untested production code. This is
+the direct analogue of excluding `**/*.test.ts` on cameronaaron.com.
+"""
+
+[[exempt]]
+path = "src/main.rs"
+reason = """
+The process shell, and only after everything testable was moved out of it.
+`main` is one line that calls `main_inner`, because a test can never call
+`main` — `#[tokio::main]` makes it the entry point — so any line left inside it
+is a line nothing can ever cover.
+
+What remains uncovered here is the `#[tokio::main]` runtime construction and
+the `signal::ctrl_c()` call itself. The shutdown *sequence* is covered:
+`wait_then_announce` takes the signal as a parameter precisely so a test can
+supply one, including the failed-handler arm.
+
+Reopen: if this file grows anything that is not runtime setup, it belongs in a
+module and this exemption stops being honest.
+"""
+
+# ---------------------------------------------------------------------------
+# No line exemptions.
+#
+# `session.rs` had 21, then 12, then 3, and now none. Every one turned out to be
+# a misplaced line rather than an untestable one (§6.1c): the four connection
+# tasks and `run_session` itself are generic over their sink, so "the client
+# stopped accepting frames" is a test fixture rather than a race; `join_room`,
+# `send_history`, `touch_and_check_idle`, `attach_cookies` and `encode_event`
+# are functions rather than blocks buried inside a loop.
+#
+# Two of the last three were not untestable at all — they were the instrument
+# disagreeing with the code. `Message::Binary(_) => { … }` reported its arm
+# uncovered while its body ran, because tarpaulin attributes a brace-wrapped arm
+# to the body alone; written as a single expression, like the `Pong` arm beside
+# it, it reports honestly. Worth remembering before believing the next
+# "impossible" line (§0.5).
+# ---------------------------------------------------------------------------

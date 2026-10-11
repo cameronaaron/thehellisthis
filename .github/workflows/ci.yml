@@ -1,0 +1,153 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+  # Advisories are published against versions already in the lockfiles, so
+  # the audits run weekly even when nothing is pushed.
+  schedule:
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+# Deploys come from Cloudflare's Git integration on every push to main, in
+# parallel with this workflow, not after it: Cloudflare will ship a commit
+# whose tests fail. Branch protection requiring this workflow on pull
+# requests is what moves the gate back in front of the deploy (§6.1).
+
+jobs:
+  # One job running the local gate's commands in order, so "does the gate
+  # pass?" has one answer; the steps share one compilation (§6.1).
+  gate:
+    name: Gate (fmt, clippy, test, release)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (warnings are failures)
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace --all-features --locked
+
+      - name: Docs (broken links are failures)
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps --workspace --all-features --locked
+
+      - name: Release build
+        run: cargo build --release --locked
+
+      - name: Container runtime smoke test
+        run: scripts/smoke-container.sh
+
+      - name: Verify binary exists
+        run: test -f target/release/infinite-chat
+
+      # The real STARK round trip is #[cfg(not(debug_assertions))]: winterfell's
+      # debug-only degree check has a known false positive on this AIR, so it
+      # runs here under --release while the rest of the suite keeps debug
+      # assertions.
+      - name: RLN proof test (release only)
+        run: cargo test --release --all-features --locked nova_rln
+
+  # tarpaulin rebuilds with instrumentation and can't share the gate's
+  # artifacts, so it runs in parallel.
+  coverage:
+    name: Coverage floor
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Install tarpaulin
+        run: cargo install cargo-tarpaulin --locked
+
+      - name: Enforce the coverage floor
+        run: scripts/coverage.sh
+
+  worker:
+    name: Worker typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Installs the pnpm version pinned by `packageManager` in
+      # cloudflare/package.json, so CI and a laptop resolve identically.
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: cloudflare/package.json
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          # wrangler needs Node >= 22 and pnpm 11 needs `node:sqlite`.
+          # cloudflare/package.json `engines` is the source of this; the
+          # `ci_node_version_satisfies_the_toolchain` test keeps them in step.
+          node-version: '26'
+          cache: 'pnpm'
+          cache-dependency-path: 'cloudflare/pnpm-lock.yaml'
+
+      - name: Install
+        working-directory: cloudflare
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        working-directory: cloudflare
+        run: pnpm exec tsc --noEmit
+
+      - name: Worker regression tests
+        working-directory: cloudflare
+        run: pnpm test
+
+      - name: Audit
+        working-directory: cloudflare
+        run: pnpm audit --audit-level=high
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Audit
+        run: cargo audit

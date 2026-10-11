@@ -1,0 +1,57 @@
+name: novachannel freshness watch
+
+# Opens an issue when cameronaaron/novachannel, the nova room's crypto
+# dependency, moves past the commit pinned in Cargo.toml. It never bumps the
+# pin itself: an unreviewed change to cryptography reaching the server is a
+# different risk from the base images §9.4 lets float, and the bump needs
+# nova-wasm/pkg rebuilt locally anyway.
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check for a new novachannel commit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Open an issue if upstream moved
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          pinned=$(grep -oE 'novachannel.git", package = "novachannel", rev = "[0-9a-f]{40}"' Cargo.toml | grep -oE '[0-9a-f]{40}')
+          latest=$(gh api repos/cameronaaron/novachannel/commits/main --jq .sha)
+          [ "$pinned" = "$latest" ] && exit 0
+
+          title="Bump novachannel to ${latest:0:12}"
+          if gh issue list --state open --search "\"$title\" in:title" --json number --jq 'length' | grep -qv '^0$'; then
+            exit 0
+          fi
+
+          body=$(cat <<EOF
+          cameronaaron/novachannel moved: https://github.com/cameronaaron/novachannel/compare/${pinned}...${latest}
+
+          Server, operator and browser must move together or the nova room's handshake fails:
+
+          \`\`\`sh
+          sed -i "s/${pinned}/${latest}/" Cargo.toml nova-operator/Cargo.toml nova-wasm/Cargo.toml
+          cargo update -p novachannel -p novachannel-rln -p novachannel-oram -p novachannel-mpc
+          (cd nova-wasm && cargo update -p novachannel -p novachannel-rln -p novachannel-dp)
+          scripts/build-nova-wasm.sh
+          \`\`\`
+
+          Then run the gate and commit the rebuilt nova-wasm/pkg/ with the pins.
+          EOF
+          )
+          gh issue create --title "$title" --body "$body"

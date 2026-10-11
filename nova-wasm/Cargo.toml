@@ -1,0 +1,48 @@
+[workspace]
+# Empty on purpose: stops Cargo walking up to ../Cargo.toml's workspace. This
+# crate targets wasm32 and stays independent.
+
+[package]
+name = "nova-wasm"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+publish = false
+description = "Browser bindings for novachannel's PQ channel, used by the nova room only (../src/session/nova.rs). Built with wasm-pack; the output is committed and embedded by the server, not built by the main crate."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# The same commit as ../Cargo.toml: client and server must speak one wire
+# format, so all three manifests move together (novachannel-watch.yml).
+novachannel = { git = "https://github.com/cameronaaron/novachannel.git", package = "novachannel", rev = "5fe0c75ac9022134d4c7874925814a22d089775c" }
+# The RLN prover. Proving happens only here, since a server able to prove for
+# a member could forge for them. About 1 ms native at DEPTH=5, fast enough in
+# wasm without a worker.
+novachannel-rln = { git = "https://github.com/cameronaaron/novachannel.git", package = "novachannel-rln", rev = "5fe0c75ac9022134d4c7874925814a22d089775c" }
+# The cover-traffic scheduler behind client.js's per-slot tick. Decided in the
+# browser because it hides from a network observer whether this browser is
+# sending; the server sees every real send anyway.
+novachannel-dp = { git = "https://github.com/cameronaaron/novachannel.git", package = "novachannel-dp", rev = "5fe0c75ac9022134d4c7874925814a22d089775c" }
+wasm-bindgen = "0.2"
+# For the `rand::Rng` the scheduler's `decide()` is generic over.
+rand = "0.10"
+base64 = "0.22"
+# The JS boundary only (path JSON in, `prove()` output out); protocol.rs owns
+# the wire format.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# novachannel-rln's API uses winterfell's types directly; same version as it.
+winterfell = "0.13"
+# getrandom 0.4 arrives transitively with a native backend that doesn't exist
+# on wasm32; naming the wasm backend here enables it through feature
+# unification. The server never enables it.
+getrandom = { version = "0.4", features = ["wasm_js"] }
+# winterfell's rand 0.8 brings getrandom 0.2 too, whose wasm feature has a
+# different name.
+getrandom2 = { package = "getrandom", version = "0.2", features = ["js"] }
+
+[profile.release]
+opt-level = "s"
+lto = true

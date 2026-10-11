@@ -1,0 +1,81 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "infinite-chat",
+  "main": "src/index.ts",
+  // Kept current: the runtime gates behaviour changes on this date, so an old
+  // one opts out of fixes indefinitely.
+  "compatibility_date": "2026-07-01",
+  
+  // Custom domain configuration
+  "routes": [
+    {
+      "pattern": "thehellisthis.com/*",
+      "zone_name": "thehellisthis.com"
+    },
+    {
+      "pattern": "www.thehellisthis.com/*",
+      "zone_name": "thehellisthis.com"
+    }
+  ],
+
+  // Inferred once `routes` is set; stated as a decision. A live *.workers.dev
+  // URL would be a second, unbranded entry point to the same rooms.
+  "workers_dev": false,
+
+  // Already the default with no destination; stated, like `workers_dev`.
+  "logpush": false,
+
+  // Off: the Worker logs nothing per request, so Workers Logs would hold
+  // invocation records nobody reads. The server logs through the container's
+  // stdout, which this doesn't affect.
+  "observability": {
+    "enabled": false
+  },
+
+  // Runs the Worker near the single container (`max_instances: 1`) rather than
+  // near each visitor: with one fixed backend every request pays that hop
+  // anyway, which is the case Smart Placement is for.
+  "placement": {
+    "mode": "smart"
+  },
+
+  // The edge cache is checked before the Worker runs and honours the
+  // container's Cache-Control. Only /app.js (content-hashed, immutable) wants
+  // caching; every other route sends `no-store` (src/startup.rs).
+  "cache": {
+    "enabled": true
+  },
+
+  // Container configuration for the Rust WebSocket server
+  "containers": [
+    {
+      "image": "../Dockerfile.cloudflare",
+      "class_name": "InfiniteChatContainer",
+      "name": "infinite-chat-container",
+      // One instance: all state is in its memory (and it keeps costs low).
+      "max_instances": 1,
+      // 256 MiB and 1/16 vCPU, stated rather than the deprecated default.
+      // MAX_TOTAL_ROOMS_MEMORY (src/config.rs) is sized for it; change both
+      // together (`the_memory_budget_still_closes`).
+      "instance_type": "lite"
+    }
+  ],
+  
+  // Durable Objects binding
+  "durable_objects": {
+    "bindings": [
+      {
+        "class_name": "InfiniteChatContainer",
+        "name": "CHAT_CONTAINER"
+      }
+    ]
+  },
+  
+  // Required migration for new SQLite-backed Durable Objects
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["InfiniteChatContainer"]
+    }
+  ]
+}

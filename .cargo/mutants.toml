@@ -1,0 +1,31 @@
+# Mutation testing configuration.
+#
+# Coverage says a line ran; mutation testing edits the code (flipping a
+# comparison, replacing a return value) and fails when the suite still passes,
+# catching tests like `assert!(result || !result)`.
+#
+# Run with: cargo mutants                       (everything; slow)
+#           cargo mutants -f src/room/mod.rs    (one file)
+
+# Skip the process shell: mutants in `main`, signal handling and tracing setup
+# can only be caught by starting and killing a real process. cargo-mutants
+# matches these against the whole description ("replace main with ()"), so
+# anchored patterns like "^main$" matched nothing, and three permanent
+# survivors is how a report stops being read.
+exclude_re = [
+    # "replace main with ()" for a unit return, "replace main -> ExitCode ..."
+    # now that it has one.
+    "replace main with",
+    "replace main ->",
+    "replace shutdown_signal with",
+    "replace init_tracing with",
+]
+
+# The suite takes about 20s, and a hanging mutant has broken a loop condition;
+# waiting the default multiple wastes minutes each time.
+timeout_multiplier = 3.0
+minimum_test_timeout = 60
+
+# Run every test, not just the mutated file's: most behaviour is asserted by
+# integration tests against a real server.
+test_workspace = true

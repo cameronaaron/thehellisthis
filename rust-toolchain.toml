@@ -1,0 +1,10 @@
+# The toolchain this project builds with, so a laptop, CI and the container
+# image use the same compiler. Cargo.toml's MSRV is a floor for others; this is
+# what is used here.
+#
+# `stable` rather than a version, so the pin can't go stale; new releases'
+# lints surface through `cargo clippy -- -D warnings` (the 1.88 MSRV bump
+# turned on let-chain suggestions, 49 of them). Not nightly (§9.4).
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
