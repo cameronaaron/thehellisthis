@@ -57,7 +57,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 # shell-words) or syntect highlighting, neither used, and about 15 fewer
 # crates, including every one behind three RUSTSEC advisories (quick-xml,
 # bincode) and an unmaintained warning (yaml-rust).
-comrak = { version = "0.54.0", default-features = false }
+comrak = { version = "0.55.0", default-features = false }
 ammonia = "4.1.4"
 
 # The CSP names the page's `<style>` block by a SHA-256 of its embedded bytes,
